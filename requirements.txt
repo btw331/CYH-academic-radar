@@ -2,3 +2,9 @@ streamlit
 google-generativeai
 pandas
 requests
+langchain-google-genai
+langchain-community
+langchain-core
+tenacity
+tavily-python
+beautifulsoup4
