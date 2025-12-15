@@ -8,3 +8,4 @@ langchain-core
 tenacity
 tavily-python
 beautifulsoup4
+plotly
