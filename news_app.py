@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域戰情室 V14", page_icon="🏯", layout="wide")
+st.set_page_config(page_title="全域戰情室 V14.1", page_icon="🏯", layout="wide")
 
 st.markdown("""
 <style>
@@ -67,9 +67,6 @@ st.markdown("""
 # ==========================================
 # 2. 資料庫與共用常數
 # ==========================================
-# (保留原有的 DB_MAP, NAME_KEYWORDS 等設定，為節省篇幅省略，實際執行時請保留)
-# ... [此處與 V13 相同，若需完整代碼請參考上一版，這裡假設您會保留該區塊] ...
-# 為了確保代碼完整可執行，我還是把它貼上：
 DB_MAP = {
     "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "cgtn.com", "taiwan.cn", "gwytb.gov.cn", "guancha.cn", "thepaper.cn"],
     "INTL": ["reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "ft.com", "economist.com", "bbc.com", "dw.com", "voanews.com", "thediplomat.com"],
@@ -335,17 +332,7 @@ def render_spectrum_chart(spectrum_data):
 # 4. 介面 (UI)
 # ==========================================
 with st.sidebar:
-    st.title("全域戰情室 V14")
-    
-    # 模式選擇 (決定是否啟動 Council of Rivals)
-    analysis_mode = st.radio(
-        "選擇分析模式：",
-        options=["🛡️ 全域輿情監測 (Spectrum)", "🔮 未來戰棋推演 (War Game)"],
-        captions=["即時：Cofacts查核 + 輿論光譜", "深度：紅隊演練 + 系統思考圖"],
-        index=1
-    )
-    
-    st.markdown("---")
+    st.title("全域戰情室 V14.1")
     
     # Secrets 管理
     with st.expander("🔑 系統權限", expanded=True):
@@ -367,93 +354,111 @@ with st.sidebar:
         past_report_input = st.text_area("貼上舊 Markdown 報告：", height=100)
 
 # 主畫面
-st.title(f"{analysis_mode.split(' ')[1]}")
+st.title("⚖️ 全域觀點搜尋 (Spectrum)")
 query = st.text_input("輸入戰略議題", placeholder="例如：台海封鎖情境推演")
-search_btn = st.button("🚀 啟動分析引擎", type="primary")
+search_btn = st.button("🚀 啟動全域掃描", type="primary")
 
-if 'result' not in st.session_state: st.session_state.result = None
-if 'opinions' not in st.session_state: st.session_state.opinions = None
+# Session State 初始化
+if 'spectrum_result' not in st.session_state: st.session_state.spectrum_result = None
+if 'wargame_result' not in st.session_state: st.session_state.wargame_result = None
+if 'wargame_opinions' not in st.session_state: st.session_state.wargame_opinions = None
 if 'sources' not in st.session_state: st.session_state.sources = None
+if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
+# 1. 執行第一階段：輿情搜尋
 if search_btn and query and google_key and tavily_key:
-    st.session_state.result = None
-    st.session_state.opinions = None
+    # 重置所有狀態
+    st.session_state.spectrum_result = None
+    st.session_state.wargame_result = None
+    st.session_state.wargame_opinions = None
     
-    # 1. 獲取情報 (通用)
     with st.spinner("📡 正在進行全網情報蒐集 (Tavily + Cofacts)..."):
         context_text, sources, cofacts_txt = get_search_context(query, tavily_key, past_report_input)
         st.session_state.sources = sources
-    
-    # 2. 分流處理
-    if "戰棋" in analysis_mode:
-        with st.status("⚔️ 召開數位戰情會議 (Council of Rivals)...", expanded=True) as status:
-            st.write("1. 正在傳喚 🦅 鷹派、🕊️ 鴿派、📜 歷史學家...")
-            opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
-            st.session_state.opinions = opinions
-            
-            st.write("2. 國家安全顧問 (NSA) 正在進行 STEEP 綜合研判...")
-            st.write("3. 繪製因果迴路圖 (Causal Loop Diagram)...")
-            parsed = parse_gemini_data(raw_report)
-            st.session_state.result = parsed
-            status.update(label="✅ 推演完成", state="complete", expanded=False)
-            
-    else: # 輿情監測模式
-        with st.spinner("⚖️ 正在繪製輿論光譜..."):
-            raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
-            parsed = parse_gemini_data(raw_report)
-            st.session_state.result = parsed
+        st.session_state.full_context = context_text # 存起來給戰情室用
+        
+        # 繪製光譜
+        raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
+        st.session_state.spectrum_result = parse_gemini_data(raw_report)
+        st.rerun()
 
-# 渲染結果
-if st.session_state.result:
-    data = st.session_state.result
+# 2. 顯示輿情結果 & 轉接戰情室按鈕
+if st.session_state.spectrum_result:
+    data = st.session_state.spectrum_result
     
-    # 1. 核心指標
+    # 核心指標
     scores = data.get("scores", {})
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4 = st.columns(4)
     metrics = [
-        ("威脅指數", scores.get("Threat", 0)), 
         ("攻擊熱度", scores.get("Attack", 0)),
         ("分歧程度", scores.get("Division", 0)),
         ("影響深遠", scores.get("Impact", 0)),
         ("系統韌性", scores.get("Resilience", 0))
     ]
-    for col, (lbl, val) in zip([c1, c2, c3, c4, c5], metrics):
+    for col, (lbl, val) in zip([c1, c2, c3, c4], metrics):
         col.markdown(f"""<div class="metric-container"><p class="metric-score" style="color:{get_score_text_color(val)}">{val}</p><p class="metric-label">{lbl}</p></div>""", unsafe_allow_html=True)
 
-    # 2. 戰棋模式專屬：幕僚辯論 & Mermaid
-    if st.session_state.opinions:
-        st.markdown("### 🗣️ 數位戰情室辯論紀錄")
-        ops = st.session_state.opinions
-        c_hawk, c_dove, c_hist = st.columns(3)
-        with c_hawk:
-            st.markdown(f'<div class="agent-box agent-hawk"><b>🦅 鷹派 (Hawk)</b><br>{ops.get("HAWK")[:300]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看鷹派完整報告"): st.markdown(ops.get("HAWK"))
-        with c_dove:
-            st.markdown(f'<div class="agent-box agent-dove"><b>🕊️ 鴿派 (Dove)</b><br>{ops.get("DOVE")[:300]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看鴿派完整報告"): st.markdown(ops.get("DOVE"))
-        with c_hist:
-            st.markdown(f'<div class="agent-box agent-history"><b>📜 歷史學家</b><br>{ops.get("HISTORIAN")[:300]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看歷史借鏡"): st.markdown(ops.get("HISTORIAN"))
-
-        if data.get("mermaid"):
-            st.markdown("### 🕸️ 系統因果迴路圖 (Causal Loop)")
-            st.caption("AI 自動生成的系統動力學圖表，展示變數間的回饋關係。")
-            render_mermaid(data["mermaid"])
-
-    # 3. 輿情模式專屬：光譜圖
+    # 光譜圖
     if data.get("spectrum"):
         st.markdown("### 🗺️ 輿論陣地光譜")
         fig = render_spectrum_chart(data["spectrum"])
         st.plotly_chart(fig, use_container_width=True)
 
-    # 4. 完整報告
+    # 分析報告
     st.markdown("### 📝 綜合情報判讀")
     st.markdown(f'<div class="war-room-box">{data.get("report_text")}</div>', unsafe_allow_html=True)
     
-    # 5. 時間軸與來源
-    with st.expander("📅 發展時序與情報來源"):
-        if data.get("timeline"):
-            st.dataframe(pd.DataFrame(data["timeline"]), use_container_width=True)
+    # 參考來源
+    with st.expander("📚 原始情報來源列表"):
         if st.session_state.sources:
             for s in st.session_state.sources:
                 st.markdown(f"- [{s.get('url')}]({s.get('url')})")
+
+    st.markdown("---")
+    
+    # [V14.1] 轉接戰情室按鈕
+    st.markdown("### 🔮 未來推演戰情室")
+    st.info("覺得此議題需要更深度的戰略推演？點擊下方按鈕，召集 AI 幕僚進行紅隊演練。")
+    
+    if st.button("🚀 基於此情報啟動數位戰情室 (War Room)", type="primary", use_container_width=True):
+        if st.session_state.full_context:
+            with st.status("⚔️ 正在召集數位幕僚 (Hawk, Dove, Historian)...", expanded=True) as status:
+                st.write("1. 傳送情報給三位幕僚進行平行辯論...")
+                # 使用已經存在的 full_context，不重新搜尋
+                opinions, raw_report = run_council_of_rivals(query, st.session_state.full_context, model_name, google_key)
+                st.session_state.wargame_opinions = opinions
+                
+                st.write("2. 國家安全顧問 (NSA) 正在進行 STEEP 綜合研判...")
+                st.session_state.wargame_result = parse_gemini_data(raw_report)
+                status.update(label="✅ 推演完成", state="complete", expanded=False)
+        else:
+            st.error("❌ 找不到情報上下文，請先執行搜尋。")
+
+# 3. 顯示戰情室結果 (如果有)
+if st.session_state.wargame_result and st.session_state.wargame_opinions:
+    st.divider()
+    st.markdown(f"<h2 style='text-align: center; color: #d32f2f;'>⚔️ 數位戰情室：{query} 推演報告</h2>", unsafe_allow_html=True)
+    
+    # 幕僚辯論
+    st.markdown("### 🗣️ 幕僚觀點交鋒")
+    ops = st.session_state.wargame_opinions
+    c_hawk, c_dove, c_hist = st.columns(3)
+    with c_hawk:
+        st.markdown(f'<div class="agent-box agent-hawk"><b>🦅 鷹派 (Hawk)</b><br>{ops.get("HAWK")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看鷹派完整報告"): st.markdown(ops.get("HAWK"))
+    with c_dove:
+        st.markdown(f'<div class="agent-box agent-dove"><b>🕊️ 鴿派 (Dove)</b><br>{ops.get("DOVE")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看鴿派完整報告"): st.markdown(ops.get("DOVE"))
+    with c_hist:
+        st.markdown(f'<div class="agent-box agent-history"><b>📜 歷史學家</b><br>{ops.get("HISTORIAN")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看歷史借鏡"): st.markdown(ops.get("HISTORIAN"))
+
+    # Mermaid 圖表
+    data_wg = st.session_state.wargame_result
+    if data_wg.get("mermaid"):
+        st.markdown("### 🕸️ 系統因果迴路圖 (System Dynamics)")
+        render_mermaid(data_wg["mermaid"])
+
+    # 最終報告
+    st.markdown("### 📝 國家安全顧問 (NSA) 總結報告")
+    st.markdown(f'<div class="war-room-box">{data_wg.get("report_text")}</div>', unsafe_allow_html=True)
