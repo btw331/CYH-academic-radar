@@ -266,7 +266,16 @@ if 'pi_raw_data' not in st.session_state: st.session_state.pi_raw_data = None
 
 with st.sidebar:
     st.title("🔬 參數設定")
-    api_key = st.text_input("Gemini API Key", type="password")
+    
+    # -----------------------------------------------------
+    # [V12.9] Secrets 自動讀取邏輯
+    # -----------------------------------------------------
+    if "GOOGLE_API_KEY" in st.secrets:
+        st.success("✅ 已自動載入 Gemini Key (系統託管)")
+        api_key = st.secrets["GOOGLE_API_KEY"]
+    else:
+        api_key = st.text_input("Gemini API Key", type="password")
+    
     model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"], index=0)
     
     st.divider()
@@ -297,7 +306,7 @@ with st.sidebar:
                 st.error(f"讀取失敗: {e}")
 
 st.title("🧬 學術雷達 V12.9 (Future Proof)")
-st.caption("核心：**同名同姓篩選** + **Streamlit 參數修正**。")
+st.caption("核心：**同名同姓篩選** + **Streamlit 參數修正** + **Secrets 管理**。")
 
 # === 核心處理邏輯 ===
 def process_mining(doi_target, action='init'):
