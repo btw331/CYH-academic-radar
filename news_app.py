@@ -12,6 +12,7 @@ import pandas as pd
 import time
 import requests
 import json
+import random
 import concurrent.futures
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -25,41 +26,41 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域戰情室 V14.1", page_icon="🏯", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V15", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
-    .metric-container {
-        text-align: center;
-        padding: 15px;
-        background-color: #ffffff;
-        border-radius: 8px;
-        border: 1px solid #f0f0f0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        transition: transform 0.2s;
-    }
-    .metric-container:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-    }
-    .metric-score { font-size: 2.8em; font-weight: 700; margin: 0; line-height: 1.2;}
-    .metric-label { font-size: 1.0em; font-weight: 500; margin-top: 5px; color: #666; letter-spacing: 1px; }
-    
     .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
     
-    /* 戰情室風格 */
-    .war-room-box {
-        background-color: #263238; color: #eceff1; padding: 20px; border-radius: 8px; margin-bottom: 15px; border-left: 5px solid #ffca28;
+    /* 報告區塊風格 - 紙張質感 */
+    .report-paper {
+        background-color: #fdfbf7; 
+        color: #2c3e50; 
+        padding: 30px; 
+        border-radius: 4px; 
+        margin-bottom: 15px; 
+        border: 1px solid #e0e0e0;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        font-family: "Georgia", serif;
+        line-height: 1.8;
     }
-    .agent-box {
+    
+    /* 觀點對照盒 */
+    .perspective-box {
         padding: 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.95em;
+        border-left-width: 4px; border-left-style: solid;
     }
-    .agent-hawk { background-color: #ffebee; border-left: 4px solid #d32f2f; color: #b71c1c; }
-    .agent-dove { background-color: #e8f5e9; border-left: 4px solid #2e7d32; color: #1b5e20; }
-    .agent-history { background-color: #fff3e0; border-left: 4px solid #ef6c00; color: #e65100; }
+    .box-green { background-color: #e8f5e9; border-left-color: #2e7d32; color: #1b5e20; }
+    .box-blue { background-color: #e3f2fd; border-left-color: #1565c0; color: #0d47a1; }
+    .box-neutral { background-color: #f5f5f5; border-left-color: #616161; color: #424242; }
     
     .mermaid-box {
         background-color: #ffffff; padding: 10px; border-radius: 8px; border: 1px solid #ddd; margin-top: 10px;
+    }
+    
+    /* 標題樣式 */
+    .section-title {
+        font-size: 1.3em; font-weight: bold; color: #37474f; margin-top: 20px; margin-bottom: 10px; border-bottom: 2px solid #eceff1; padding-bottom: 5px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -93,13 +94,6 @@ def get_category_meta(cat):
         "INTL": ("🌏 國際媒體", "#f57c00"), "OTHER": ("📄 其他來源", "#9e9e9e")
     }
     return meta.get(cat, ("其他", "#9e9e9e"))
-
-def get_score_text_color(score):
-    if score >= 80: return "#d32f2f"
-    if score >= 60: return "#e65100"
-    if score >= 40: return "#f57f17"
-    if score >= 20: return "#388e3c"
-    return "#757575"
 
 # ==========================================
 # 3. 核心功能模組
@@ -151,7 +145,7 @@ def get_search_context(query, api_key_tavily, context_report=None):
         if cofacts_txt: context_text += f"{cofacts_txt}\n{'-'*20}\n"
         
         if context_report:
-            context_text += f"【歷史情報背景】\n{context_report[:1000]}...\n\n"
+            context_text += f"【歷史背景摘要】\n{context_report[:1000]}...\n\n"
             
         context_text += "【最新網路情報】\n"
         for i, res in enumerate(results):
@@ -164,14 +158,13 @@ def get_search_context(query, api_key_tavily, context_report=None):
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2) # 降低溫度以求穩定
+    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
 # 3.2 進階功能：Mermaid 渲染器
 def render_mermaid(code):
-    """使用 HTML Component 渲染 Mermaid 圖表"""
     html_code = f"""
     <div class="mermaid">
     {code}
@@ -185,25 +178,21 @@ def render_mermaid(code):
 
 # 3.3 核心邏輯：數位戰情室 (Council of Rivals)
 def run_council_of_rivals(query, context_text, model_name, api_key):
-    # 定義三個 Agent 的人設
+    # 定義三個 Agent 的人設 (平衡報導風格)
     prompts = {
-        "HAWK": """你是一位【鷹派戰略家】(The Hawk)。
-        你的性格：悲觀、警惕、專注於最壞情況。
-        你的任務：分析衝突升級的可能性、對手的惡意動機、軍事/強制手段的風險。
-        請找出情報中所有顯示「局勢惡化」的訊號。""",
+        "A_SIDE": """你是一位【視角 A 分析師】(通常代表既有體制/官方/保守觀點)。
+        你的任務：分析現行政策的合理性、強調穩定與秩序、指出改變可能帶來的風險。
+        請從情報中找出支持「維持現狀」或「官方立場」的論述證據。""",
         
-        "DOVE": """你是一位【鴿派外交官】(The Dove)。
-        你的性格：理性、務實、專注於共同利益。
-        你的任務：分析經濟依賴、外交緩衝機制、維持現狀的強大慣性。
-        請找出情報中所有顯示「局勢可控」或「雙方克制」的訊號。""",
+        "B_SIDE": """你是一位【視角 B 分析師】(通常代表挑戰者/改革/批判觀點)。
+        你的任務：分析現狀的結構性問題、強調改變的必要性、指出官方論述的盲點。
+        請從情報中找出支持「質疑現狀」或「反方立場」的論述證據。""",
         
-        "HISTORIAN": """你是一位【冷靜的歷史學家】(The Historian)。
-        你的性格：客觀、宏觀、不受當下情緒影響。
-        你的任務：忽略短期雜訊，從過去 50 年的國際關係史中找到最相似的 1-2 個案例 (Historical Analogy)。
-        告訴我們：以前發生類似狀況時，最後結局通常是如何？"""
+        "CONTEXT": """你是一位【脈絡分析師】(Contextualizer)。
+        你的任務：不選邊站，而是分析「為什麼現在會吵這個？」。
+        請從歷史背景、經濟結構、或國際局勢的角度，解釋這個爭議發生的深層原因。"""
     }
     
-    # 1. 平行運算：三位幕僚同時思考
     opinions = {}
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_to_role = {
@@ -212,52 +201,44 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
         }
         for future in concurrent.futures.as_completed(future_to_role):
             role = future_to_role[future]
-            try:
-                opinions[role] = future.result()
-            except Exception as e:
-                opinions[role] = f"分析失敗: {e}"
+            try: opinions[role] = future.result()
+            except Exception as e: opinions[role] = f"分析失敗: {e}"
 
-    # 2. 綜合研判：國家安全顧問 (NSA)
-    nsa_prompt = f"""
-    你是由總統任命的【國家安全顧問】。
-    你剛剛聽取了三位幕僚針對「{query}」的簡報，他們的觀點南轅北轍。
+    # 綜合研判：總編輯 (Editor in Chief)
+    editor_prompt = f"""
+    你是一位堅持「平衡報導」的資深總編輯。
+    你收到了三份針對「{query}」的分析稿件。
     
-    【鷹派觀點 (Hawk)】: {opinions.get('HAWK')}
-    【鴿派觀點 (Dove)】: {opinions.get('DOVE')}
-    【歷史借鏡 (Historian)】: {opinions.get('HISTORIAN')}
+    【視角 A】: {opinions.get('A_SIDE')}
+    【視角 B】: {opinions.get('B_SIDE')}
+    【深層脈絡】: {opinions.get('CONTEXT')}
     
-    請執行以下任務，產出最終決策報告：
-    
-    1. **STEEP 結構化掃描**：請從 Social, Tech, Economic, Environmental, Political 五個維度，列出關鍵驅動力。
-    2. **交叉衝擊 (Cross-Impact)**：分析關鍵變數的交互作用 (例如：若 A 發生，會強化還是削弱 B？)。
-    3. **因果迴路圖 (Mermaid)**：請生成一段 Mermaid JS 的 `graph TD` 代碼，畫出事件的系統動力圖。請務必將代碼包在 ```mermaid ... ``` 區塊中。
-    4. **未來情境推演**：基於上述分析，推導 3 種情境 (基準/轉折/極端)。
+    請產出一份「深度全解讀」報告，包含：
+    1. **核心爭議點**：雙方到底在吵什麼？(Key Conflicts)
+    2. **資訊落差 (Information Gap)**：雙方各自隱瞞或忽略了什麼？
+    3. **因果迴路圖 (Mermaid)**：生成一段 Mermaid `graph TD` 代碼，展示事件的因果關係。請將代碼包在 ```mermaid ... ``` 區塊中。
+    4. **未來情境推演**：若爭議持續，可能發展出的 3 種走向。
     
     【輸出格式】：
-    ### [DATA_SCORES]
-    Threat: [0-100]
-    Attack: [0-100]
-    Impact: [0-100]
-    Division: [0-100]
-    Resilience: [0-100]
-    
     ### [REPORT_TEXT]
     (Markdown 報告內容...)
     """
     
-    final_report = call_gemini(nsa_prompt, context_text, model_name, api_key)
+    final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜 (原 V13 功能)
+# 3.4 核心邏輯：輿情光譜 (原 V13 功能，移除分數)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
-    你是一位全域情報分析師。請針對「{query}」進行深度解析。
-    請分析每個來源的「政治立場 (-10~10)」與「可信度 (0~10)」。
+    你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析 (Framing Analysis)。
+    
+    【任務】：
+    1. 識別每個來源的「敘事立場」(支持哪一方?) 與 「可信度」。
+    2. **重要**：請給出具體座標，以便繪製光譜圖。
+       - 立場 (X軸): -10(強烈反對/批判/A方) <-> 0(中立/事實描述) <-> 10(強烈支持/護航/B方)
+       - 可信度 (Y軸): 0(內容農場/謠言) <-> 10(權威機構/數據詳實)
     
     【輸出格式】：
-    ### [DATA_SCORES]
-    Threat: [分數] ... (略)
-    
     ### [DATA_TIMELINE]
     YYYY-MM-DD|媒體|標題
     
@@ -266,73 +247,109 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     
     ### [REPORT_TEXT]
     (Markdown 報告)
+    請包含：
+    1. **📊 全域現況摘要** (含 Cofacts 查核結果)
+    2. **⚖️ 媒體框架分析** (不同媒體如何「包裝」這個事件？)
+    3. **🧠 識讀建議** (民眾該如何解讀這些資訊？)
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器
+# 3.5 資料解析器 (加入 Jitter 機制)
 def parse_gemini_data(text):
-    data = {"scores": {}, "timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
+    data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
     # 提取 Mermaid
     mermaid_match = re.search(r"```mermaid\n(.*?)\n```", text, re.DOTALL)
     if mermaid_match:
         data["mermaid"] = mermaid_match.group(1)
-        # 移除報告中的 mermaid 代碼，避免重複顯示
         text = text.replace(mermaid_match.group(0), "")
 
-    # 提取分數與其他
     for line in text.split('\n'):
         line = line.strip()
-        if "Threat:" in line: 
-            try: data["scores"]["Threat"] = int(re.search(r'\d+', line).group())
-            except: pass
-        if "Attack:" in line: 
-            try: data["scores"]["Attack"] = int(re.search(r'\d+', line).group())
-            except: pass
-        if "Impact:" in line: 
-            try: data["scores"]["Impact"] = int(re.search(r'\d+', line).group())
-            except: pass
-        if "Division:" in line: 
-            try: data["scores"]["Division"] = int(re.search(r'\d+', line).group())
-            except: pass
-        if "Resilience:" in line: 
-            try: data["scores"]["Resilience"] = int(re.search(r'\d+', line).group())
-            except: pass
-            
+        
+        # Parse Timeline
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "Future" in line):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0], "media": parts[1], "event": parts[2]})
             
+        # Parse Spectrum (加入 Jitter 防止重疊)
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
-            try: data["spectrum"].append({"source": parts[0], "stance": float(parts[1]), "credibility": float(parts[2]), "url": parts[3]})
+            try:
+                # [V15 UPDATE] Jitter Logic: Add random noise to separate dots
+                base_stance = float(parts[1])
+                base_cred = float(parts[2])
+                
+                # 加入 -0.5 ~ 0.5 的隨機擾動
+                jitter_x = random.uniform(-0.6, 0.6)
+                jitter_y = random.uniform(-0.4, 0.4)
+                
+                data["spectrum"].append({
+                    "source": parts[0], 
+                    "stance": base_stance + jitter_x, 
+                    "credibility": base_cred + jitter_y, 
+                    "url": parts[3]
+                })
             except: pass
 
     # 提取報告本文
     if "### [REPORT_TEXT]" in text:
         data["report_text"] = text.split("### [REPORT_TEXT]")[1].strip()
     else:
-        data["report_text"] = text # Fallback
+        data["report_text"] = text 
 
     return data
 
 def render_spectrum_chart(spectrum_data):
     if not spectrum_data: return None
     df = pd.DataFrame(spectrum_data)
-    fig = px.scatter(df, x="stance", y="credibility", hover_name="source", text="source", size=[15]*len(df),
-                     color="stance", color_continuous_scale=["#2e7d32", "#eeeeee", "#d32f2f"], range_x=[-11, 11], range_y=[-1, 11],
-                     labels={"stance": "立場 (綠 <-> 藍/紅)", "credibility": "可信度"})
-    fig.add_shape(type="rect", x0=-11, y0=5, x1=0, y1=11, fillcolor="rgba(46, 125, 50, 0.1)", layer="below", line_width=0)
-    fig.add_shape(type="rect", x0=0, y0=5, x1=11, y1=11, fillcolor="rgba(21, 101, 192, 0.1)", layer="below", line_width=0)
-    fig.update_layout(xaxis_title="◀ 泛綠 --- 中立 --- 泛藍/紅 ▶", yaxis_title="可信度", showlegend=False, height=450)
-    fig.update_traces(textposition='top center')
+    
+    # [V15 UPDATE] 優化圖表設計
+    fig = px.scatter(
+        df, 
+        x="stance", 
+        y="credibility", 
+        hover_name="source", 
+        text="source", 
+        size=[20]*len(df), # 點變大
+        color="stance", 
+        color_continuous_scale=["#2e7d32", "#eeeeee", "#1565c0"], # 綠 -> 白 -> 藍 (更柔和)
+        range_x=[-12, 12], # 擴大範圍讓點不要貼邊
+        range_y=[-1, 12],
+        opacity=0.85, # 透明度
+        labels={"stance": "觀點光譜 (左:批判/反方 --- 右:支持/正方)", "credibility": "資訊可信度"}
+    )
+    
+    # 象限背景
+    fig.add_shape(type="rect", x0=-12, y0=6, x1=0, y1=12, fillcolor="rgba(46, 125, 50, 0.05)", layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=0, y0=6, x1=12, y1=12, fillcolor="rgba(21, 101, 192, 0.05)", layer="below", line_width=0)
+    fig.add_shape(type="rect", x0=-12, y0=-1, x1=12, y1=5, fillcolor="rgba(255, 167, 38, 0.05)", layer="below", line_width=0) # 低可信區
+    
+    fig.update_layout(
+        xaxis_title="◀ 觀點 A (批判/改革) --------- 中立 --------- 觀點 B (支持/體制) ▶",
+        yaxis_title="資訊品質 (低 -> 高)",
+        showlegend=False,
+        height=550,
+        font=dict(size=14)
+    )
+    fig.update_traces(textposition='top center', textfont_size=12)
     return fig
 
 # ==========================================
 # 4. 介面 (UI)
 # ==========================================
 with st.sidebar:
-    st.title("全域戰情室 V14.1")
+    st.title("全域觀點解析 V15")
+    
+    # 模式選擇
+    analysis_mode = st.radio(
+        "選擇分析模式：",
+        options=["🛡️ 輿情光譜 (Spectrum)", "🔮 深度戰情室 (Deep Dive)"],
+        captions=["即時：媒體框架 + 查核", "深度：多視角辯證 + 系統思考"],
+        index=0
+    )
+    
+    st.markdown("---")
     
     # Secrets 管理
     with st.expander("🔑 系統權限", expanded=True):
@@ -354,9 +371,9 @@ with st.sidebar:
         past_report_input = st.text_area("貼上舊 Markdown 報告：", height=100)
 
 # 主畫面
-st.title("⚖️ 全域觀點搜尋 (Spectrum)")
-query = st.text_input("輸入戰略議題", placeholder="例如：台海封鎖情境推演")
-search_btn = st.button("🚀 啟動全域掃描", type="primary")
+st.title(f"{analysis_mode.split(' ')[1]}")
+query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
+search_btn = st.button("🚀 啟動分析引擎", type="primary")
 
 # Session State 初始化
 if 'spectrum_result' not in st.session_state: st.session_state.spectrum_result = None
@@ -367,7 +384,6 @@ if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
 # 1. 執行第一階段：輿情搜尋
 if search_btn and query and google_key and tavily_key:
-    # 重置所有狀態
     st.session_state.spectrum_result = None
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
@@ -375,38 +391,37 @@ if search_btn and query and google_key and tavily_key:
     with st.spinner("📡 正在進行全網情報蒐集 (Tavily + Cofacts)..."):
         context_text, sources, cofacts_txt = get_search_context(query, tavily_key, past_report_input)
         st.session_state.sources = sources
-        st.session_state.full_context = context_text # 存起來給戰情室用
+        st.session_state.full_context = context_text
         
-        # 繪製光譜
-        raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
-        st.session_state.spectrum_result = parse_gemini_data(raw_report)
-        st.rerun()
+        # 執行光譜分析 (預設先跑這個)
+        if "Spectrum" in analysis_mode:
+            raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
+            st.session_state.spectrum_result = parse_gemini_data(raw_report)
+        else:
+            # 直接跑戰情室
+            with st.status("⚔️ 召開多視角分析會議...", expanded=True) as status:
+                st.write("1. 正在傳喚不同觀點分析師...")
+                opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
+                st.session_state.wargame_opinions = opinions
+                st.session_state.wargame_result = parse_gemini_data(raw_report)
+                status.update(label="✅ 分析完成", state="complete", expanded=False)
+    
+    st.rerun() # 強制刷新 UI
 
-# 2. 顯示輿情結果 & 轉接戰情室按鈕
-if st.session_state.spectrum_result:
+# 2. 顯示結果：輿情光譜模式
+if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
-    # 核心指標
-    scores = data.get("scores", {})
-    c1, c2, c3, c4 = st.columns(4)
-    metrics = [
-        ("攻擊熱度", scores.get("Attack", 0)),
-        ("分歧程度", scores.get("Division", 0)),
-        ("影響深遠", scores.get("Impact", 0)),
-        ("系統韌性", scores.get("Resilience", 0))
-    ]
-    for col, (lbl, val) in zip([c1, c2, c3, c4], metrics):
-        col.markdown(f"""<div class="metric-container"><p class="metric-score" style="color:{get_score_text_color(val)}">{val}</p><p class="metric-label">{lbl}</p></div>""", unsafe_allow_html=True)
-
-    # 光譜圖
+    # 光譜圖 (優化版)
     if data.get("spectrum"):
-        st.markdown("### 🗺️ 輿論陣地光譜")
+        st.markdown("### 🗺️ 輿論陣地光譜 (AI 動態識別)")
+        st.caption("透過 Jitter 技術分散重疊點，X軸代表觀點傾向，Y軸代表資訊詳實度。")
         fig = render_spectrum_chart(data["spectrum"])
         st.plotly_chart(fig, use_container_width=True)
 
     # 分析報告
-    st.markdown("### 📝 綜合情報判讀")
-    st.markdown(f'<div class="war-room-box">{data.get("report_text")}</div>', unsafe_allow_html=True)
+    st.markdown("### 📝 媒體識讀報告")
+    st.markdown(f'<div class="report-paper">{data.get("report_text")}</div>', unsafe_allow_html=True)
     
     # 參考來源
     with st.expander("📚 原始情報來源列表"):
@@ -416,42 +431,39 @@ if st.session_state.spectrum_result:
 
     st.markdown("---")
     
-    # [V14.1] 轉接戰情室按鈕
-    st.markdown("### 🔮 未來推演戰情室")
-    st.info("覺得此議題需要更深度的戰略推演？點擊下方按鈕，召集 AI 幕僚進行紅隊演練。")
+    # 轉接戰情室按鈕
+    st.markdown("### 🔮 深度透視")
+    st.info("覺得議題太複雜？啟動「深度戰情室」進行多視角辯證與因果分析。")
     
-    if st.button("🚀 基於此情報啟動數位戰情室 (War Room)", type="primary", use_container_width=True):
+    if st.button("🚀 基於此情報啟動深度戰情室 (Deep Dive)", type="primary", use_container_width=True):
         if st.session_state.full_context:
-            with st.status("⚔️ 正在召集數位幕僚 (Hawk, Dove, Historian)...", expanded=True) as status:
-                st.write("1. 傳送情報給三位幕僚進行平行辯論...")
-                # 使用已經存在的 full_context，不重新搜尋
+            with st.status("⚔️ 正在召集數位幕僚...", expanded=True) as status:
+                st.write("1. 傳送情報給三位分析師進行平行辯論...")
                 opinions, raw_report = run_council_of_rivals(query, st.session_state.full_context, model_name, google_key)
                 st.session_state.wargame_opinions = opinions
-                
-                st.write("2. 國家安全顧問 (NSA) 正在進行 STEEP 綜合研判...")
                 st.session_state.wargame_result = parse_gemini_data(raw_report)
                 status.update(label="✅ 推演完成", state="complete", expanded=False)
         else:
             st.error("❌ 找不到情報上下文，請先執行搜尋。")
 
-# 3. 顯示戰情室結果 (如果有)
+# 3. 顯示結果：戰情室模式 (Deep Dive)
 if st.session_state.wargame_result and st.session_state.wargame_opinions:
     st.divider()
-    st.markdown(f"<h2 style='text-align: center; color: #d32f2f;'>⚔️ 數位戰情室：{query} 推演報告</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='text-align: center;'>⚔️ 深度戰情室：{query}</h2>", unsafe_allow_html=True)
     
     # 幕僚辯論
-    st.markdown("### 🗣️ 幕僚觀點交鋒")
+    st.markdown("### 🗣️ 多視角觀點交鋒")
     ops = st.session_state.wargame_opinions
-    c_hawk, c_dove, c_hist = st.columns(3)
-    with c_hawk:
-        st.markdown(f'<div class="agent-box agent-hawk"><b>🦅 鷹派 (Hawk)</b><br>{ops.get("HAWK")[:200]}...</div>', unsafe_allow_html=True)
-        with st.popover("查看鷹派完整報告"): st.markdown(ops.get("HAWK"))
-    with c_dove:
-        st.markdown(f'<div class="agent-box agent-dove"><b>🕊️ 鴿派 (Dove)</b><br>{ops.get("DOVE")[:200]}...</div>', unsafe_allow_html=True)
-        with st.popover("查看鴿派完整報告"): st.markdown(ops.get("DOVE"))
-    with c_hist:
-        st.markdown(f'<div class="agent-box agent-history"><b>📜 歷史學家</b><br>{ops.get("HISTORIAN")[:200]}...</div>', unsafe_allow_html=True)
-        with st.popover("查看歷史借鏡"): st.markdown(ops.get("HISTORIAN"))
+    c_a, c_b, c_ctx = st.columns(3)
+    with c_a:
+        st.markdown(f'<div class="perspective-box box-blue"><b>🔵 視角 A (現狀/體制)</b><br>{ops.get("A_SIDE")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看完整論述"): st.markdown(ops.get("A_SIDE"))
+    with c_b:
+        st.markdown(f'<div class="perspective-box box-green"><b>🟢 視角 B (挑戰/改革)</b><br>{ops.get("B_SIDE")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看完整論述"): st.markdown(ops.get("B_SIDE"))
+    with c_ctx:
+        st.markdown(f'<div class="perspective-box box-neutral"><b>📜 深層脈絡</b><br>{ops.get("CONTEXT")[:200]}...</div>', unsafe_allow_html=True)
+        with st.popover("查看完整論述"): st.markdown(ops.get("CONTEXT"))
 
     # Mermaid 圖表
     data_wg = st.session_state.wargame_result
@@ -460,5 +472,5 @@ if st.session_state.wargame_result and st.session_state.wargame_opinions:
         render_mermaid(data_wg["mermaid"])
 
     # 最終報告
-    st.markdown("### 📝 國家安全顧問 (NSA) 總結報告")
-    st.markdown(f'<div class="war-room-box">{data_wg.get("report_text")}</div>', unsafe_allow_html=True)
+    st.markdown("### 📝 總編輯深度全解讀")
+    st.markdown(f'<div class="report-paper">{data_wg.get("report_text")}</div>', unsafe_allow_html=True)
