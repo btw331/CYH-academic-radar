@@ -196,7 +196,6 @@ def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, mode=
 
         # 2. 思考階段
         if mode == "V205":
-            # [修正] 語氣更中性、學術化
             system_prompt = f"""
             你是一位資深的趨勢預測分析師。{task_instruction}
             
@@ -365,7 +364,7 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # [新增] 歷史報告匯入區 (滾動式追蹤核心)
+    # [歷史報告匯入區]
     with st.expander("📂 匯入前次報告 (持續追蹤用)", expanded=False):
         past_report_input = st.text_area(
             "請貼上之前的分析報告內容 (Markdown)：", 
@@ -376,9 +375,24 @@ with st.sidebar:
     st.markdown("---")
     blind_mode = st.toggle("🙈 盲測模式", value=False)
     
+    # ========================================================
+    # [KEY UPDATE] 自動讀取 Secrets 或手動輸入
+    # ========================================================
     with st.expander("🔑 設定", expanded=True):
-        google_key = st.text_input("Gemini Key", value="", type="password")
-        tavily_key = st.text_input("Tavily Key", value="", type="password")
+        # 1. Gemini Key
+        if "GOOGLE_API_KEY" in st.secrets:
+            st.success("✅ 已自動載入 Gemini Key (系統託管)")
+            google_key = st.secrets["GOOGLE_API_KEY"]
+        else:
+            google_key = st.text_input("Gemini Key", type="password")
+
+        # 2. Tavily Key
+        if "TAVILY_API_KEY" in st.secrets:
+            st.success("✅ 已自動載入 Tavily Key (系統託管)")
+            tavily_key = st.secrets["TAVILY_API_KEY"]
+        else:
+            tavily_key = st.text_input("Tavily Key", type="password")
+            
         model_options = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
         selected_model = st.selectbox("模型選擇", model_options, index=0)
 
@@ -493,6 +507,7 @@ if st.session_state.result:
                 })
             
             df = pd.DataFrame(processed_data)
+            # [Fix] update to width='stretch'
             st.dataframe(df, width=1200, hide_index=True, use_container_width=True)
         else:
             st.info("無時間軸資料。")
@@ -501,7 +516,7 @@ if st.session_state.result:
         st.markdown("---")
         st.subheader("📝 綜合分析報告")
         
-        # 資訊滾動按鈕 (更名)
+        # 資訊滾動按鈕
         if "未來" not in analysis_mode:
             st.info("💡 戰略升級：您可以將此分析結果作為基礎，進行「可能性圓錐」推演。")
             
@@ -533,6 +548,7 @@ if st.session_state.result:
                 df_data.append({"編號": i+1, "媒體/網域": display_domain, "標題摘要": title, "原始連結": s.get('url')})
             
             df = pd.DataFrame(df_data)
+            # [Fix] update to width='stretch'
             st.dataframe(
                 df, 
                 column_config={"原始連結": st.column_config.LinkColumn("點擊前往")},
