@@ -203,9 +203,9 @@ def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, mode=
             【分析核心 (Foresight Framework)】：
             1. **第一性原理 (First Principles)**：剖析議題背後的底層驅動力 (如：人口結構、經濟誘因、地緣政治)。
             2. **可能性圓錐 (Cone of Plausibility)**：推演三種未來發展路徑。
-               - **基準情境 (Baseline)**: 若現狀持續，最可能的結果。
-               - **轉折情境 (Plausible)**: 關鍵變數改變後的合理發展。
-               - **極端情境 (Wild Card)**: 低機率但高衝擊的黑天鵝事件。
+                - **基準情境 (Baseline)**: 若現狀持續，最可能的結果。
+                - **轉折情境 (Plausible)**: 關鍵變數改變後的合理發展。
+                - **極端情境 (Wild Card)**: 低機率但高衝擊的黑天鵝事件。
 
             【評分定義 (趨勢版)】：
             1. Attack -> 影響顯著性 (Significance)
