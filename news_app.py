@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.3", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -330,7 +330,6 @@ def parse_gemini_data(text):
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
-    # 1. 資料分流
     green_list = []
     blue_list = []
     neutral_list = []
@@ -340,23 +339,19 @@ def render_spectrum_split(spectrum_data):
         elif item['stance'] > 0: blue_list.append(item)
         else: neutral_list.append(item)
         
-    # 2. 依照可信度排序 (由高到低)
     green_list.sort(key=lambda x: x['credibility'], reverse=True)
     blue_list.sort(key=lambda x: x['credibility'], reverse=True)
     neutral_list.sort(key=lambda x: x['credibility'], reverse=True)
     
-    # 3. 輔助函數：生成 Markdown 表格
     def make_md_table(items):
         if not items: return "_無相關資料_"
         md = "| 媒體 | 立場 | 可信度 | 連結 |\n|:---|:---:|:---:|:---:|\n"
         for i in items:
-            # 立場顯示
             s = i['stance']
             if s < 0: s_txt = f"🟢 {s}"
             elif s > 0: s_txt = f"🔵 +{s}"
             else: s_txt = "⚪ 0"
             
-            # 可信度顯示
             c = i['credibility']
             if c >= 7: c_txt = f"🟢 {c}"
             elif c >= 4: c_txt = f"🟡 {c}"
@@ -365,18 +360,14 @@ def render_spectrum_split(spectrum_data):
             md += f"| {i['source']} | {s_txt} | {c_txt} | [🔗]({i['url']}) |\n"
         return md
 
-    # 4. 左右佈局
     c1, c2 = st.columns(2)
-    
     with c1:
         st.markdown('<div class="table-header-green">🟢 泛綠 / 批判陣營 (Green/Critical)</div>', unsafe_allow_html=True)
         st.markdown(make_md_table(green_list))
-        
     with c2:
         st.markdown('<div class="table-header-blue">🔵 泛藍 / 體制陣營 (Blue/Establishment)</div>', unsafe_allow_html=True)
         st.markdown(make_md_table(blue_list))
         
-    # 5. 中立區 (下方)
     if neutral_list:
         st.markdown("---")
         st.markdown('<div class="table-header-neutral">⚪ 中立 / 其他觀點 (Neutral/Other)</div>', unsafe_allow_html=True)
@@ -402,7 +393,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.2")
+    st.title("全域觀點解析 V16.3")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -421,20 +412,29 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
-    # [V16.2] 白話文邏輯說明 (無代碼)
+    # [V16.3] 深度透明化說明 (含報告生成邏輯)
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
-        **1. 政治光譜校正機制**
-        為確保分析準確，系統針對台灣媒體生態設有「強制歸類」邏輯：
+        **1. 政治光譜校正機制 (Calibration)**
         * **🟢 泛綠/批判區**：
-          - 包含：自由時報、三立、民視、鏡週刊、新頭殼等。
-          - 處理：若 AI 判讀偏差，系統會強制將其歸類為負分（左側）。
+          - 包含：自由、三立、民視、鏡週刊...
+          - 邏輯：強制歸類為負分，防止 AI 幻覺。
         * **🔵 泛藍/體制區**：
-          - 包含：聯合報、中國時報、TVBS、中天、風傳媒等。
-          - 處理：若 AI 判讀偏差，系統會強制將其歸類為正分（右側）。
+          - 包含：中時、聯合、TVBS、風傳媒...
+          - 邏輯：強制歸類為正分。
         
-        **2. 排序規則**
-        * 所有陣營列表皆預設依據 **「資料可信度」** 由高至低排列，優先展示高品質資訊。
+        **2. 深度報告生成邏輯 (Report Logic)**
+        * **媒體框架分析 (Framing)**:
+          - **理論基礎**: 使用傳播學 Framing Theory。
+          - **AI指令**: 要求偵測來源是否使用「衝突框架(Conflict)」、「歸責框架(Attribution)」或「經濟後果框架」。
+        * **識讀建議 (Literacy)**:
+          - **生成依據**: 基於「資訊落差 (Information Gap)」與「情緒渲染度」。
+          - **AI指令**: 若偵測到高分歧，建議讀者「暫停轉發」並「交叉比對」相反立場報導。
+
+        **3. 數位戰情室設定 (Scenario)**
+        * **🦅 鷹派**: 專注衝突升級與敵意螺旋。
+        * **🕊️ 鴿派**: 專注經濟互依與現狀維持。
+        * **📜 歷史學家**: 尋找過去 50 年的相似歷史案例 (Historical Analogy)。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -485,7 +485,6 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
     if data.get("spectrum"):
-        # [V16.2] 使用分欄渲染
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
         render_spectrum_split(data["spectrum"])
 
