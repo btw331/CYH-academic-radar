@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.9", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V37.2", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -124,8 +124,21 @@ FULL_TAIWAN_WHITELIST = BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + 
 
 INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me"]
 INTL_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp"]
-# V36.9: 雖然移除前哨站，但保留 GRAY_WHITELIST 定義以免報錯，但不使用
-GRAY_WHITELIST = ["ptt.cc", "dcard.tw", "mobile01.com"]
+
+# [V37.2] 顯示用對照表 (從 V37.0 移植過來)
+DOMAIN_NAME_MAP = {
+    "udn.com": "聯合報", "chinatimes.com": "中國時報", "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞",
+    "nownews.com": "NOWnews", "ctee.com.tw": "工商時報", "storm.mg": "風傳媒",
+    "ltn.com.tw": "自由時報", "ftvnews.com.tw": "民視新聞", "setn.com": "三立新聞", "rti.org.tw": "央廣",
+    "newtalk.tw": "新頭殼", "mirrormedia.mg": "鏡週刊", "upmedia.mg": "上報",
+    "cna.com.tw": "中央社", "pts.org.tw": "公視", "twreporter.org": "報導者",
+    "theinitium.com": "端傳媒", "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
+    "vocus.cc": "方格子", "ptt.cc": "PTT", "dcard.tw": "Dcard",
+    "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", "apnews.com": "美聯社",
+    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報",
+    "mobile01.com": "Mobile01", "yahoo.com": "Yahoo新聞", "ettoday.net": "ETtoday",
+    "businessweekly.com.tw": "商業周刊", "mygopen.com": "MyGoPen"
+}
 
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
@@ -234,7 +247,7 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V36.9] 移除 enable_outpost 參數，回歸標準混和權重 (無 Social Guard)
+# [V37.2] 嚴格執行混和權重，移除 Social Guard (前哨站)
 def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions):
     tavily = TavilyClient(api_key=api_key_tavily)
     all_results = []
@@ -242,7 +255,7 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
     
     tasks = []
     
-    # 1. 通用熱度搜尋 (Tri-Track)
+    # 1. 通用熱度搜尋 (Tri-Track via Dynamic Keywords)
     general_domains = []
     if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
     if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
@@ -258,7 +271,7 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
     tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
     tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
     
-    # 2. 分眾保底搜尋 (Hybrid Weighted - Standard Guard only)
+    # 2. 分眾保底搜尋 (Hybrid Weighted)
     if "台灣" in str(selected_regions):
         blue_params = search_params.copy()
         blue_params['max_results'] = 5 
@@ -314,7 +327,6 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
 
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, dynamic_keywords):
     try:
-        # [V36.9] 移除 enable_outpost 參數，固定黑名單
         active_blacklist = NOISE_BLACKLIST
 
         search_params = {
@@ -381,10 +393,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         【分析方法論】：
         1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
         2. **證據強度分級**：評估證據力（強/弱）。
-        3. **聲量權重校正 (Volume Calibration)**：
-           - **識別複讀機**：若某一陣營的來源大量重複相同觀點，請將其歸納為「單一強勢論點」。
-           - **挖掘長尾**：優先尋找「非主流但具獨特視角」的觀點。
-           - **沉默的螺旋**：若某方聲量顯著低落，請指出這是「策略性冷處理」或「話語權失衡」。
+        3. **聲量權重校正**：識別複讀機，挖掘長尾觀點。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -475,64 +484,114 @@ def parse_gemini_data(text):
 
     return data
 
+# [V37.2] 嚴格清洗與渲染 (來自 V37.0 的精華)
 def create_full_html_report(data_result, scenario_result, sources, blind_mode):
     timeline_html = ""
+    valid_rows = []
+    
     if data_result and data_result.get("timeline"):
-        rows = ""
         for item in data_result["timeline"]:
-            date = item.get('date', '近期')
-            media = "*****" if blind_mode else item.get('media', 'Unknown')
-            title = item.get('title', 'No Title')
             s_id = item.get('source_id', 0)
-            real_url = "#"
-            if sources and 0 < s_id <= len(sources):
-                real_url = sources[s_id-1].get('url', '#')
-                if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
-                    final_d = sources[s_id-1]['final_date']
-                    if final_d and final_d != "Missing": date = final_d
+            # 1. 殺掉無效來源
+            if s_id == 0 or s_id > len(sources): continue
+            
+            source_data = sources[s_id-1]
+            real_url = source_data.get('url', '#')
+            # 2. 殺掉無效網址
+            if real_url == "#": continue 
+            
+            meta_date = source_data.get('published_date')
+            url_date = extract_date_from_url(real_url)
+            llm_date = item.get('date')
+            
+            real_date = "1970-01-01" 
+            display_date = "------"
+            
+            if meta_date and meta_date != "Missing": 
+                real_date = meta_date
+                display_date = meta_date
+            elif url_date: 
+                real_date = url_date
+                display_date = url_date
+            elif llm_date and re.match(r'\d{4}-\d{2}-\d{2}', llm_date) and "XX" not in llm_date:
+                real_date = llm_date
+                display_date = llm_date
             
             cat = classify_source(real_url)
             label, _ = get_category_meta(cat)
+            domain = get_domain_name(real_url)
+            
+            # 3. 媒體名稱對照
+            media_name = domain
+            for k, v in DOMAIN_NAME_MAP.items():
+                if k in domain: media_name = v
+            
             emoji = "⚪"
             if "中國" in label: emoji = "🔴"
             elif "泛藍" in label: emoji = "🔵"
             elif "泛綠" in label: emoji = "🟢"
+            elif "官方" in label: emoji = "⚪"
+            elif "獨立" in label: emoji = "🕵️"
+            elif "國際" in label: emoji = "🌏"
+            elif "農場" in label: emoji = "⛔"
             elif "社群" in label: emoji = "⚠️"
             
-            title_html = f'<a href="{real_url}" target="_blank">{title}</a>' if real_url != "#" else title
-            rows += f"<tr><td>{date}</td><td>{emoji} {media}</td><td>{title_html}</td></tr>"
+            display_media = f"{emoji} {media_name}"
+            title = item.get('title', 'No Title')
+            title_html = f'<a href="{real_url}" target="_blank">{title}</a>'
+            
+            if blind_mode: display_media = "*****"
+            
+            valid_rows.append({
+                "sort_date": real_date,
+                "display_date": display_date,
+                "media": display_media,
+                "title": title_html
+            })
+            
+        # 4. 強制倒序
+        valid_rows.sort(key=lambda x: x['sort_date'], reverse=True)
         
-        timeline_html = f"""
-        <h3>📅 關鍵發展時序</h3>
-        <table class="custom-table" border="1" cellspacing="0" cellpadding="5" style="width:100%; border-collapse:collapse;">
-            <thead><tr><th width="120">日期</th><th width="140">媒體</th><th>標題</th></tr></thead>
-            <tbody>{rows}</tbody>
-        </table>
-        <hr>
-        """
+        rows = ""
+        for r in valid_rows:
+            rows += f"<tr><td>{r['display_date']}</td><td>{r['media']}</td><td>{r['title']}</td></tr>"
+        
+        if rows:
+            timeline_html = f"""
+            <h3>📅 關鍵發展時序</h3>
+            <table class="custom-table" border="1" cellspacing="0" cellpadding="5" style="width:100%; border-collapse:collapse;">
+                <thead><tr><th width="120">日期</th><th width="180">媒體來源 (Code Verified)</th><th>新聞標題 (點擊閱讀)</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <hr>
+            """
 
     report_html_1 = ""
     if data_result:
         raw_md = data_result.get("report_text", "")
-        raw_md = format_citation_style(raw_md)
         html_content = markdown.markdown(raw_md, extensions=['tables'])
-        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{html_content}</div>'
+        final_html = format_citation_style(html_content)
+        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{final_html}</div>'
 
     report_html_2 = ""
     if scenario_result:
         raw_md_2 = scenario_result.get("report_text", "")
-        raw_md_2 = format_citation_style(raw_md_2)
         html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
-        report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{html_content_2}</div>'
+        final_html_2 = format_citation_style(html_content_2)
+        report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{final_html_2}</div>'
 
     sources_html = ""
     if sources:
         s_rows = ""
         for i, s in enumerate(sources):
             domain = get_domain_name(s.get('url'))
+            media_name = domain
+            for k, v in DOMAIN_NAME_MAP.items():
+                if k in domain: media_name = v
+                
             title = s.get('title', 'No Title')
             url = s.get('url')
-            s_rows += f"<li><b>[{i+1}]</b> {domain} - <a href='{url}' target='_blank'>{title}</a></li>"
+            s_rows += f"<li><b>[{i+1}]</b> {media_name} - <a href='{url}' target='_blank'>{title}</a></li>"
         sources_html = f"<hr><h3>📚 引用文獻列表</h3><ul>{s_rows}</ul>"
 
     full_html = f"""
@@ -544,7 +603,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V37.1)</h1>
+        <h1>全域觀點分析報告 (V37.2)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -556,25 +615,44 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
     return full_html
 
 def render_html_timeline(timeline_data, sources, blind_mode):
-    if not timeline_data:
-        return
+    if not timeline_data: return
 
-    table_rows = ""
+    valid_rows = []
+    
     for item in timeline_data:
-        date = item.get('date', '近期')
-        media = "*****" if blind_mode else item.get('media', 'Unknown')
-        title = item.get('title', 'No Title')
-        
         s_id = item.get('source_id', 0)
-        real_url = "#"
-        if 0 < s_id <= len(sources):
-            real_url = sources[s_id-1].get('url', '#')
-            if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
-                final_d = sources[s_id-1]['final_date']
-                if final_d and final_d != "Missing": date = final_d
+        
+        if s_id == 0 or s_id > len(sources): continue
+        
+        source_data = sources[s_id-1]
+        real_url = source_data.get('url', '#')
+        if real_url == "#": continue 
+        
+        meta_date = source_data.get('published_date')
+        url_date = extract_date_from_url(real_url)
+        llm_date = item.get('date')
+        
+        real_date = "1970-01-01" 
+        display_date = "------"
+        
+        if meta_date and meta_date != "Missing": 
+            real_date = meta_date
+            display_date = meta_date
+        elif url_date: 
+            real_date = url_date
+            display_date = url_date
+        elif llm_date and re.match(r'\d{4}-\d{2}-\d{2}', llm_date) and "XX" not in llm_date:
+            real_date = llm_date
+            display_date = llm_date
         
         cat = classify_source(real_url)
         label, _ = get_category_meta(cat)
+        domain = get_domain_name(real_url)
+        
+        media_name = domain
+        for k, v in DOMAIN_NAME_MAP.items():
+            if k in domain: media_name = v
+        
         emoji = "⚪"
         if "中國" in label: emoji = "🔴"
         elif "泛藍" in label: emoji = "🔵"
@@ -585,14 +663,20 @@ def render_html_timeline(timeline_data, sources, blind_mode):
         elif "農場" in label: emoji = "⛔"
         elif "社群" in label: emoji = "⚠️"
         
-        if real_url and real_url != "#":
-            title_html = f'<a href="{real_url}" target="_blank">{title}</a>'
-        else:
-            title_html = title
+        display_media = f"{emoji} {media_name}"
+        if blind_mode: display_media = "*****"
+        
+        title = item.get('title', 'No Title')
+        title_html = f'<a href="{real_url}" target="_blank">{title}</a>' if real_url != "#" else title
+        
+        valid_rows.append({
+            "sort_date": real_date,
+            "html": f"<tr><td style='white-space:nowrap;'>{display_date}</td><td style='white-space:nowrap;'>{display_media}</td><td>{title_html}</td></tr>"
+        })
 
-        media_display = f"{emoji} {media}"
-        row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
-        table_rows += row_html
+    valid_rows.sort(key=lambda x: x['sort_date'], reverse=True)
+    
+    table_rows = "".join([r['html'] for r in valid_rows])
 
     full_html = f"""
     <div class="scrollable-table-container">
@@ -600,8 +684,8 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     <thead>
     <tr>
     <th style="width:120px;">日期</th>
-    <th style="width:140px;">媒體 (URL分類)</th>
-    <th>新聞標題 (點擊閱讀)</th>
+    <th style="width:180px;">媒體</th>
+    <th>新聞標題</th>
     </tr>
     </thead>
     <tbody>
@@ -624,7 +708,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V37.1)
+# 全域觀點分析報告 (V37.2)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -638,7 +722,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V37.1")
+    st.title("全域觀點解析 V37.2")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -648,7 +732,7 @@ with st.sidebar:
     )
     st.markdown("---")
     
-    # [V37.1] 移除前哨站 Toggle
+    # [V37.2] 乾淨的介面 (無前哨站)
     blind_mode = st.toggle("🙈 盲測模式", value=False)
     
     with st.expander("🔑 API 設定", expanded=True):
@@ -699,7 +783,6 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    # [V37.1] 方法論說明更新 (移除社群保底)
     st.markdown("### 🧠 情報分析方法論詳解")
     
     with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)"):
@@ -787,7 +870,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V37.1 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V37.2 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -797,7 +880,7 @@ if search_btn and query and google_key and tavily_key:
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
         st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方) + 熱度補完 (動態三軌)")
         
-        # [V37.1] 移除 enable_outpost 參數
+        # [V37.2] 無 Outpost
         context_text, sources, actual_query, is_strict_tw = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords
         )
@@ -826,7 +909,7 @@ if search_btn and query and google_key and tavily_key:
 
 if st.session_state.result:
     data = st.session_state.result
-    # [V37.1] 使用 V36.8 的渲染函式 (Raw LLM)
+    # [V37.2] 嚴格渲染
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     st.markdown("---")
@@ -858,10 +941,15 @@ if st.session_state.sources:
     md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
     for i, s in enumerate(st.session_state.sources):
         domain = get_domain_name(s.get('url'))
-        if blind_mode: domain = "*****"
+        
+        media_name = domain
+        for k, v in DOMAIN_NAME_MAP.items():
+            if k in domain: media_name = v
+            
+        if blind_mode: media_name = "*****"
         
         title = s.get('title', 'No Title')
         if len(title) > 60: title = title[:60] + "..."
         url = s.get('url')
-        md_table += f"| **{i+1}** | `{domain}` | {title} | [點擊]({url}) |\n"
+        md_table += f"| **{i+1}** | `{media_name}` | {title} | [點擊]({url}) |\n"
     st.markdown(md_table)
