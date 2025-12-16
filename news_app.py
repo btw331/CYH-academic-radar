@@ -711,9 +711,9 @@ if st.session_state.result:
     # [V34.1] 傳入 sources 供 ID 映射使用
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
-    # 2. 顯示第一階段：綜合戰略分析報告
+    # 2. 顯示第一階段：平衡報導分析
     st.markdown("---")
-    st.markdown("### 📝 綜合戰略分析報告")
+    st.markdown("### 📝 平衡報導分析")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
@@ -748,3 +748,4 @@ if st.session_state.sources:
         url = s.get('url')
         md_table += f"| **{i+1}** | `{domain}` | {title} | [點擊]({url}) |\n"
     st.markdown(md_table)
+
