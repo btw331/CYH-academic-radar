@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.4", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -158,37 +158,25 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 3.2 Mermaid 強力清洗器 (Ultra-Safe Version)
+# 3.2 Mermaid 強力清洗器
 def sanitize_mermaid_code(code):
     code = re.sub(r'```mermaid', '', code)
     code = re.sub(r'```', '', code)
     code = code.strip()
-    
     lines = code.split('\n')
     clean_lines = []
-    
     if not any(l.strip().startswith('graph') for l in lines):
         clean_lines.append("graph TD")
-        
     for line in lines:
         if not line.strip(): continue
-        
-        # 處理節點 A["標籤"]
         def clean_label(match):
             text = match.group(1)
-            # 只保留中英文、數字、空格
             safe_text = re.sub(r'[^\w\s\u4e00-\u9fff]', '', text) 
             return f'["{safe_text}"]'
-
-        # 替換 A["..."] 格式
         line = re.sub(r'\["(.*?)"\]', clean_label, line)
-        # 替換 A[...] 格式
         line = re.sub(r'\[(.*?)\]', clean_label, line)
-        # 替換 A(...) 格式
         line = re.sub(r'\((.*?)\)', clean_label, line)
-        
         clean_lines.append(line)
-            
     return "\n".join(clean_lines)
 
 def render_mermaid(code):
@@ -246,7 +234,7 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜
+# 3.4 核心邏輯：輿情光譜 (新增：請求 AI 提供標題)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
@@ -262,12 +250,12 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
        - 4-7：一般媒體。
        - 8-10：權威/查核。
     
-    【輸出格式 (請保持格式整潔，每行一筆)】：
+    【輸出格式 (請保持格式整潔，每行一筆，使用 | 分隔)】：
     ### [DATA_TIMELINE]
     YYYY-MM-DD|媒體|標題
     
     ### [DATA_SPECTRUM]
-    來源名稱|立場(-10~10)|可信度(0~10)|網址
+    來源名稱|新聞標題|立場(-10~10)|可信度(0~10)|網址
     
     ### [REPORT_TEXT]
     (Markdown 報告，需包含 [Source X] 引用)
@@ -275,7 +263,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器 (含硬邏輯校正)
+# 3.5 資料解析器 (含硬邏輯校正 + 標題解析)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -289,17 +277,20 @@ def parse_gemini_data(text):
         line = line.strip()
         if not line: continue
         
+        # Timeline
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
+        # Spectrum (更新：解析 5 個欄位)
+        if "|" in line and len(line.split("|")) >= 5 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
                 name = parts[0].strip()
-                base_stance = float(parts[1].strip())
-                base_cred = float(parts[2].strip())
-                url = parts[3].strip()
+                title = parts[1].strip() # [V16.4] 新增標題
+                base_stance = float(parts[2].strip())
+                base_cred = float(parts[3].strip())
+                url = parts[4].strip()
                 
                 # 硬邏輯校正
                 final_stance = base_stance
@@ -311,7 +302,8 @@ def parse_gemini_data(text):
                     if final_stance == 0: final_stance = 5
                 
                 data["spectrum"].append({
-                    "source": name, 
+                    "source": name,
+                    "title": title, # [V16.4] 儲存標題
                     "stance": int(final_stance),
                     "credibility": int(base_cred), 
                     "url": url
@@ -326,7 +318,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V16.2] 左右分欄渲染 + 排序
+# [V16.4] 渲染含標題的表格
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
@@ -345,7 +337,8 @@ def render_spectrum_split(spectrum_data):
     
     def make_md_table(items):
         if not items: return "_無相關資料_"
-        md = "| 媒體 | 立場 | 可信度 | 連結 |\n|:---|:---:|:---:|:---:|\n"
+        # [V16.4] 新增「新聞標題」欄位
+        md = "| 媒體 | 新聞標題 (點擊閱讀) | 立場 | 可信度 |\n|:---|:---|:---:|:---:|\n"
         for i in items:
             s = i['stance']
             if s < 0: s_txt = f"🟢 {s}"
@@ -357,7 +350,10 @@ def render_spectrum_split(spectrum_data):
             elif c >= 4: c_txt = f"🟡 {c}"
             else: c_txt = f"🔴 {c}"
             
-            md += f"| {i['source']} | {s_txt} | {c_txt} | [🔗]({i['url']}) |\n"
+            # [V16.4] 標題即連結
+            title_link = f"[{i['title']}]({i['url']})"
+            
+            md += f"| {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
 
     c1, c2 = st.columns(2)
@@ -393,7 +389,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.3")
+    st.title("全域觀點解析 V16.4")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -412,7 +408,6 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
-    # [V16.3] 深度透明化說明 (含報告生成邏輯)
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 政治光譜校正機制 (Calibration)**
