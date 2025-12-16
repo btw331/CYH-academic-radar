@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V35.0", page_icon="📡", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V35.2", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -104,7 +104,18 @@ CSS_STYLE = """
         color: #1557b0;
     }
     
-    /* 列印專用樣式 */
+    .methodology-text {
+        font-size: 0.9em;
+        line-height: 1.6;
+        color: #444;
+    }
+    .methodology-header {
+        font-weight: bold;
+        color: #1a237e;
+        margin-top: 10px;
+        margin-bottom: 5px;
+    }
+    
     @media print {
         .scrollable-table-container { height: auto; overflow: visible; }
         body { font-size: 12pt; }
@@ -138,7 +149,6 @@ INTL_WHITELIST = [
     "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
 ]
 
-# [V35.0] 前哨站/灰色名單 (預設不啟用，需手動開啟)
 GRAY_WHITELIST = [
     "ptt.cc", "dcard.tw", "mobile01.com"
 ]
@@ -151,10 +161,9 @@ DB_MAP = {
     "INDIE": ["twreporter", "theinitium", "thenewslens", "upmedia", "storm.mg", "mindiworld", "vocus", "matters", "plainlaw"],
     "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi.fr"],
     "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"],
-    "SOCIAL": ["ptt.cc", "dcard.tw", "mobile01.com", "facebook.com", "youtube.com"] # [V35.0] 新增社群類別
+    "SOCIAL": ["ptt.cc", "dcard.tw", "mobile01.com", "facebook.com", "youtube.com"]
 }
 
-# 雜訊黑名單 (基本過濾，但若開啟前哨站，會移除 ptt/dcard)
 NOISE_BLACKLIST = [
     "zhihu.com", "baidu.com", "pinterest.com", "instagram.com", 
     "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"
@@ -187,7 +196,7 @@ def get_category_meta(cat):
         "INDIE": ("🕵️ 獨立/深度", "#fbc02d"),
         "INTL": ("🌏 國際媒體", "#f57c00"),
         "VIDEO": ("🟣 影音社群", "#7b1fa2"),
-        "SOCIAL": ("⚠️ 社群聲量", "#607d8b"), # [V35.0] 新增
+        "SOCIAL": ("⚠️ 社群聲量", "#607d8b"),
         "OTHER": ("📄 其他來源", "#9e9e9e")
     }
     return meta.get(cat, ("📄 其他來源", "#9e9e9e"))
@@ -224,27 +233,20 @@ def is_chinese(text):
 # 3. 核心功能模組
 # ==========================================
 
-# [V35.0] 動態關鍵字生成 (LLM-Based)
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def generate_dynamic_keywords(query, api_key):
-    """使用 Gemini Flash 快速生成 3 組衍生關鍵字"""
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
         prompt = f"""
-        你是專業的情報分析師。請針對議題「{query}」，生成 3 組「最具情報價值」的搜尋關鍵字，以獲取多元觀點。
-        
-        策略：
-        1. 針對核心爭議 (Controversy)
-        2. 針對數據與事實 (Data/Fact)
-        3. 針對深度分析或影響 (Impact/Analysis)
-        
-        請直接輸出 3 個關鍵字字串，用逗號分隔，不要有任何解釋。例如："{query} 爭議, {query} 懶人包, {query} 影響"
+        你是專業的情報分析師。請針對議題「{query}」，生成 3 組「最具情報價值」的搜尋關鍵字。
+        策略：核心爭議、數據事實、深度分析。
+        請直接輸出 3 個關鍵字字串，用逗號分隔。例如："{query} 爭議, {query} 懶人包, {query} 影響"
         """
         resp = llm.invoke(prompt).content
         keywords = [k.strip() for k in resp.split(',') if k.strip()]
         return keywords[:3] if keywords else [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"]
     except:
-        return [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"] # Fallback
+        return [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"] 
 
 def search_cofacts(query):
     url = "https://cofacts-api.g0v.tw/graphql"
@@ -276,13 +278,9 @@ def search_cofacts(query):
 
 def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_queries):
     tavily = TavilyClient(api_key=api_key_tavily)
-    
-    # 組合搜尋列表：原始查詢 + 動態生成的 3 組
     queries = [query] + dynamic_queries
-    
     sub_params = search_params.copy()
     sub_params['max_results'] = 20 
-    
     all_results = []
     seen_urls = set()
     
@@ -300,12 +298,11 @@ def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, d
                 if url not in seen_urls:
                     seen_urls.add(url)
                     all_results.append(item)
-    
     return all_results
 
+# [V35.2 Fix] 修正函式定義：移除 past_report_input，參數對齊呼叫端
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, enable_outpost, dynamic_keywords):
     try:
-        # [V35.0] 黑名單邏輯：若開啟前哨站，則允許 PTT/Dcard
         active_blacklist = [d for d in NOISE_BLACKLIST if d not in ["ptt.cc", "dcard.tw"]] if enable_outpost else NOISE_BLACKLIST
 
         search_params = {
@@ -332,21 +329,15 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
                 target_domains.extend(INTL_WHITELIST)
                 is_strict_mode = True
         
-        # [V35.0] 前哨站模式：將灰色名單加入搜尋範圍
         if enable_outpost:
             target_domains.extend(GRAY_WHITELIST)
-            # 若原本沒選區域，但開了前哨站，視為開啟嚴格模式(只搜白名單+灰名單)以避免雜訊
-            if not is_strict_mode: 
-                is_strict_mode = True 
+            if not is_strict_mode: is_strict_mode = True 
 
         if is_strict_mode and target_domains:
             target_domains = list(set(target_domains))
             search_params["include_domains"] = target_domains
 
-        # 執行蜂群搜尋 (含動態關鍵字)
         results = execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords)
-        
-        # 排序與截斷
         results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
         results = results[:max_results]
         
@@ -379,7 +370,6 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V35.0] 深度戰略分析 (升級版 Prompt)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -399,9 +389,9 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         
         【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
         
-        【分析任務升級 (V35.0)】：
-        1. **邏輯謬誤偵測**：請特別留意文本中是否有「滑坡謬誤」、「稻草人論證」或「斷章取義」，並指出。
-        2. **證據強度分級**：評估關鍵主張的證據力（強：有數據/具名；弱：純推測/匿名）。
+        【分析任務升級】：
+        1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
+        2. **證據強度分級**：評估證據力（強/弱）。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -424,9 +414,9 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
-        【分析任務升級 (V35.0)】：
-        1. **早期預警指標**：為每個情境列出 3 個具體的監測訊號 (Signposts)。
-        2. **驗屍分析 (Pre-mortem)**：假設預測失敗，反推可能的隱蔽變數。
+        【分析任務升級】：
+        1. **早期預警指標**：列出監測訊號。
+        2. **驗屍分析**：反推失敗變數。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
@@ -441,7 +431,6 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
            - **轉折路徑 (Alternative)** + 🚩 預警指標
            - **極端路徑 (Wild Card)** + 🚩 預警指標
         3. **💀 驗屍分析 (Pre-mortem Analysis)**
-           - *若上述預測完全失準，最可能是因為忽略了什麼？*
         4. **💡 綜合發展與因應建議**
         """
     else:
@@ -531,7 +520,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         raw_md = data_result.get("report_text", "")
         raw_md = format_citation_style(raw_md)
         html_content = markdown.markdown(raw_md, extensions=['tables'])
-        report_html_1 = f'<div class="report-paper"><h3>📝 綜合戰略分析報告</h3>{html_content}</div>'
+        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{html_content}</div>'
 
     report_html_2 = ""
     if scenario_result:
@@ -559,7 +548,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V35.0)</h1>
+        <h1>全域觀點分析報告 (V35.2)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -629,7 +618,6 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     st.markdown("### 📅 關鍵發展時序")
     st.markdown(full_html, unsafe_allow_html=True)
 
-# 4. 下載功能
 def export_full_state():
     data = {
         "result": st.session_state.result,
@@ -640,10 +628,10 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V35.0)
+# 全域觀點分析報告 (V35.2)
 产生時間: {datetime.now()}
 
-## 1. 深度分析
+## 1. 平衡報導分析
 {data.get('report_text')}
 
 ## 2. 時間軸
@@ -654,18 +642,18 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V35.0")
+    st.title("全域觀點解析 V35.2")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架 + 邏輯謬誤偵測", "學術框架：CLA + 預警指標 + 驗屍分析"],
+        captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
         index=0
     )
     st.markdown("---")
     
-    enable_outpost = st.toggle("📡 前哨站模式 (納入 PTT/Dcard 聲量)", value=False, help="開啟後將搜尋 PTT, Dcard, Mobile01 等社群論壇，標記為⚠️社群聲量。")
-    blind_mode = st.toggle("🙈 盲測模式 (隱藏媒體名稱)", value=False)
+    enable_outpost = st.toggle("📡 前哨站模式 (納入 PTT/Dcard)", value=False)
+    blind_mode = st.toggle("🙈 盲測模式", value=False)
     
     with st.expander("🔑 API 設定", expanded=True):
         if "GOOGLE_API_KEY" in st.secrets:
@@ -686,14 +674,7 @@ with st.sidebar:
             index=0
         )
         
-        search_days = st.number_input(
-            "搜尋時間範圍 (天數)",
-            min_value=1,
-            max_value=1825,
-            value=30,
-            step=1
-        )
-        
+        search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1)
         max_results = st.slider("搜尋篇數上限", 10, 100, 30)
         
         selected_regions = st.multiselect(
@@ -702,7 +683,6 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    # 匯入模組
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
         uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
         default_text = ""
@@ -731,14 +711,45 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    # 方法論說明
-    with st.expander("🧠 V35.0 情報分析方法論", expanded=False):
+    # [V35.2] 完整方法論說明 (整合 V34.7 與 V35.0)
+    with st.expander("🧠 V35.2 情報分析方法論 (完整版)", expanded=False):
         st.markdown("""
-        * **動態關鍵字 (Dynamic Query)**：AI 自動生成衍生搜尋詞，精準打擊爭議點。
-        * **前哨站模式 (Outpost)**：監測社群論壇 (PTT/Dcard)，獲取早期預警。
-        * **邏輯偵錯 (Logic Scan)**：識別滑坡謬誤、稻草人論證。
-        * **驗屍分析 (Pre-mortem)**：反向推演預測失敗的可能原因。
-        """)
+        <div class="methodology-text">
+        <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
+        本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
+        <ul>
+            <li><b>三軌平行搜尋 (Tri-Track)</b>：同時針對「事實/時序」、「觀點/爭議」、「深度/懶人包」三條軌道進行搜尋，確保資訊完整性。</li>
+            <li><b>網域圍籬 (Domain Fencing)</b>：嚴格執行白名單機制，確保資訊來源可靠。</li>
+            <li><b>前哨站模式 (Outpost)</b>：可選監測 PTT/Dcard 等社群論壇，獲取早期預警。</li>
+            <li><b>動態關鍵字 (Dynamic Query)</b>：AI 自動生成衍生搜尋詞，精準打擊爭議點。</li>
+            <li><b>智慧日期提取</b>：結合 API 元數據、URL 規則與 AI 內文推斷，最大化還原事件時間。</li>
+        </ul>
+
+        <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
+        本研究採用 <b>Entman (1993) 的框架理論 (Framing Theory)</b> 與 <b>批判話語分析 (CDA)</b>。
+        <ul>
+            <li><b>語意層次</b>：分析文本中的修辭 (Rhetoric)、隱喻 (Metaphor) 與標籤化 (Labeling) 策略。</li>
+            <li><b>機構層次</b>：結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫，進行雙重驗證 (Triangulation)。</li>
+        </ul>
+
+        <div class="methodology-header">3. 可信度與查核 (Verification)</div>
+        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>。
+        <ul>
+            <li><b>交叉比對</b>：將媒體報導與 <b>Cofacts 謠言查核資料庫</b> 及官方原始文件進行比對。</li>
+            <li><b>邏輯偵錯 (Logic Scan)</b>：AI 自動識別滑坡謬誤、稻草人論證。</li>
+            <li><b>證據分級</b>：評估新聞來源的證據強度（強/弱）。</li>
+        </ul>
+
+        <div class="methodology-header">4. 戰略推演模型 (Futures Framework)</div>
+        僅應用於「未來發展推演」模式。
+        <ul>
+            <li><b>第一性原理 (First Principles)</b>：解構議題至最基礎的物理或經濟限制。</li>
+            <li><b>層次分析法 (CLA)</b>：由表象 (Litany) 深入至系統結構 (System) 與社會神話 (Myth)。</li>
+            <li><b>可能性圓錐 (Cone of Plausibility)</b>：區分基準情境 (Probable)、轉折情境 (Plausible) 與極端情境 (Possible)。</li>
+            <li><b>驗屍分析 (Pre-mortem)</b>：反向推演預測失敗的可能原因。</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
         
     st.markdown("### 📥 報告匯出")
     if st.session_state.get('result') or st.session_state.get('scenario_result'):
@@ -764,20 +775,17 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V35.0 情報分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V35.2 平衡報導分析引擎...", expanded=True) as status:
         
-        # 1. 動態關鍵字生成
-        st.write("🧠 1. AI 正在分析議題，生成動態搜尋策略...")
+        st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
-        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords)}")
         
-        # 2. 執行搜尋
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行蜂群搜尋 (視角: {regions_label})...")
         
+        # [V35.2 Fix] 移除 past_report_input
         context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(
-            query, tavily_key, search_days, selected_regions, max_results, past_report_input, 
-            enable_outpost, dynamic_keywords # [V35.0] 傳入新參數
+            query, tavily_key, search_days, selected_regions, max_results, enable_outpost, dynamic_keywords
         )
         
         if is_strict_tw:
@@ -791,7 +799,7 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 4. AI 進行深度戰略分析 (邏輯偵錯 + 證據分級)...")
+        st.write("🧠 4. AI 進行深度戰略分析...")
         
         mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
         analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
@@ -803,13 +811,12 @@ if search_btn and query and google_key and tavily_key:
         
     st.rerun()
 
-# 顯示區域
 if st.session_state.result:
     data = st.session_state.result
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     st.markdown("---")
-    st.markdown("### 📝 綜合戰略分析報告")
+    st.markdown("### 📝 平衡報導分析")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
