@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.6", page_icon="📂", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.7", page_icon="📂", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -45,7 +45,6 @@ CSS_STYLE = """
         font-size: 1.05rem;
     }
     
-    /* 引用樣式優化：灰底小字 */
     .citation {
         font-size: 0.75em;          
         color: #777777;             
@@ -60,7 +59,6 @@ CSS_STYLE = """
         display: inline-block;      
     }
 
-    /* 關鍵時序卷軸表格 */
     .scrollable-table-container {
         height: 600px; 
         overflow-y: auto; 
@@ -117,7 +115,6 @@ CSS_STYLE = """
         margin-top: 10px;
     }
     
-    /* 列印專用樣式 */
     @media print {
         .scrollable-table-container { height: auto; overflow: visible; }
         body { font-size: 12pt; }
@@ -615,9 +612,13 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     st.markdown("### 📅 關鍵發展時序")
     st.markdown(full_html, unsafe_allow_html=True)
 
-# 4. 下載功能
-def convert_data_to_json(data):
-    import json
+# [V34.7] 完整狀態匯出功能 (JSON)
+def export_full_state():
+    data = {
+        "result": st.session_state.result,
+        "scenario_result": st.session_state.scenario_result,
+        "sources": st.session_state.sources
+    }
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def convert_data_to_md(data):
@@ -636,7 +637,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.6")
+    st.title("全域觀點解析 V34.7")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -685,15 +686,21 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    # [V34.6] 檔案上傳模組
-    with st.expander("📂 匯入舊情報 (檔案/文字)", expanded=False):
-        uploaded_file = st.file_uploader("上傳 .md 或 .txt 檔案", type=["md", "txt"])
+    # [V34.7] 智慧匯入/還原模組
+    with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
+        uploaded_file = st.file_uploader("上傳 .json (完整還原) 或 .md/.txt", type=["json", "md", "txt"])
         
         default_text = ""
+        is_json_upload = False
+        
         if uploaded_file is not None:
             try:
-                default_text = uploaded_file.getvalue().decode("utf-8")
-                st.success(f"✅ 已讀取檔案: {uploaded_file.name}")
+                if uploaded_file.name.endswith(".json"):
+                    is_json_upload = True
+                    st.success(f"✅ 已偵測完整存檔: {uploaded_file.name}")
+                else:
+                    default_text = uploaded_file.getvalue().decode("utf-8")
+                    st.success(f"✅ 已讀取文字檔: {uploaded_file.name}")
             except Exception as e:
                 st.error(f"檔案讀取失敗: {e}")
 
@@ -701,8 +708,26 @@ with st.sidebar:
             "或直接貼上/編輯報告內容：", 
             value=default_text,
             height=150,
-            help="若已上傳檔案，內容會自動填入下方，您可在此進行微調。"
+            help="上傳 JSON 可還原完整狀態；上傳 MD/TXT 僅匯入文字。"
         )
+        
+        if uploaded_file and st.button("🔄 確認載入/還原"):
+            if is_json_upload:
+                # JSON 還原邏輯
+                try:
+                    state_data = json.load(uploaded_file)
+                    st.session_state.result = state_data.get("result")
+                    st.session_state.scenario_result = state_data.get("scenario_result")
+                    st.session_state.sources = state_data.get("sources")
+                    st.toast("✅ 狀態還原成功！")
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"JSON 解析失敗: {e}")
+            else:
+                # 文字匯入邏輯 (模擬舊報告)
+                # 這裡不做 rerun，因為文字通常是用來當作 Context 給搜尋引擎用的
+                st.toast("✅ 文字已匯入，請點擊「啟動全域掃描」進行分析。")
 
     with st.expander("🧠 學術分析方法論 (Research Methodology)", expanded=True):
         st.markdown("""
@@ -750,12 +775,15 @@ with st.sidebar:
         html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
         st.download_button("📥 下載列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
         
-        # 傳統下載
+        # [V34.7] 完整 JSON 狀態下載 (支援還原)
+        full_state_json = export_full_state()
+        st.download_button("📥 下載完整狀態 (JSON)", full_state_json, "Full_State.json", "application/json", help="此檔案可用於日後還原完整分析畫面")
+        
+        # Markdown 下載 (僅文字)
         export_data = st.session_state.get('result').copy()
         if st.session_state.get('scenario_result'):
             export_data['report_text'] += "\n\n# 未來發展推演報告\n" + st.session_state.get('scenario_result')['report_text']
-        st.download_button("下載 JSON", convert_data_to_json(export_data), "report.json", "application/json")
-        st.download_button("下載 Markdown", convert_data_to_md(export_data), "report.md", "text/markdown")
+        st.download_button("下載 Markdown (僅文字)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
 st.title(f"{analysis_mode.split(' ')[0]}")
 query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
@@ -770,7 +798,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.6 檔案支援版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.7 智慧還原版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -810,13 +838,16 @@ if search_btn and query and google_key and tavily_key:
 # 顯示區域
 if st.session_state.result:
     data = st.session_state.result
+    # 傳入 sources 供 ID 映射使用
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
+    # 2. 顯示第一階段：綜合戰略分析報告
     st.markdown("---")
     st.markdown("### 📝 綜合戰略分析報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
+    # 資訊滾動按鈕
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
@@ -826,6 +857,7 @@ if st.session_state.result:
                 st.session_state.scenario_result = parse_gemini_data(raw_text) 
                 st.rerun()
 
+# 顯示第二階段：未來發展推演報告
 if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
