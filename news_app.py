@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.6", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.5", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -45,17 +45,11 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    /* [V16.6] 引用標記樣式 (移除上標，改為平齊小字) */
+    /* 引用標記樣式 */
     .citation {
-        font-size: 0.85em; 
-        color: #757575; 
-        background-color: #f0f0f0;
-        padding: 2px 6px; 
-        border-radius: 4px; 
-        margin: 0 2px;
-        font-family: sans-serif; 
-        border: 1px solid #e0e0e0;
-        font-weight: 500;
+        font-size: 0.75em; color: #9e9e9e; background-color: #f5f5f5;
+        padding: 1px 4px; border-radius: 4px; vertical-align: super;
+        font-family: sans-serif; border: 1px solid #eeeeee;
     }
 
     /* 觀點對照盒 */
@@ -76,11 +70,6 @@ st.markdown("""
     .table-header-green { color: #2e7d32; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #2e7d32; margin-bottom: 10px; padding-bottom: 5px; }
     .table-header-blue { color: #1565c0; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #1565c0; margin-bottom: 10px; padding-bottom: 5px; }
     .table-header-neutral { color: #616161; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #616161; margin-bottom: 10px; padding-bottom: 5px; }
-    
-    /* Legend 說明區 */
-    .legend-box {
-        background-color: #e3f2fd; border-radius: 8px; padding: 10px 15px; font-size: 0.9em; margin-bottom: 15px; border: 1px solid #bbdefb; color: #0d47a1;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -97,29 +86,11 @@ def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
-# [V16.6] 引用樣式處理器 + 壓縮功能
 def format_citation_style(text):
     if not text: return ""
-    
-    # 1. 壓縮引用: [Source 1], [Source 2] -> [Source 1, 2]
-    # Regex 尋找連續的 Source 標記
-    def compress_match(match):
-        # 抓出該段落中所有的數字
-        nums = re.findall(r'\d+', match.group(0))
-        # 去重並排序
-        unique_nums = sorted(list(set(nums)), key=int)
-        return f'<span class="citation">Source {",".join(unique_nums)}</span>'
-
-    # 匹配模式：[Source X] 後面跟著 (逗號/空格 + [Source Y]) 重複出現
-    pattern_compress = r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)'
-    
-    # 先執行壓縮與 HTML 包裹
-    text = re.sub(pattern_compress, compress_match, text)
-    
-    # 2. 處理落單的引用 (如果上面的 Regex 沒抓到的)
-    # text = re.sub(r'\[Source (\d+)\]', r'<span class="citation">Source \1</span>', text)
-    
-    return text
+    pattern = r'(\[Source[^\]]*\])'
+    styled_text = re.sub(pattern, r'<span class="citation">\1</span>', text)
+    return styled_text
 
 # ==========================================
 # 3. 核心功能模組
@@ -249,7 +220,7 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     脈絡: {opinions.get('CONTEXT')}
     
     【任務指令】：
-    1. **引用壓縮**：若連續引用多個來源，請寫成 `[Source 1, 2, 3]` 的格式。
+    1. **嚴格引用**：報告中的每一個論點，都必須標註來源編號，格式為 `[Source X]`。
     2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示「變數 A 如何導致 變數 B」的因果鏈。
        - 嚴格規定：節點名稱請使用 **純文字**，不要包含括號、問號或其他符號。
        - 代碼請包在 ```mermaid ... ``` 區塊中。
@@ -263,33 +234,36 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜 (強化標題抓取)
+# 3.4 核心邏輯：輿情光譜
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
     
     【評分嚴格規定】：
-    1. **立場分數 (Stance)**：
+    1. **立場分數 (Stance)**：必須區分正負！
        - **負數 (-10 到 -1)**：批判/反對/泛綠/獨派。
        - **零 (0)**：中立/純事實。
        - **正數 (1 到 10)**：支持/體制/泛藍/統派。
-    2. **可信度 (Credibility)**：0-3 (農場/極端) ... 8-10 (權威/查核)。
+    
+    2. **可信度 (Credibility)**：
+       - 0-3：農場/極端。
+       - 4-7：一般媒體。
+       - 8-10：權威/查核。
     
     【輸出格式 (請保持格式整潔，每行一筆，使用 | 分隔)】：
     ### [DATA_TIMELINE]
     YYYY-MM-DD|媒體|標題
     
     ### [DATA_SPECTRUM]
-    (重要：必須包含 5 個欄位，標題不可省略)
     來源名稱|新聞標題|立場(-10~10)|可信度(0~10)|網址
     
     ### [REPORT_TEXT]
-    (Markdown 報告，請使用 `[Source 1, 3]` 格式引用)
+    (Markdown 報告，需包含 [Source X] 引用)
     請包含：全域現況摘要、媒體框架分析、識讀建議。
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器 (含硬邏輯校正 + 標題解析)
+# 3.5 資料解析器 (含彈性解析與防呆)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -308,24 +282,25 @@ def parse_gemini_data(text):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum: 彈性解析 5 欄位
+        # Spectrum: [V16.5] 彈性解析 (Handle 4 or 5 columns)
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
-                name = parts[0].strip()
                 # 預設值
-                title = "點擊閱讀"
+                name = parts[0].strip()
+                title = "點擊閱讀報導" # Default Fallback
+                url = ""
                 base_stance = 0
                 base_cred = 0
-                url = "#"
                 
+                # Case A: 完整 5 欄 (Name|Title|Stance|Cred|URL)
                 if len(parts) >= 5:
                     title = parts[1].strip()
                     base_stance = float(parts[2].strip())
                     base_cred = float(parts[3].strip())
                     url = parts[4].strip()
+                # Case B: 舊版/缺漏 4 欄 (Name|Stance|Cred|URL)
                 else:
-                    # Fallback for 4 columns
                     base_stance = float(parts[1].strip())
                     base_cred = float(parts[2].strip())
                     url = parts[3].strip()
@@ -356,18 +331,9 @@ def parse_gemini_data(text):
 
     return data
 
-# [V16.6] 渲染含標題的表格 + 圖例
+# [V16.5] 渲染含標題的表格 (含安全取值)
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
-    
-    # 1. 顯示圖例 (Legend)
-    st.markdown("""
-    <div class="legend-box">
-        <b>📊 燈號與數值說明：</b><br>
-        • <b>政治立場 (Stance)</b>：🟢 負分 (-10 ~ -1) 代表批判/泛綠；🔵 正分 (+1 ~ +10) 代表體制/泛藍；⚪ 0 代表中立。<br>
-        • <b>可信度 (Credibility)</b>：🟢 高 (7-10)；🟡 中 (4-6)；🔴 低 (0-3)。
-    </div>
-    """, unsafe_allow_html=True)
     
     green_list = []
     blue_list = []
@@ -396,11 +362,10 @@ def render_spectrum_split(spectrum_data):
             elif c >= 4: c_txt = f"🟡 {c}"
             else: c_txt = f"🔴 {c}"
             
-            # 標題如果太長截斷
-            display_title = i['title']
-            if len(display_title) > 25: display_title = display_title[:25] + "..."
-            
-            title_link = f"[{display_title}]({i['url']})"
+            # [V16.5] 安全取值：使用 .get 防止 KeyError
+            t_text = i.get('title', '點擊閱讀報導')
+            t_url = i.get('url', '#')
+            title_link = f"[{t_text}]({t_url})"
             
             md += f"| {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
@@ -438,7 +403,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.6")
+    st.title("全域觀點解析 V16.5")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -468,13 +433,17 @@ with st.sidebar:
           - 邏輯：強制歸類為正分。
         
         **2. 深度報告生成邏輯 (Report Logic)**
-        * **媒體框架分析 (Framing)**: 使用 Framing Theory 偵測衝突與歸責框架。
-        * **識讀建議 (Literacy)**: 基於資訊落差與情緒渲染度提出建議。
+        * **媒體框架分析 (Framing)**:
+          - **理論基礎**: 使用傳播學 Framing Theory。
+          - **AI指令**: 要求偵測來源是否使用「衝突框架(Conflict)」、「歸責框架(Attribution)」或「經濟後果框架」。
+        * **識讀建議 (Literacy)**:
+          - **生成依據**: 基於「資訊落差 (Information Gap)」與「情緒渲染度」。
+          - **AI指令**: 若偵測到高分歧，建議讀者「暫停轉發」並「交叉比對」相反立場報導。
 
         **3. 數位戰情室設定 (Scenario)**
         * **🦅 鷹派**: 專注衝突升級與敵意螺旋。
         * **🕊️ 鴿派**: 專注經濟互依與現狀維持。
-        * **📜 歷史學家**: 尋找相似歷史案例。
+        * **📜 歷史學家**: 尋找過去 50 年的相似歷史案例 (Historical Analogy)。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -525,12 +494,10 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
     if data.get("spectrum"):
-        # [V16.6] 含 Legend 與標題
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
         render_spectrum_split(data["spectrum"])
 
     st.markdown("### 📝 媒體識讀報告")
-    # [V16.6] 引用壓縮與樣式處理
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
