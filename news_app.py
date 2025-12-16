@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.8", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.9", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -135,7 +135,8 @@ DOMAIN_NAME_MAP = {
     "theinitium.com": "端傳媒", "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
     "vocus.cc": "方格子", "ptt.cc": "PTT", "dcard.tw": "Dcard",
     "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", "apnews.com": "美聯社",
-    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報"
+    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報",
+    "mobile01.com": "Mobile01"
 }
 
 DB_MAP = {
@@ -245,13 +246,15 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions):
+# [V36.9 Fix] 整合 前哨站 (Social Guard) 到 混和權重架構
+def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions, enable_outpost):
     tavily = TavilyClient(api_key=api_key_tavily)
     all_results = []
     seen_urls = set()
     
     tasks = []
     
+    # 1. 通用熱度搜尋 (Tri-Track)
     general_domains = []
     if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
     if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
@@ -267,6 +270,7 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
     tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
     tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
     
+    # 2. 分眾保底搜尋 (Hybrid Weighted)
     if "台灣" in str(selected_regions):
         blue_params = search_params.copy()
         blue_params['max_results'] = 5 
@@ -282,13 +286,25 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
         official_params['max_results'] = 5
         official_params['include_domains'] = OFFICIAL_WHITELIST
         tasks.append({"name": "Official_Guard", "query": f"{query} 聲明 新聞稿", "params": official_params})
+        
+        # [V36.9 Fix] 社群保底 (Social Guard) - 解決白名單衝突問題
+        if enable_outpost:
+            social_params = search_params.copy()
+            social_params['max_results'] = 5
+            # 明確指定只搜 PTT/Dcard，繞過通用白名單的限制
+            social_params['include_domains'] = GRAY_WHITELIST
+            # 移除 exclude_domains 中的 PTT/Dcard (雖然上面 get_search_context 已處理，這裡雙重保險)
+            if 'exclude_domains' in social_params:
+                social_params['exclude_domains'] = [d for d in social_params['exclude_domains'] if d not in GRAY_WHITELIST]
+                
+            tasks.append({"name": "Social_Guard", "query": f"{query} 討論", "params": social_params})
 
     def fetch(task):
         try:
             return tavily.search(query=task['query'], **task['params']).get('results', [])
         except: return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch, t): t['name'] for t in tasks}
         results_map = {}
         for future in concurrent.futures.as_completed(futures):
@@ -297,13 +313,16 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
             
     final_list = []
     
-    for guard_name in ["Blue_Guard", "Green_Guard", "Official_Guard"]:
+    # A. 優先加入保底資料 (含 Social Guard)
+    guards = ["Blue_Guard", "Green_Guard", "Official_Guard", "Social_Guard"]
+    for guard_name in guards:
         if guard_name in results_map:
             for item in results_map[guard_name]:
                 if item['url'] not in seen_urls:
                     seen_urls.add(item['url'])
                     final_list.append(item)
     
+    # B. 再加入通用資料
     general_keys = ["General_Fact", "General_Opn", "General_Deep", "General_Main"]
     max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
     
@@ -329,7 +348,8 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         }
 
         is_strict_mode = bool(selected_regions)
-        results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions)
+        # [V36.9 Fix] 傳入 enable_outpost 參數
+        results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions, enable_outpost)
         
         results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
         results = results[:max_results]
@@ -566,7 +586,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V36.8)</h1>
+        <h1>全域觀點分析報告 (V36.9)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -654,7 +674,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V36.8)
+# 全域觀點分析報告 (V36.9)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -668,7 +688,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V36.8")
+    st.title("全域觀點解析 V36.9")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -681,7 +701,6 @@ with st.sidebar:
     enable_outpost = st.toggle("📡 前哨站模式 (納入 PTT/Dcard)", value=False)
     blind_mode = st.toggle("🙈 盲測模式", value=False)
     
-    # [V36.8 Fix] 移除密碼鎖，API Key 改為純手動輸入 (No Default, No Memory)
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
         google_key = st.text_input("Gemini Key", type="password")
@@ -737,20 +756,18 @@ with st.sidebar:
         **核心機制：混和權重搜尋**
         - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
         - **熱度補完 (Volume Fill)**：剩餘名額開放給全網熱度排序，反映真實輿論聲量。
+        - **社群保底 (Social Guard)**：若開啟前哨站，強制納入 PTT/Dcard 討論，確保社群觀點不被白名單過濾。
         
         **三軌搜尋架構 (Tri-Track via Dynamic Keywords)**
         將「通用搜尋 (General)」任務拆解為三組不同目的的指令，確保抓取內容的維度完整：
         1. **事實與時序 (Facts & Timeline)**
            - 指令：`{query} 新聞 事件 時間軸`
-           - 任務：只關心「發生了什麼事？」「什麼時候發生的？」。它負責抓取硬資訊，構建時間軸表格。
            - 目標：確保報告的骨架（人、事、時、地、物）是準確的。
         2. **觀點與爭議 (Opinions & Controversy)**
            - 指令：`{query} 評論 觀點 爭議 分析`
-           - 任務：專門尋找「吵架的點」。它會刻意去抓社論、投書、政論節目的摘要。
            - 目標：捕捉不同陣營（正方/反方）的論述邏輯，這是 Entman 框架分析的原料。
         3. **深度與結構 (Deep Dive)**
            - 指令：`{query} 懶人包 重點 影響`
-           - 任務：尋找已經被整理過的結構化資訊（如：五大爭議點、法條比較表）。
            - 目標：快速獲取議題的全貌與背景知識。
         """)
         
@@ -820,7 +837,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V36.8 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.9 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -828,7 +845,7 @@ if search_btn and query and google_key and tavily_key:
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方各5篇) + 熱度補完 (動態三軌)")
+        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方/社群) + 熱度補完 (動態三軌)")
         
         context_text, sources, actual_query, is_strict_tw = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, enable_outpost, dynamic_keywords
