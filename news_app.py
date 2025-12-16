@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V30.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V30.4", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -38,7 +38,7 @@ st.markdown("""
         margin-bottom: 15px; 
         border: 1px solid #e0e0e0;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        font-family: "Georgia", "Cambria", "Times New Roman", serif;
+        font-family: "Microsoft JhengHei", "Georgia", serif; /* 強制微軟正黑體 */
         line-height: 1.8;
         font-size: 1.05rem;
     }
@@ -281,11 +281,12 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
+            # [V30.4] 日期修復：若無日期，直接給「近期」或空字串，防止 AI 亂填 2025-XX-XX
             pub_date = res.get('published_date')
-            if pub_date:
-                pub_date = pub_date[:10]
+            if not pub_date:
+                pub_date = "近期" 
             else:
-                pub_date = "----" 
+                pub_date = pub_date[:10]
             
             content = res.get('content', '')[:1200]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
@@ -303,67 +304,63 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V30.3] 深度戰略分析 (Strict Methodology Enforcement)
+# [V30.4] 深度戰略分析 (強制中文 & 學術框架)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位社會科學研究員與情報分析師。請針對「{query}」進行【全域深度解析】，並嚴格遵循以下學術方法論進行報告撰寫。
+        你是一位社會科學研究員與情報分析師。請針對「{query}」進行【全域深度解析】，並嚴格遵循學術方法論。
         
-        【強制方法論框架 (Mandatory Framework)】：
-        1. **資訊檢索 (Information Retrieval)**：基於 Context 進行證據權重評估。
-        2. **框架分析 (Framing Analysis)**：**必須** 依據 Robert Entman (1993) 的四大維度分析不同陣營的敘事差異：
-           - **定義問題 (Define Problems)**: 雙方認為問題出在哪？
-           - **診斷原因 (Diagnose Causes)**: 誰造成的？
-           - **道德評價 (Make Moral Judgments)**: 誰是好人/壞人？
-           - **處方建議 (Suggest Remedies)**: 雙方主張該怎麼做？
-        3. **三角驗證 (Triangulation)**：在事實查核中，必須明確標註來源比對 (如：官方數據 vs 媒體說法)。
+        【⚠️ 語言最高指令】：**所有輸出內容必須使用繁體中文 (Traditional Chinese) 撰寫**。請勿輸出英文段落。
+        
+        【分析方法論 (Methodology)】：
+        1. **資訊檢索 (Information Retrieval)**：基於提供的 Context 評估證據權重。
+        2. **框架分析 (Framing Analysis)**：依據 Entman (1993) 理論，分析各方媒體如何「選擇」與「凸顯」特定事實。
+        3. **三角驗證 (Triangulation)**：交叉比對官方說法、媒體報導與第三方查核(Cofacts)。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|網址) 
         -> 網址請務必對應 Context 中的 Source Link。
-        -> 日期請從 Context [Date:...] 提取。
+        -> **日期規則**：若 Context 中無確切日期，請填寫「近期」或根據內文推算。**嚴禁填寫 '2025-XX-XX'**。
         
         ### [REPORT_TEXT]
-        (Markdown 報告)
-        請包含以下章節：
-        1. **📊 全域現況摘要 (Situational Analysis)**
-        2. **🔍 爭議點事實查核 (Fact-Check with Triangulation)**
-        3. **⚖️ 媒體框架分析 (Entman's Framing Analysis)**
-           - 🟢 泛綠/批判陣營框架：(請依 Entman 四維度解構)
-           - 🔵 泛藍/體制陣營框架：(請依 Entman 四維度解構)
+        (Markdown 報告 - 請使用 [Source X] 格式引用)
+        請包含以下章節 (內容必須為繁體中文)：
+        1. **📊 全域現況摘要**
+        2. **🔍 爭議點事實查核 (三角驗證)**
+        3. **⚖️ 媒體框架光譜分析**
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
-        5. **🤔 結構性反思 (Structural Reflection)**
+        5. **🤔 結構性反思**
         """
         
-    else: # SCENARIO (Futures Studies)
+    else: # SCENARIO
         system_prompt = f"""
         你是一位未來學家 (Futurist)。請針對「{query}」應用未來學方法論進行戰略推演。
         
-        【強制方法論框架 (Mandatory Framework)】：
-        1. **CLA 層次分析 (Causal Layered Analysis)**：必須由淺入深解構議題：
-           - **表象 (Litany)**: 媒體頭條、公開的爭議。
-           - **系統 (System)**: 政策、經濟結構、技術限制。
-           - **世界觀 (Worldview)**: 意識形態、文化典範。
-           - **神話/隱喻 (Myth/Metaphor)**: 深層的集體潛意識或譬喻。
-        2. **可能性圓錐 (Cone of Plausibility)**：推演三種情境。
+        【⚠️ 語言最高指令】：**所有輸出內容必須使用繁體中文 (Traditional Chinese) 撰寫**。
+        
+        【分析方法論 (Methodology)】：
+        1. **第一性原理 (First Principles)**：解構議題的最基本事實與驅動力。
+        2. **層次分析法 (CLA)**：由表象 (Litany) 深入到系統 (System)、世界觀 (Worldview) 與神話 (Myth)。
+        3. **可能性圓錐 (Cone of Plausibility)**：推演三種不同機率的未來路徑。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|網址)
+        -> **日期規則**：若無法確定日期，請填寫「近期」，**嚴禁填寫 '2025-XX-XX'**。
         
         ### [REPORT_TEXT]
-        (Markdown 報告)
-        1. **🎯 CLA 層次深度解構 (Causal Layered Analysis)**
-           - Litany (表象)
-           - System (系統)
-           - Worldview (世界觀)
-           - Myth (神話/隱喻)
-        2. **🔮 未來情境模擬 (Scenario Planning)**
+        (Markdown 報告 - 繁體中文)
+        1. **🎯 CLA 層次深度解構**
+           - 表象層 (Litany)
+           - 系統層 (System)
+           - 世界觀層 (Worldview)
+           - 神話/隱喻層 (Myth)
+        2. **🔮 未來情境模擬 (可能性圓錐)**
            - 基準情境 (Baseline)
            - 轉折情境 (Alternative)
            - 極端情境 (Wild Card)
-        3. **💡 綜合戰略建議 (Strategic Recommendations)**
+        3. **💡 綜合戰略建議**
         """
 
     return call_gemini(system_prompt, context_text, model_name, api_key)
@@ -377,7 +374,7 @@ def parse_gemini_data(text):
     for line in lines:
         line = line.strip()
         
-        if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line or "Future" in line):
+        if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line or "Future" in line or "近期" in line):
             parts = line.split("|")
             try:
                 date = parts[0].strip()
@@ -385,6 +382,7 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
+                # 相容性處理
                 if len(parts) >= 6: url = parts[5].strip()
                 elif len(parts) >= 4: url = parts[3].strip()
                 
@@ -418,11 +416,12 @@ def render_html_timeline(timeline_data, blind_mode):
 
     table_rows = ""
     for item in timeline_data:
-        date = item.get('date', 'Unknown')
+        date = item.get('date', '近期')
         media = "*****" if blind_mode else item.get('media', 'Unknown')
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
+        # 網域分類與 Emoji
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -434,6 +433,7 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
+        # 連結處理
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
@@ -484,12 +484,12 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V30.3")
+    st.title("全域觀點解析 V30.4")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：Entman 框架分析 + 三角驗證", "學術框架：CLA 層次分析 + 第一性原理"],
+        captions=["學術框架：框架分析 + 三角驗證", "學術框架：第一性原理 + CLA + 未來學"],
         index=0
     )
     st.markdown("---")
@@ -535,27 +535,34 @@ with st.sidebar:
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
             <li><b>搜尋廣度</b>：整合 Tavily API，進行多維度關鍵字排列組合 (Permutations) 搜尋。</li>
-            <li><b>來源驗證</b>：採用白名單機制優先鎖定具公信力之主流媒體與獨立媒體。</li>
-            <li><b>時序重構</b>：系統會針對內文進行 NLP 分析以推斷確切事件時間。</li>
+            <li><b>來源驗證</b>：採用白名單機制優先鎖定具公信力之主流媒體與獨立媒體，並排除內容農場 (Content Farms)。</li>
+            <li><b>時序重構</b>：若 Metadata 缺失，系統會針對內文進行自然語言處理 (NLP) 以推斷確切事件時間。</li>
         </ul>
 
-        <div class="methodology-header">2. 框架分析 (Framing Analysis)</div>
-        本研究採用 <b>Entman (1993) 的框架理論</b> 進行深度解構：
+        <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
+        本研究採用 <b>Entman (1993) 的框架理論 (Framing Theory)</b> 與 <b>批判話語分析 (CDA)</b>。
         <ul>
-            <li><b>定義問題 (Define Problems)</b>：不同陣營如何界定核心問題？</li>
-            <li><b>診斷原因 (Diagnose Causes)</b>：歸咎於何種因素或行動者？</li>
-            <li><b>道德評價 (Make Moral Judgments)</b>：如何評價相關行為的正當性？</li>
-            <li><b>處方建議 (Suggest Remedies)</b>：提出何種解決方案？</li>
+            <li><b>語意層次</b>：分析文本中的修辭 (Rhetoric)、隱喻 (Metaphor) 與標籤化 (Labeling) 策略。</li>
+            <li><b>機構層次</b>：結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫，進行雙重驗證 (Triangulation)。</li>
+            <li><b>光譜定義</b>：
+                <ul><li><b>批判/挑戰 (Critical)</b>：挑戰現狀或執政當局。</li>
+                <li><b>體制/護航 (Establishment)</b>：維護現狀或政策辯護。</li></ul>
+            </li>
         </ul>
 
         <div class="methodology-header">3. 可信度與查核 (Verification)</div>
-        採用史丹佛大學 SHEG 提倡之 <b>水平閱讀法 (Lateral Reading)</b>，並與 <b>Cofacts</b> 查核資料庫進行三角驗證 (Triangulation)。
+        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>。
+        <ul>
+            <li><b>交叉比對</b>：將媒體報導與 <b>Cofacts 謠言查核資料庫</b> 及官方原始文件進行比對。</li>
+            <li><b>證據權重</b>：評估消息來源是否具名、數據是否具備統計顯著性。</li>
+        </ul>
 
-        <div class="methodology-header">4. 戰略推演 (Futures Framework)</div>
+        <div class="methodology-header">4. 戰略推演模型 (Futures Framework)</div>
         僅應用於「未來發展推演」模式。
         <ul>
-            <li><b>CLA 層次分析法</b>：由表象 (Litany) 深入至系統 (System)、世界觀 (Worldview) 與神話 (Myth)。</li>
-            <li><b>可能性圓錐</b>：區分基準、轉折與極端情境。</li>
+            <li><b>第一性原理 (First Principles)</b>：解構議題至最基礎的物理或經濟限制。</li>
+            <li><b>層次分析法 (CLA)</b>：由表象 (Litany) 深入至系統結構 (System) 與社會神話 (Myth)。</li>
+            <li><b>可能性圓錐 (Cone of Plausibility)</b>：區分基準情境 (Probable)、轉折情境 (Plausible) 與極端情境 (Possible)。</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -586,7 +593,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V30.3)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V30.4)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -599,7 +606,7 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 3. AI 進行深度戰略分析 (學術框架強制應用)...")
+        st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用)...")
         
         mode_code = "V205" if "未來" in analysis_mode else "FUSION"
         raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode=mode_code)
