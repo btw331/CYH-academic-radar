@@ -13,6 +13,7 @@ import time
 import requests
 import json
 import concurrent.futures
+import random
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
@@ -24,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.1", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -51,30 +52,6 @@ st.markdown("""
         font-family: sans-serif; border: 1px solid #eeeeee;
     }
 
-    /* 光譜表格樣式 */
-    .spectrum-table {
-        width: 100%; border-collapse: collapse; margin: 10px 0; font-family: sans-serif;
-    }
-    .spectrum-table th {
-        background-color: #f0f2f6; color: #31333F; padding: 10px; text-align: left; border-bottom: 2px solid #ddd;
-    }
-    .spectrum-table td {
-        padding: 10px; border-bottom: 1px solid #eee; vertical-align: middle;
-    }
-    
-    /* 立場標籤 */
-    .badge {
-        padding: 4px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; white-space: nowrap;
-    }
-    .badge-green { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
-    .badge-blue { background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
-    .badge-neutral { background-color: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
-    
-    /* 可信度標籤 */
-    .cred-high { color: #2e7d32; font-weight: bold; }
-    .cred-mid { color: #f9a825; font-weight: bold; }
-    .cred-low { color: #c62828; font-weight: bold; }
-
     /* 觀點對照盒 */
     .perspective-box {
         padding: 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.95em;
@@ -88,9 +65,6 @@ st.markdown("""
     .mermaid-box {
         background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-top: 15px;
     }
-    
-    /* 側邊欄代碼區塊優化 */
-    .stCode { font-size: 0.85em !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -150,8 +124,8 @@ def get_search_context(query, api_key_tavily, context_report=None):
     os.environ["TAVILY_API_KEY"] = api_key_tavily
     search = TavilySearchResults(max_results=15)
     
-    search_q = f"{query} 2025 最新發展"
-    if context_report: search_q += " analysis"
+    search_q = f"{query} 2025 news analysis"
+    if context_report: search_q += " history context"
     
     try:
         results = search.invoke(search_q)
@@ -179,8 +153,12 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 3.2 Mermaid 強力清洗器
+# 3.2 Mermaid 強力清洗器 (Ultra-Safe Version)
 def sanitize_mermaid_code(code):
+    """
+    暴力修復 Mermaid 語法錯誤：
+    只保留英數字、中文和箭頭，移除所有可能導致錯誤的標點符號。
+    """
     code = re.sub(r'```mermaid', '', code)
     code = re.sub(r'```', '', code)
     code = code.strip()
@@ -193,12 +171,22 @@ def sanitize_mermaid_code(code):
         
     for line in lines:
         if not line.strip(): continue
-        def clean_match(match):
-            content = match.group(1)
-            content = content.replace('(', ' ').replace(')', ' ').replace('[', ' ').replace(']', ' ')
-            return f'["{content}"]'
-        line = re.sub(r'\[(.*?)\]', clean_match, line)
-        line = re.sub(r'\((.*?)\)', clean_match, line)
+        
+        # 處理節點 A["標籤"]
+        # 使用 Regex 提取引號內的內容，並移除所有特殊字符
+        def clean_label(match):
+            text = match.group(1)
+            # 只保留中英文、數字、空格
+            safe_text = re.sub(r'[^\w\s\u4e00-\u9fff]', '', text) 
+            return f'["{safe_text}"]'
+
+        # 替換 A["..."] 格式
+        line = re.sub(r'\["(.*?)"\]', clean_label, line)
+        # 替換 A[...] 格式
+        line = re.sub(r'\[(.*?)\]', clean_label, line)
+        # 替換 A(...) 格式
+        line = re.sub(r'\((.*?)\)', clean_label, line)
+        
         clean_lines.append(line)
             
     return "\n".join(clean_lines)
@@ -245,8 +233,9 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     
     【任務指令】：
     1. **嚴格引用**：報告中的每一個論點，都必須標註來源編號，格式為 `[Source X]`。
-    2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示「變數 A 如何導致 變數 B」的系統動力因果鏈。
-       - 嚴格規定：節點名稱只能用方括號 `[]` 包裹字串。例如 `A["政策 X"] --> B["結果 Y"]`。
+    2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示「變數 A 如何導致 變數 B」的因果鏈。
+       - 嚴格規定：節點名稱請使用 **純文字**，不要包含括號、問號或其他符號。
+       - 範例：`A["政策實施"] --> B["民怨上升"]`
        - 代碼請包在 ```mermaid ... ``` 區塊中。
     3. **未來情境**：推導 3 種可能的發展劇本。
     
@@ -261,18 +250,18 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
 # 3.4 核心邏輯：輿情光譜
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
-    你是一位精通台灣政治光譜的媒體分析師。請針對「{query}」進行媒體框架分析。
+    你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
     
     【評分嚴格規定】：
     1. **立場分數 (Stance)**：必須區分正負！
-       - **負數 (-10 到 -1)**：代表【批判 / 改革 / 反對黨 / 泛綠 / 獨派】觀點。
-       - **零 (0)**：代表【中立 / 純事實 / 外媒】。
-       - **正數 (1 到 10)**：代表【支持 / 體制 / 執政黨 / 泛藍 / 統派 / 紅媒】觀點。
+       - **負數 (-10 到 -1)**：批判/反對/泛綠/獨派。
+       - **零 (0)**：中立/純事實。
+       - **正數 (1 到 10)**：支持/體制/泛藍/統派。
     
     2. **可信度 (Credibility)**：
-       - 0-3：內容農場、社群留言、極端言論。
-       - 4-7：一般商業媒體、有立場但有查證。
-       - 8-10：官方公報、學術期刊、權威外媒、Cofacts 認證事實。
+       - 0-3：農場/極端。
+       - 4-7：一般媒體。
+       - 8-10：權威/查核。
     
     【輸出格式 (請保持格式整潔，每行一筆)】：
     ### [DATA_TIMELINE]
@@ -313,7 +302,7 @@ def parse_gemini_data(text):
                 base_cred = float(parts[2].strip())
                 url = parts[3].strip()
                 
-                # [V16.0] 硬邏輯校正 (強制歸類)
+                # 硬邏輯校正
                 final_stance = base_stance
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
                     if final_stance > 0: final_stance = final_stance * -1
@@ -324,7 +313,7 @@ def parse_gemini_data(text):
                 
                 data["spectrum"].append({
                     "source": name, 
-                    "stance": int(final_stance), # 取整數
+                    "stance": int(final_stance),
                     "credibility": int(base_cred), 
                     "url": url
                 })
@@ -338,43 +327,36 @@ def parse_gemini_data(text):
 
     return data
 
-# [V15.9] 光譜列表渲染 (HTML Table)
-def render_spectrum_table(spectrum_data):
+# [V16.1] 渲染 Markdown 表格 (取代 HTML 表格)
+def render_spectrum_markdown(spectrum_data):
     if not spectrum_data: return
     
-    html = '<table class="spectrum-table">'
-    html += '<thead><tr><th>媒體來源</th><th>政治光譜 (立場)</th><th>可信度</th><th>連結</th></tr></thead><tbody>'
+    # 表頭
+    md = "| 媒體來源 | 政治光譜 (立場) | 可信度 | 連結 |\n"
+    md += "| :--- | :--- | :--- | :--- |\n"
     
     for item in spectrum_data:
         s = item['stance']
         c = item['credibility']
         
-        # 立場 Badge
+        # 立場 Emoji
         if s < 0:
-            badge_class = "badge-green"
-            label = f"🟢 泛綠/批判 ({s})"
+            stance_str = f"🟢 泛綠/批判 ({s})"
         elif s > 0:
-            badge_class = "badge-blue"
-            label = f"🔵 泛藍/體制 (+{s})"
+            stance_str = f"🔵 泛藍/體制 (+{s})"
         else:
-            badge_class = "badge-neutral"
-            label = "⚪ 中立 (0)"
+            stance_str = "⚪ 中立 (0)"
             
-        # 可信度燈號
-        if c >= 7: cred_html = f'<span class="cred-high">🟢 高 ({c})</span>'
-        elif c >= 4: cred_html = f'<span class="cred-mid">🟡 中 ({c})</span>'
-        else: cred_html = f'<span class="cred-low">🔴 低 ({c})</span>'
+        # 可信度 Emoji
+        if c >= 7: cred_str = f"🟢 高 ({c})"
+        elif c >= 4: cred_str = f"🟡 中 ({c})"
+        else: cred_str = f"🔴 低 ({c})"
         
-        html += f"""
-        <tr>
-            <td><strong>{item['source']}</strong></td>
-            <td><span class="badge {badge_class}">{label}</span></td>
-            <td>{cred_html}</td>
-            <td><a href="{item['url']}" target="_blank">🔗</a></td>
-        </tr>
-        """
-    html += '</tbody></table>'
-    st.markdown(html, unsafe_allow_html=True)
+        url_str = f"[🔗]({item['url']})"
+        
+        md += f"| **{item['source']}** | {stance_str} | {cred_str} | {url_str} |\n"
+        
+    st.markdown(md)
 
 # 4. 下載功能
 def convert_data_to_json(data):
@@ -396,7 +378,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.0")
+    st.title("全域觀點解析 V16.1")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -415,37 +397,21 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
-    # [V16.0] 白盒子邏輯公開區
-    with st.expander("🧠 演算法核心參數公開 (White Box)", expanded=False):
-        st.markdown("#### 1. 政治光譜校正公式 (Spectrum Calibration)")
-        st.code("""
-# 針對台灣媒體生態的強制校正邏輯
-# 目標：防止 AI 對已知立場媒體產生幻覺
-
-def calibrate(media_name, ai_score):
-    # 🟢 泛綠/批判陣營 (Green/Critical)
-    # 關鍵字：自由, 三立, 民視, 新頭殼, 鏡週刊...
-    if media_name in GREEN_KEYWORDS:
-        if ai_score > 0: return -1 * ai_score  # 強制轉負
-        if ai_score == 0: return -5            # 強制給分
-    
-    # 🔵 泛藍/體制陣營 (Blue/Establishment)
-    # 關鍵字：中時, 聯合, TVBS, 中天, 風傳媒...
-    if media_name in BLUE_KEYWORDS:
-        if ai_score < 0: return -1 * ai_score  # 強制轉正
-        if ai_score == 0: return 5             # 強制給分
-        
-    return ai_score # 其他媒體維持 AI 判斷
-        """, language="python")
-        
-        st.markdown("#### 2. 未來推演代理人設定 (Agent Prompts)")
+    # [V16.1] 白盒子邏輯公開區 (文字版)
+    with st.expander("🧠 系統邏輯說明", expanded=False):
         st.markdown("""
-        * **🦅 鷹派 (Hawk)**:
-            > "你是一位專注於衝突升級、最壞情況與敵意分析的戰略家。請找出所有顯示局勢惡化的訊號。"
-        * **🕊️ 鴿派 (Dove)**:
-            > "你是一位專注於經濟理性、外交緩衝與現狀維持的分析師。請找出所有顯示雙方克制與共同利益的訊號。"
-        * **📜 歷史學家 (Historian)**:
-            > "請忽略短期雜訊，從過去 50 年的歷史中尋找相似案例 (Historical Analogy)，分析當時的結局。"
+        **1. 政治光譜校正邏輯**
+        為防止 AI 產生幻覺，系統會對特定媒體進行**強制校正**：
+        * **🟢 泛綠/批判陣營**：自由、三立、民視、鏡週刊...
+          * 系統動作：強制將立場分數設為 **負數**。
+        * **🔵 泛藍/體制陣營**：中時、聯合、TVBS、風傳媒...
+          * 系統動作：強制將立場分數設為 **正數**。
+        * **⚪ 中立/其他**：依據 AI 判讀內容而定。
+
+        **2. 數位戰情室設定**
+        * **🦅 鷹派**: 專注分析衝突升級、敵意螺旋與最壞劇本。
+        * **🕊️ 鴿派**: 專注分析經濟互依、避險機制與現狀維持。
+        * **📜 歷史學家**: 從過去 50 年歷史尋找相似案例 (Historical Analogy)。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -497,8 +463,9 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     
     if data.get("spectrum"):
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
-        st.caption("AI 自動識別政治立場與資訊可信度，並針對特定媒體進行邏輯校正。")
-        render_spectrum_table(data["spectrum"])
+        st.caption("透過 AI 識別與系統校正，呈現各方媒體的政治傾向與可信度。")
+        # [V16.1] 改用 Markdown 渲染表格
+        render_spectrum_markdown(data["spectrum"])
 
     st.markdown("### 📝 媒體識讀報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
