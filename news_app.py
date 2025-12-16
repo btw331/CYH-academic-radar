@@ -24,7 +24,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V15.9", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.0", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -88,6 +88,9 @@ st.markdown("""
     .mermaid-box {
         background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-top: 15px;
     }
+    
+    /* 側邊欄代碼區塊優化 */
+    .stCode { font-size: 0.85em !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -284,7 +287,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器 (含硬邏輯校正，移除 Jitter)
+# 3.5 資料解析器 (含硬邏輯校正)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -310,7 +313,7 @@ def parse_gemini_data(text):
                 base_cred = float(parts[2].strip())
                 url = parts[3].strip()
                 
-                # [V15.9] 硬邏輯校正 (強制歸類)
+                # [V16.0] 硬邏輯校正 (強制歸類)
                 final_stance = base_stance
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
                     if final_stance > 0: final_stance = final_stance * -1
@@ -318,8 +321,6 @@ def parse_gemini_data(text):
                 elif any(k in name for k in CAMP_KEYWORDS["BLUE"] + CAMP_KEYWORDS["RED"]):
                     if final_stance < 0: final_stance = final_stance * -1
                     if final_stance == 0: final_stance = 5
-                
-                # 不使用 Jitter，保持數值乾淨
                 
                 data["spectrum"].append({
                     "source": name, 
@@ -337,7 +338,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V15.9] 新增：光譜列表渲染 (HTML Table)
+# [V15.9] 光譜列表渲染 (HTML Table)
 def render_spectrum_table(spectrum_data):
     if not spectrum_data: return
     
@@ -395,7 +396,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V15.9")
+    st.title("全域觀點解析 V16.0")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -414,17 +415,37 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
-    with st.expander("🧠 系統邏輯透明化", expanded=False):
-        st.markdown("""
-        **1. 光譜判讀 (Spectrum)**:
-        * **泛綠/批判**: 自由、三立、民視 (強制負分)
-        * **泛藍/體制**: 中時、聯合、TVBS (強制正分)
-        * **中立**: 外媒、官方公報
+    # [V16.0] 白盒子邏輯公開區
+    with st.expander("🧠 演算法核心參數公開 (White Box)", expanded=False):
+        st.markdown("#### 1. 政治光譜校正公式 (Spectrum Calibration)")
+        st.code("""
+# 針對台灣媒體生態的強制校正邏輯
+# 目標：防止 AI 對已知立場媒體產生幻覺
+
+def calibrate(media_name, ai_score):
+    # 🟢 泛綠/批判陣營 (Green/Critical)
+    # 關鍵字：自由, 三立, 民視, 新頭殼, 鏡週刊...
+    if media_name in GREEN_KEYWORDS:
+        if ai_score > 0: return -1 * ai_score  # 強制轉負
+        if ai_score == 0: return -5            # 強制給分
+    
+    # 🔵 泛藍/體制陣營 (Blue/Establishment)
+    # 關鍵字：中時, 聯合, TVBS, 中天, 風傳媒...
+    if media_name in BLUE_KEYWORDS:
+        if ai_score < 0: return -1 * ai_score  # 強制轉正
+        if ai_score == 0: return 5             # 強制給分
         
-        **2. 數位戰情室 (Scenario)**:
-        * **鷹派 (Hawk)**: 衝突風險分析
-        * **鴿派 (Dove)**: 經濟理性分析
-        * **歷史學家**: 歷史案例借鏡
+    return ai_score # 其他媒體維持 AI 判斷
+        """, language="python")
+        
+        st.markdown("#### 2. 未來推演代理人設定 (Agent Prompts)")
+        st.markdown("""
+        * **🦅 鷹派 (Hawk)**:
+            > "你是一位專注於衝突升級、最壞情況與敵意分析的戰略家。請找出所有顯示局勢惡化的訊號。"
+        * **🕊️ 鴿派 (Dove)**:
+            > "你是一位專注於經濟理性、外交緩衝與現狀維持的分析師。請找出所有顯示雙方克制與共同利益的訊號。"
+        * **📜 歷史學家 (Historian)**:
+            > "請忽略短期雜訊，從過去 50 年的歷史中尋找相似案例 (Historical Analogy)，分析當時的結局。"
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
