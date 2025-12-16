@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.8", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.6", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -45,7 +45,7 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    /* 引用標記樣式 */
+    /* [V16.6] 引用標記樣式 (移除上標，改為平齊小字) */
     .citation {
         font-size: 0.85em; 
         color: #757575; 
@@ -77,6 +77,7 @@ st.markdown("""
     .table-header-blue { color: #1565c0; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #1565c0; margin-bottom: 10px; padding-bottom: 5px; }
     .table-header-neutral { color: #616161; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #616161; margin-bottom: 10px; padding-bottom: 5px; }
     
+    /* Legend 說明區 */
     .legend-box {
         background-color: #e3f2fd; border-radius: 8px; padding: 10px 15px; font-size: 0.9em; margin-bottom: 15px; border: 1px solid #bbdefb; color: #0d47a1;
     }
@@ -84,7 +85,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數
+# 2. 資料庫與共用常數 (硬邏輯校正用)
 # ==========================================
 CAMP_KEYWORDS = {
     "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥"],
@@ -96,20 +97,35 @@ def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
+# [V16.6] 引用樣式處理器 + 壓縮功能
 def format_citation_style(text):
     if not text: return ""
+    
+    # 1. 壓縮引用: [Source 1], [Source 2] -> [Source 1, 2]
+    # Regex 尋找連續的 Source 標記
     def compress_match(match):
+        # 抓出該段落中所有的數字
         nums = re.findall(r'\d+', match.group(0))
+        # 去重並排序
         unique_nums = sorted(list(set(nums)), key=int)
         return f'<span class="citation">Source {",".join(unique_nums)}</span>'
+
+    # 匹配模式：[Source X] 後面跟著 (逗號/空格 + [Source Y]) 重複出現
     pattern_compress = r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)'
+    
+    # 先執行壓縮與 HTML 包裹
     text = re.sub(pattern_compress, compress_match, text)
+    
+    # 2. 處理落單的引用 (如果上面的 Regex 沒抓到的)
+    # text = re.sub(r'\[Source (\d+)\]', r'<span class="citation">Source \1</span>', text)
+    
     return text
 
 # ==========================================
 # 3. 核心功能模組
 # ==========================================
 
+# 3.1 基礎工具：搜尋與 Cofacts
 def search_cofacts(query):
     url = "https://cofacts-api.g0v.tw/graphql"
     graphql_query = """
@@ -120,7 +136,7 @@ def search_cofacts(query):
     }
     """
     try:
-        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=3) # Timeout 縮短為 3秒
+        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=5)
         if response.status_code == 200:
             data = response.json()
             articles = data.get('data', {}).get('ListArticles', {}).get('edges', [])
@@ -140,8 +156,7 @@ def search_cofacts(query):
 
 def get_search_context(query, api_key_tavily, context_report=None):
     os.environ["TAVILY_API_KEY"] = api_key_tavily
-    # [V16.8] 減少搜尋數量至 10，提升速度
-    search = TavilySearchResults(max_results=10) 
+    search = TavilySearchResults(max_results=15)
     
     search_q = f"{query} 2025 news analysis"
     if context_report: search_q += " history context"
@@ -149,20 +164,22 @@ def get_search_context(query, api_key_tavily, context_report=None):
     try:
         results = search.invoke(search_q)
         context_text = ""
-        # 這裡不執行 Cofacts，移到外層分段執行，讓使用者看得到進度
+        
+        cofacts_txt = search_cofacts(query)
+        if cofacts_txt: context_text += f"{cofacts_txt}\n{'-'*20}\n"
         
         if context_report:
-            context_text += f"【歷史背景】\n{context_report[:800]}...\n\n"
+            context_text += f"【歷史背景】\n{context_report[:1000]}...\n\n"
             
         context_text += "【最新網路情報】(請嚴格使用 [Source ID] 引用)\n"
         for i, res in enumerate(results):
-            context_text += f"Source {i+1}: {res.get('url')} | {str(res.get('content'))[:800]}\n" # 截斷長度
+            context_text += f"Source {i+1}: {res.get('url')} | {str(res.get('content'))[:1000]}\n"
             
-        return context_text, results
+        return context_text, results, cofacts_txt
     except Exception as e:
-        return f"Error: {str(e)}", []
+        return f"Error: {str(e)}", [], ""
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
@@ -170,6 +187,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
+# 3.2 Mermaid 強力清洗器
 def sanitize_mermaid_code(code):
     code = re.sub(r'```mermaid', '', code)
     code = re.sub(r'```', '', code)
@@ -241,10 +259,11 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     ### [REPORT_TEXT]
     (Markdown 報告內容...)
     """
+    
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜
+# 3.4 核心邏輯：輿情光譜 (強化標題抓取)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
@@ -270,7 +289,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器
+# 3.5 資料解析器 (含硬邏輯校正 + 標題解析)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -289,12 +308,13 @@ def parse_gemini_data(text):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum
+        # Spectrum: 彈性解析 5 欄位
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
                 name = parts[0].strip()
-                title = "點擊閱讀報導" 
+                # 預設值
+                title = "點擊閱讀"
                 base_stance = 0
                 base_cred = 0
                 url = "#"
@@ -305,10 +325,12 @@ def parse_gemini_data(text):
                     base_cred = float(parts[3].strip())
                     url = parts[4].strip()
                 else:
+                    # Fallback for 4 columns
                     base_stance = float(parts[1].strip())
                     base_cred = float(parts[2].strip())
                     url = parts[3].strip()
 
+                # 硬邏輯校正
                 final_stance = base_stance
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
                     if final_stance > 0: final_stance = final_stance * -1
@@ -334,9 +356,11 @@ def parse_gemini_data(text):
 
     return data
 
+# [V16.6] 渲染含標題的表格 + 圖例
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
+    # 1. 顯示圖例 (Legend)
     st.markdown("""
     <div class="legend-box">
         <b>📊 燈號與數值說明：</b><br>
@@ -372,11 +396,12 @@ def render_spectrum_split(spectrum_data):
             elif c >= 4: c_txt = f"🟡 {c}"
             else: c_txt = f"🔴 {c}"
             
-            t_text = i.get('title', '點擊閱讀報導')
-            if len(t_text) > 25: t_text = t_text[:25] + "..."
-            t_url = i.get('url', '#')
+            # 標題如果太長截斷
+            display_title = i['title']
+            if len(display_title) > 25: display_title = display_title[:25] + "..."
             
-            title_link = f"[{t_text}]({t_url})"
+            title_link = f"[{display_title}]({i['url']})"
+            
             md += f"| {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
 
@@ -400,7 +425,7 @@ def convert_data_to_json(data):
 def convert_data_to_md(data):
     return f"""
 # 全域觀點分析報告
-产生時間: {datetime.now()}
+產生時間: {datetime.now()}
 
 ## 1. 深度分析
 {data.get('report_text')}
@@ -413,7 +438,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.8")
+    st.title("全域觀點解析 V16.6")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -435,17 +460,21 @@ with st.sidebar:
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 政治光譜校正機制 (Calibration)**
-        * **🟢 泛綠/批判區**：包含自由、三立、民視等，強制歸類為負分。
-        * **🔵 泛藍/體制區**：包含中時、聯合、TVBS等，強制歸類為正分。
+        * **🟢 泛綠/批判區**：
+          - 包含：自由、三立、民視、鏡週刊...
+          - 邏輯：強制歸類為負分，防止 AI 幻覺。
+        * **🔵 泛藍/體制區**：
+          - 包含：中時、聯合、TVBS、風傳媒...
+          - 邏輯：強制歸類為正分。
         
         **2. 深度報告生成邏輯 (Report Logic)**
-        * **媒體框架分析**: 偵測衝突與歸責框架。
-        * **識讀建議**: 基於資訊落差提出建議。
+        * **媒體框架分析 (Framing)**: 使用 Framing Theory 偵測衝突與歸責框架。
+        * **識讀建議 (Literacy)**: 基於資訊落差與情緒渲染度提出建議。
 
         **3. 數位戰情室設定 (Scenario)**
-        * **🦅 鷹派**: 專注衝突升級。
-        * **🕊️ 鴿派**: 專注經濟理性。
-        * **📜 歷史學家**: 尋找歷史案例。
+        * **🦅 鷹派**: 專注衝突升級與敵意螺旋。
+        * **🕊️ 鴿派**: 專注經濟互依與現狀維持。
+        * **📜 歷史學家**: 尋找相似歷史案例。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -468,47 +497,40 @@ if 'wargame_opinions' not in st.session_state: st.session_state.wargame_opinions
 if 'sources' not in st.session_state: st.session_state.sources = None
 if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
+# 邏輯執行
 if search_btn and query and google_key and tavily_key:
     st.session_state.spectrum_result = None
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    # [V16.8] 使用 st.status 顯示分段進度，解決使用者等待焦慮
-    with st.status("🚀 啟動全域掃描引擎...", expanded=True) as status:
-        
-        st.write("📡 1. 連線 Tavily 搜尋全球新聞資料 (Max 10 篇)...")
-        context_text, sources = get_search_context(query, tavily_key, past_report_input)
+    with st.spinner("📡 正在進行全網情報蒐集 (Tavily + Cofacts)..."):
+        context_text, sources, cofacts_txt = get_search_context(query, tavily_key, past_report_input)
         st.session_state.sources = sources
-        
-        st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
-        cofacts_txt = search_cofacts(query)
-        if cofacts_txt:
-            context_text += f"\n{cofacts_txt}\n"
         st.session_state.full_context = context_text
-        
-        st.write("🧠 3. AI 進行深度閱讀與分析 (這可能需要 15-30 秒)...")
         
         if "Spectrum" in analysis_mode:
             raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
             st.session_state.spectrum_result = parse_gemini_data(raw_report)
         else:
-            st.write("⚔️ 4. 召開虛擬戰情會議 (多代理人辯論)...")
-            opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
-            st.session_state.wargame_opinions = opinions
-            st.session_state.wargame_result = parse_gemini_data(raw_report)
-            
-        status.update(label="✅ 分析完成", state="complete", expanded=False)
-        
+            with st.status("⚔️ 進行多視角推演...", expanded=True) as status:
+                st.write("1. 正在傳喚不同觀點分析師...")
+                opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
+                st.session_state.wargame_opinions = opinions
+                st.session_state.wargame_result = parse_gemini_data(raw_report)
+                status.update(label="✅ 分析完成", state="complete", expanded=False)
     st.rerun()
 
+# 顯示：輿情光譜
 if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
     if data.get("spectrum"):
+        # [V16.6] 含 Legend 與標題
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
         render_spectrum_split(data["spectrum"])
 
     st.markdown("### 📝 媒體識讀報告")
+    # [V16.6] 引用壓縮與樣式處理
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
@@ -524,6 +546,7 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
                 status.update(label="✅ 推演完成", state="complete", expanded=False)
                 st.rerun()
 
+# 顯示：未來戰棋
 if st.session_state.wargame_result:
     st.divider()
     st.markdown(f"<h2 style='text-align: center;'>⚔️ 未來發展推演：{query}</h2>", unsafe_allow_html=True)
@@ -558,6 +581,7 @@ if st.session_state.wargame_result:
     formatted_report = format_citation_style(data_wg.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_report}</div>', unsafe_allow_html=True)
 
+# 文獻列表
 if st.session_state.sources:
     st.markdown("---")
     st.markdown("### 📚 引用文獻列表")
