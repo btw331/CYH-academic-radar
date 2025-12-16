@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.1", page_icon="🔗", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.2", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,13 +43,21 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
+    /* [V34.2] 引用樣式優化：灰底小字，降低干擾 */
     .citation {
-        font-size: 0.85em; color: #757575; background-color: #f0f0f0;
-        padding: 2px 6px; border-radius: 4px; margin: 0 2px;
-        font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
+        font-size: 0.75em;          /* 字體縮小 */
+        color: #777777;             /* 灰色文字 */
+        background-color: #f4f4f4;  /* 淡灰背景 */
+        padding: 2px 5px;           /* 內距縮小 */
+        border-radius: 4px;         /* 圓角 */
+        margin: 0 2px;
+        font-family: sans-serif; 
+        border: 1px solid #e0e0e0;  /* 極淡邊框 */
+        font-weight: 400;           /* 不加粗 */
+        vertical-align: 1px;        /* 微調垂直對齊 */
     }
 
-    /* 關鍵時序卷軸表格 */
+    /* 關鍵時序卷軸表格 (HTML Style) */
     .scrollable-table-container {
         height: 600px; 
         overflow-y: auto; 
@@ -131,6 +139,7 @@ INTL_WHITELIST = [
     "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
 ]
 
+# 分類對照表 (用於前端顯示 Emoji)
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
     "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
@@ -412,7 +421,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
 
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# [V34.1 Fix] 解析器：將 Source_ID 還原為真實 URL
+# 解析器：將 Source_ID 還原為真實 URL
 def parse_gemini_data(text):
     data = {"timeline": [], "report_text": ""}
     
@@ -460,7 +469,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V34.1 Fix] 渲染表格：ID -> URL 映射
+# 渲染表格：ID -> URL 映射
 def render_html_timeline(timeline_data, sources, blind_mode):
     if not timeline_data:
         return
@@ -471,7 +480,7 @@ def render_html_timeline(timeline_data, sources, blind_mode):
         media = "*****" if blind_mode else item.get('media', 'Unknown')
         title = item.get('title', 'No Title')
         
-        # [V34.1] 核心：透過 source_id 找回正確 URL
+        # 核心：透過 source_id 找回正確 URL
         s_id = item.get('source_id', 0)
         real_url = "#"
         if 0 < s_id <= len(sources):
@@ -544,7 +553,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.1")
+    st.title("全域觀點解析 V34.2")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -599,7 +608,7 @@ with st.sidebar:
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
-            <li><b>三軌平行搜尋</b>：同時搜尋事實、評論與深度分析，確保觀點多元。</li>
+            <li><b>三軌平行搜尋</b>：同時針對「事實/時序」、「觀點/爭議」、「深度/懶人包」三條軌道進行搜尋，確保資訊完整性。</li>
             <li><b>網域圍籬</b>：嚴格執行白名單機制，確保資訊來源可靠。</li>
             <li><b>智慧日期提取</b>：結合 API 元數據、URL 規則與 AI 內文推斷，最大化還原事件時間。</li>
         </ul>
@@ -658,7 +667,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.1 連結修復版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.2 連結修復版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
