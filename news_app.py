@@ -17,14 +17,14 @@ import random
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from datetime import datetime
+from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tavily import TavilyClient
 
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V33.1 (2.5全系列版)", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V33.3", page_icon="🔮", layout="wide")
 
 st.markdown("""
 <style>
@@ -109,7 +109,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (Strict Domain Lists)
+# 2. 資料庫與共用常數
 # ==========================================
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
@@ -134,15 +134,6 @@ DB_MAP = {
     "INDIE": ["twreporter", "theinitium", "thenewslens", "upmedia", "storm.mg", "mindiworld", "vocus", "matters", "plainlaw"],
     "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi.fr"],
     "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"]
-}
-
-NAME_KEYWORDS = {
-    "CHINA": ["新華", "人民日報", "環球", "央視", "國台辦", "中評", "解放軍", "陸媒", "北京", "宋濤", "xinhuanet", "huanqiu"],
-    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "民進黨", "賴清德", "綠營", "獨派", "抗中保台", "ltn", "setn", "ftv"],
-    "BLUE": ["聯合", "中國時報", "中時", "TVBS", "中天", "工商時報", "旺旺", "國民黨", "KMT", "侯友宜", "藍營", "統派", "udn", "chinatimes"],
-    "FARM": ["網傳", "謠言", "爆料", "內容農場", "PTT", "Dcard", "爆料公社"],
-    "OFFICIAL": ["中央社", "公視", "cna", "pts", "gov"],
-    "VIDEO": ["YouTube", "YouTuber", "網紅", "TikTok", "抖音", "館長", "直播"]
 }
 
 def get_domain_name(url):
@@ -300,26 +291,27 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    # [V33.1] 強制使用溫度 0.0 以確保一致性
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V33.1] 深度戰略分析 (學術框架應用 + 樣本檢定)
+# [V33.3] 深度戰略分析 (時間錨點注入 + 雙模式 Prompt)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位極度嚴謹的社會科學研究員與情報分析師。
-        請針對議題「{query}」進行【全域深度全量解析】。
+        你是一位極度嚴謹的社會科學研究員。
         
-        【⚠️ 最高指令 (PRIME DIRECTIVES)】：
-        1. **語言**：所有輸出內容必須使用繁體中文 (Traditional Chinese) 撰寫。
-        2. **一致性**：嚴格基於提供的事實資料進行分析，不做無根據的推測。
-        3. **證據鎖定**：每一句關鍵論述，都必須標註來源編號 (如 [Source 1])。若無來源支持，請回答「資料不足」。
-        4. **樣本檢定**：請自我檢核來源是否過於集中。若有，請在報告開頭標註「⚠️ 樣本偏差警告」。
+        【⚠️ 時間錨點】：今天是：{today_str}。請根據此日期推算新聞中的相對時間。
+        【⚠️ 最高指令】：
+        1. **語言**：所有輸出必須使用繁體中文 (Traditional Chinese)。
+        2. **一致性**：嚴格基於提供的事實資料分析。
+        3. **證據鎖定**：關鍵論述必須標註 [Source X]。
+        4. **樣本檢定**：請自我檢核來源是否過於集中，若有請在開頭標註「⚠️ 樣本偏差警告」。
         
-        【分析方法論 (Methodology)】：
+        【分析方法論】：
         1. **資訊檢索**：閱讀大量文本，識別資訊飽和度。
         2. **框架分析**：依據 Entman (1993) 理論，解構不同陣營的敘事框架。
         3. **三角驗證**：交叉比對官方說法、媒體報導與第三方查核。
@@ -331,8 +323,8 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         -> **日期規則**：若無法確定，請填寫「近期」。**嚴禁填寫 '2025-XX-XX'**。
         
         ### [REPORT_TEXT]
-        (Markdown 報告)
-        請包含以下章節 (繁體中文)：
+        (Markdown 報告 - 繁體中文)
+        請包含以下章節：
         1. **📊 全域現況摘要 (Situational Analysis)**
         2. **🔍 爭議點事實查核 (Fact-Check)**
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
@@ -344,6 +336,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         system_prompt = f"""
         你是一位專精於未來學 (Futures Studies) 的戰略顧問。
         
+        【⚠️ 時間錨點】：今天是 {today_str}。
         【⚠️ 最高指令】：
         1. 你現在接收到的是一份**「現況情報摘要」**。
         2. 請**不要**重複摘要這份情報。
@@ -351,7 +344,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         4. 所有內容必須使用繁體中文。
         
         【分析方法論 (Methodology)】：
-        1. **CLA 層次分析**：表象 (Litany) -> 系統 (System) -> 世界觀 (Worldview) -> 神話 (Myth)。
+        1. **CLA 層次分析**：表象 -> 系統 -> 世界觀 -> 神話。
         2. **可能性圓錐**：推演三種情境。
 
         【輸出格式】：
@@ -361,14 +354,12 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **🎯 CLA 深度解構 (Causal Layered Analysis)**
-           - **Litany (表象層)**: ...
-           - **System (系統層)**: ...
-           - **Worldview (世界觀層)**: ...
-           - **Myth (神話/隱喻層)**: ...
+           - Litany (表象)
+           - System (系統)
+           - Worldview (世界觀)
+           - Myth (神話)
         2. **🔮 未來情境模擬 (Scenario Planning)**
-           - **基準情境 (Baseline)**: ...
-           - **轉折情境 (Alternative)**: ...
-           - **極端情境 (Wild Card)**: ...
+           - 基準 / 轉折 / 極端情境
         3. **💡 綜合戰略建議**
         """
     else:
@@ -393,11 +384,13 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
-                # 相容性處理
                 if len(parts) >= 6: url = parts[5].strip()
                 elif len(parts) >= 4: url = parts[3].strip()
                 
                 url = url.rstrip(")").rstrip("]").strip()
+                
+                if "XX" in date or "xx" in date:
+                    date = "近期"
                 
                 data["timeline"].append({
                     "date": date,
@@ -431,7 +424,6 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
-        # [V33.1] 絕對網域分類
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -493,7 +485,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V33.1")
+    st.title("全域觀點解析 V33.3")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -518,7 +510,6 @@ with st.sidebar:
         else:
             tavily_key = st.text_input("Tavily Key", type="password")
             
-        # [V33.1] 2.5 全系列模型選擇 (Pro 預設)
         model_name = st.selectbox(
             "模型 (Gemini 2.5 Series)", 
             ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"], 
@@ -550,7 +541,7 @@ with st.sidebar:
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
             <li><b>大數據吞吐 (High Volume)</b>：單次分析最高可處理 100 篇文獻，以確保統計顯著性，避免小樣本偏誤 (Small Sample Bias)。</li>
-            <li><b>來源多樣性 (Diversity)</b>：系統會自動偵測來源是否過於集中，並提出樣本偏差警告。</li>
+            <li><b>時間錨點 (Time Anchor)</b>：系統會自動校正新聞相對時間，確保時序精準度。</li>
         </ul>
 
         <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
@@ -586,23 +577,29 @@ with st.sidebar:
         past_report_input = st.text_area("貼上舊報告 Markdown：", height=100)
         
     st.markdown("### 📥 報告匯出")
-    if st.session_state.get('result') or st.session_state.get('wargame_result'):
-        active_data = st.session_state.get('wargame_result') if "Scenario" in analysis_mode else st.session_state.get('result')
-        if active_data:
-            st.download_button("下載 JSON", convert_data_to_json(active_data), "report.json", "application/json")
-            st.download_button("下載 Markdown", convert_data_to_md(active_data), "report.md", "text/markdown")
+    if st.session_state.get('result') or st.session_state.get('scenario_result'):
+        # 匯出邏輯：優先匯出完整報告 (含推演)
+        export_data = st.session_state.get('result').copy()
+        if st.session_state.get('scenario_result'):
+            export_data['report_text'] += "\n\n# 未來發展推演報告\n" + st.session_state.get('scenario_result')['report_text']
+            
+        st.download_button("下載 JSON", convert_data_to_json(export_data), "report.json", "application/json")
+        st.download_button("下載 Markdown", convert_data_to_md(export_data), "report.md", "text/markdown")
 
 st.title(f"{analysis_mode.split(' ')[0]}")
 query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
 search_btn = st.button("🚀 啟動全域掃描", type="primary")
 
+# 初始化 session state
 if 'result' not in st.session_state: st.session_state.result = None
+if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None # [V33.3] 新增推演結果儲存區
 if 'sources' not in st.session_state: st.session_state.sources = None
 
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
+    st.session_state.scenario_result = None # 重置推演結果
     
-    with st.status("🚀 啟動全域掃描引擎 (V33.1 深度全量版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V33.3 深度全量版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -619,43 +616,44 @@ if search_btn and query and google_key and tavily_key:
         
         st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
         
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-        
-        # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
-        if mode_code == "DEEP_SCENARIO" and past_report_input:
-             analysis_context = past_report_input
-        else:
-             analysis_context = context_text
-
-        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
+        # 預設執行 FUSION 模式
+        raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode="FUSION")
         st.session_state.result = parse_gemini_data(raw_report)
             
         status.update(label="✅ 分析完成", state="complete", expanded=False)
         
     st.rerun()
 
+# 顯示區域
 if st.session_state.result:
     data = st.session_state.result
     
-    # 1. 顯示卷軸表格 (V33 極簡版)
+    # 1. 顯示卷軸表格
     render_html_timeline(data.get("timeline"), blind_mode)
 
-    # 2. 顯示深度報告
+    # 2. 顯示第一階段：綜合戰略分析報告
     st.markdown("---")
     st.markdown("### 📝 綜合戰略分析報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
-    st.markdown("---")
-    # [V30.1 Fix] 資訊滾動按鈕邏輯補完
-    if "未來" not in analysis_mode:
+    # [V33.3] 資訊滾動按鈕 (保留原畫面，不洗掉 result)
+    if "未來" not in analysis_mode and not st.session_state.scenario_result:
+        st.markdown("---")
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
                 current_report = data.get("report_text", "")
-                # 強制切換為 DEEP_SCENARIO 模式
                 raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="DEEP_SCENARIO")
-                st.session_state.result = parse_gemini_data(raw_text)
+                st.session_state.scenario_result = parse_gemini_data(raw_text) # 存入第二儲存區
                 st.rerun()
+
+# [V33.3] 顯示第二階段：未來發展推演報告 (接續顯示)
+if st.session_state.scenario_result:
+    st.markdown("---")
+    st.markdown("### 🔮 未來發展推演報告")
+    scenario_data = st.session_state.scenario_result
+    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
+    st.markdown(f'<div class="report-paper">{formatted_scenario}</div>', unsafe_allow_html=True)
 
 if st.session_state.sources:
     st.markdown("---")
