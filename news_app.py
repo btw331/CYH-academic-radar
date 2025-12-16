@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.7", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.8", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -98,12 +98,10 @@ def get_domain_name(url):
 
 def format_citation_style(text):
     if not text: return ""
-    # 壓縮引用 [Source 1], [Source 2] -> [Source 1, 2]
     def compress_match(match):
         nums = re.findall(r'\d+', match.group(0))
         unique_nums = sorted(list(set(nums)), key=int)
         return f'<span class="citation">Source {",".join(unique_nums)}</span>'
-
     pattern_compress = r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)'
     text = re.sub(pattern_compress, compress_match, text)
     return text
@@ -122,7 +120,7 @@ def search_cofacts(query):
     }
     """
     try:
-        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=5)
+        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=3) # Timeout 縮短為 3秒
         if response.status_code == 200:
             data = response.json()
             articles = data.get('data', {}).get('ListArticles', {}).get('edges', [])
@@ -142,28 +140,29 @@ def search_cofacts(query):
 
 def get_search_context(query, api_key_tavily, context_report=None):
     os.environ["TAVILY_API_KEY"] = api_key_tavily
-    search = TavilySearchResults(max_results=15)
+    # [V16.8] 減少搜尋數量至 10，提升速度
+    search = TavilySearchResults(max_results=10) 
+    
     search_q = f"{query} 2025 news analysis"
     if context_report: search_q += " history context"
     
     try:
         results = search.invoke(search_q)
         context_text = ""
-        cofacts_txt = search_cofacts(query)
-        if cofacts_txt: context_text += f"{cofacts_txt}\n{'-'*20}\n"
+        # 這裡不執行 Cofacts，移到外層分段執行，讓使用者看得到進度
         
         if context_report:
-            context_text += f"【歷史背景】\n{context_report[:1000]}...\n\n"
+            context_text += f"【歷史背景】\n{context_report[:800]}...\n\n"
             
         context_text += "【最新網路情報】(請嚴格使用 [Source ID] 引用)\n"
         for i, res in enumerate(results):
-            context_text += f"Source {i+1}: {res.get('url')} | {str(res.get('content'))[:1000]}\n"
+            context_text += f"Source {i+1}: {res.get('url')} | {str(res.get('content'))[:800]}\n" # 截斷長度
             
-        return context_text, results, cofacts_txt
+        return context_text, results
     except Exception as e:
-        return f"Error: {str(e)}", [], ""
+        return f"Error: {str(e)}", []
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.2)
@@ -295,12 +294,11 @@ def parse_gemini_data(text):
             parts = line.split("|")
             try:
                 name = parts[0].strip()
-                title = "點擊閱讀報導" # 預設值
+                title = "點擊閱讀報導" 
                 base_stance = 0
                 base_cred = 0
                 url = "#"
                 
-                # [V16.7 Fix] 彈性處理欄位，防止 KeyError
                 if len(parts) >= 5:
                     title = parts[1].strip()
                     base_stance = float(parts[2].strip())
@@ -336,7 +334,6 @@ def parse_gemini_data(text):
 
     return data
 
-# [V16.7 Fix] 渲染防呆
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
@@ -375,7 +372,6 @@ def render_spectrum_split(spectrum_data):
             elif c >= 4: c_txt = f"🟡 {c}"
             else: c_txt = f"🔴 {c}"
             
-            # [V16.7 Fix] 使用 .get() 防止崩潰，並截斷過長標題
             t_text = i.get('title', '點擊閱讀報導')
             if len(t_text) > 25: t_text = t_text[:25] + "..."
             t_url = i.get('url', '#')
@@ -404,7 +400,7 @@ def convert_data_to_json(data):
 def convert_data_to_md(data):
     return f"""
 # 全域觀點分析報告
-產生時間: {datetime.now()}
+产生時間: {datetime.now()}
 
 ## 1. 深度分析
 {data.get('report_text')}
@@ -417,7 +413,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.7")
+    st.title("全域觀點解析 V16.8")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -439,17 +435,17 @@ with st.sidebar:
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 政治光譜校正機制 (Calibration)**
-        * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
-        * **🔵 泛藍/體制區**：中時、聯合、TVBS... (強制正分)
+        * **🟢 泛綠/批判區**：包含自由、三立、民視等，強制歸類為負分。
+        * **🔵 泛藍/體制區**：包含中時、聯合、TVBS等，強制歸類為正分。
         
         **2. 深度報告生成邏輯 (Report Logic)**
         * **媒體框架分析**: 偵測衝突與歸責框架。
         * **識讀建議**: 基於資訊落差提出建議。
 
-        **3. 數位戰情室 (Scenario)**
-        * **🦅 鷹派**: 衝突升級分析。
-        * **🕊️ 鴿派**: 經濟理性分析。
-        * **📜 歷史學家**: 歷史案例借鏡。
+        **3. 數位戰情室設定 (Scenario)**
+        * **🦅 鷹派**: 專注衝突升級。
+        * **🕊️ 鴿派**: 專注經濟理性。
+        * **📜 歷史學家**: 尋找歷史案例。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -477,21 +473,32 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.spinner("📡 正在進行全網情報蒐集 (Tavily + Cofacts)..."):
-        context_text, sources, cofacts_txt = get_search_context(query, tavily_key, past_report_input)
+    # [V16.8] 使用 st.status 顯示分段進度，解決使用者等待焦慮
+    with st.status("🚀 啟動全域掃描引擎...", expanded=True) as status:
+        
+        st.write("📡 1. 連線 Tavily 搜尋全球新聞資料 (Max 10 篇)...")
+        context_text, sources = get_search_context(query, tavily_key, past_report_input)
         st.session_state.sources = sources
+        
+        st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
+        cofacts_txt = search_cofacts(query)
+        if cofacts_txt:
+            context_text += f"\n{cofacts_txt}\n"
         st.session_state.full_context = context_text
+        
+        st.write("🧠 3. AI 進行深度閱讀與分析 (這可能需要 15-30 秒)...")
         
         if "Spectrum" in analysis_mode:
             raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
             st.session_state.spectrum_result = parse_gemini_data(raw_report)
         else:
-            with st.status("⚔️ 進行多視角推演...", expanded=True) as status:
-                st.write("1. 正在傳喚不同觀點分析師...")
-                opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
-                st.session_state.wargame_opinions = opinions
-                st.session_state.wargame_result = parse_gemini_data(raw_report)
-                status.update(label="✅ 分析完成", state="complete", expanded=False)
+            st.write("⚔️ 4. 召開虛擬戰情會議 (多代理人辯論)...")
+            opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
+            st.session_state.wargame_opinions = opinions
+            st.session_state.wargame_result = parse_gemini_data(raw_report)
+            
+        status.update(label="✅ 分析完成", state="complete", expanded=False)
+        
     st.rerun()
 
 if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
