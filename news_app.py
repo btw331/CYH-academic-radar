@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.3", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.4", page_icon="🕊️", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,22 +43,22 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    /* [V34.3] 引用樣式優化：灰底小字，降低干擾 */
+    /* [V34.3] 引用樣式優化：灰底小字 */
     .citation {
-        font-size: 0.75em;          /* 字體縮小 */
-        color: #777777;             /* 灰色文字 */
-        background-color: #f4f4f4;  /* 淡灰背景 */
-        padding: 2px 6px;           /* 內距 */
-        border-radius: 4px;         /* 圓角 */
-        margin: 0 4px;              /* 左右留白 */
+        font-size: 0.75em;          
+        color: #777777;             
+        background-color: #f4f4f4;  
+        padding: 2px 6px;           
+        border-radius: 4px;         
+        margin: 0 4px;              
         font-family: sans-serif; 
-        border: 1px solid #e0e0e0;  /* 極淡邊框 */
-        font-weight: 400;           /* 不加粗 */
-        vertical-align: 1px;        /* 微調垂直對齊 */
-        display: inline-block;      /* 確保整塊顯示 */
+        border: 1px solid #e0e0e0;  
+        font-weight: 400;           
+        vertical-align: 1px;        
+        display: inline-block;      
     }
 
-    /* 關鍵時序卷軸表格 (HTML Style) */
+    /* 關鍵時序卷軸表格 */
     .scrollable-table-container {
         height: 600px; 
         overflow-y: auto; 
@@ -140,7 +140,6 @@ INTL_WHITELIST = [
     "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
 ]
 
-# 分類對照表 (用於前端顯示 Emoji)
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
     "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
@@ -191,26 +190,16 @@ def get_category_meta(cat):
 # [V34.3 Fix] 萬能引用格式化函式
 def format_citation_style(text):
     if not text: return ""
-    
     def replacement(match):
-        # 提取括號內的所有數字
         nums = re.findall(r'\d+', match.group(0))
         if not nums: return match.group(0)
-        # 去重並排序
         unique_nums = sorted(list(set(nums)), key=int)
-        # 返回 HTML 格式
         return f'<span class="citation">Source {", ".join(unique_nums)}</span>'
-
-    # 1. 捕捉連續單一引用: [Source 1][Source 2]
+    
     text = re.sub(r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)', replacement, text)
-    
-    # 2. 捕捉合併引用 (含全形/半形括號): (Source 1, 2), （Source 1, 2）, [Source 1, 2]
-    # 正則解釋: [\[\(（] 匹配任意左括號, \s*Source\s+ 匹配 Source 字樣, [\d,，、\s]+ 匹配數字與分隔符
     text = re.sub(r'([\[\(（]\s*Source\s+[\d,，、\s]+[\]\)）])', replacement, text)
-    
     return text
 
-# 網址日期提取器
 def extract_date_from_url(url):
     if not url: return None
     patterns = [
@@ -260,7 +249,6 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# 三軌平行搜尋
 def execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode):
     if search_params['max_results'] <= 20 and not is_strict_mode:
         tavily = TavilyClient(api_key=api_key_tavily)
@@ -362,30 +350,36 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 深度戰略分析
+# [V34.4] 深度戰略分析 (De-militarized Tone)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
+    # 共同的語氣指令 (Tone Instruction)
+    tone_instruction = """
+    【⚠️ 語氣風格指令 (TONE & STYLE)】：
+    1. **去軍事化**：嚴禁使用軍事隱喻（如：戰場、開戰、彈藥、焦土戰、攻防）。
+    2. **中性專業**：請使用「社會科學」、「政策研究」或「經濟學」的中性術語（如：場域、競合、資源配置、結構性因素、觀點分歧）。
+    3. **建設性**：分析應側重於問題解決與趨勢演變，而非渲染衝突。
+    """
+
     if mode == "FUSION":
         system_prompt = f"""
         你是一位極度嚴謹的社會科學研究員。
         
         【⚠️ 時間錨點】：今天是：{today_str}。
+        {tone_instruction}
         
-        【⚠️ 數據結構指令 (重要)】：
-        在產生 [DATA_TIMELINE] 時，**不需要** 輸出完整的網址 (URL)。
-        請輸出 **來源編號 (Source ID)**，格式為 `Source X` 的數字 `X`。
+        【⚠️ 數據結構指令】：
+        請輸出 **來源編號 (Source ID)**，格式為 `Source X`。
         
         【分析方法論】：
-        1. **資訊檢索**：閱讀大量文本，識別資訊飽和度。
-        2. **框架分析**：依據 Entman (1993) 理論，解構不同陣營的敘事框架。
-        3. **三角驗證**：交叉比對官方說法、媒體報導與第三方查核。
+        1. **資訊檢索**：識別資訊飽和度。
+        2. **框架分析**：依據 Entman 框架，解構不同陣營的敘事。
+        3. **三角驗證**：交叉比對官方說法、媒體報導與查核結果。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|Source_ID)
-        -> Source_ID 請填寫整數 (例如 1, 5, 20)。
-        -> 日期規則：若標示 [Date: Missing]，請嘗試從內文推算；若無法推算，請填「近期」。
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
@@ -394,17 +388,22 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         2. **🔍 爭議點事實查核 (Fact-Check)**
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
-        5. **🤔 結構性反思 (Critical Reflection)**
+        5. **🤔 結構性反思 (Structural Reflection)**
         """
         
     elif mode == "DEEP_SCENARIO":
         system_prompt = f"""
-        你是一位專精於未來學 (Futures Studies) 的戰略顧問。
+        你是一位專精於未來學 (Futures Studies) 的政策顧問。
+        
         【⚠️ 時間錨點】：今天是 {today_str}。
-        【⚠️ 最高指令】：使用繁體中文。
+        {tone_instruction}
+        【⚠️ 最高指令】：
+        1. 接收「現況情報摘要」，請**不要**重複摘要。
+        2. 直接應用 **CLA 層次分析法** 向下挖掘。
+        3. 使用繁體中文。
         
         【分析方法論】：
-        1. **CLA 層次分析**：表象 -> 系統 -> 世界觀 -> 神話。
+        1. **CLA 層次分析**：表象 -> 系統 -> 世界觀 -> 神話/隱喻。
         2. **可能性圓錐**：推演三種情境。
 
         【輸出格式】：
@@ -414,13 +413,15 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **🎯 CLA 深度解構 (Causal Layered Analysis)**
-           - Litany (表象)
-           - System (系統)
-           - Worldview (世界觀)
-           - Myth (神話)
-        2. **🔮 未來情境模擬 (Scenario Planning)**
-           - 基準 / 轉折 / 極端情境
-        3. **💡 綜合戰略建議**
+           - Litany (表象層)
+           - System (系統層)
+           - Worldview (世界觀層)
+           - Myth (神話/隱喻層)
+        2. **🔮 未來趨勢路徑模擬 (Scenario Planning)**
+           - 基準路徑 (Baseline)
+           - 轉折路徑 (Alternative)
+           - 極端路徑 (Wild Card)
+        3. **💡 綜合發展與因應建議**
         """
     else:
         system_prompt = f"請針對 {query} 進行分析。"
@@ -552,7 +553,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.3")
+    st.title("全域觀點解析 V34.4")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -666,7 +667,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.3 樣式修復版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.4 去軍事化版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -687,10 +688,17 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
+        st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 語氣校正)...")
         
-        # 預設執行 FUSION 模式
-        raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode="FUSION")
+        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
+        
+        # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
+        if mode_code == "DEEP_SCENARIO" and past_report_input:
+             analysis_context = past_report_input
+        else:
+             analysis_context = context_text
+
+        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
         st.session_state.result = parse_gemini_data(raw_report)
             
         status.update(label="✅ 分析完成", state="complete", expanded=False)
