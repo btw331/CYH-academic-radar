@@ -26,12 +26,13 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V15.7", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V15.8", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
     .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
     
+    /* 報告紙張風格 */
     .report-paper {
         background-color: #fdfbf7; 
         color: #2c3e50; 
@@ -40,10 +41,26 @@ st.markdown("""
         margin-bottom: 15px; 
         border: 1px solid #e0e0e0;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        font-family: "Georgia", serif;
+        font-family: "Georgia", "Cambria", "Times New Roman", serif;
         line-height: 1.8;
+        font-size: 1.05rem;
     }
     
+    /* [V15.8] 引用標記樣式優化 (小字、灰體) */
+    .citation {
+        font-size: 0.75em;
+        color: #9e9e9e;
+        background-color: #f5f5f5;
+        padding: 1px 4px;
+        border-radius: 4px;
+        margin-left: 2px;
+        margin-right: 2px;
+        vertical-align: super;
+        font-family: sans-serif;
+        border: 1px solid #eeeeee;
+    }
+
+    /* 觀點對照盒 */
     .perspective-box {
         padding: 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.95em;
         border-left-width: 4px; border-left-style: solid;
@@ -63,7 +80,6 @@ st.markdown("""
 # ==========================================
 # 2. 資料庫與共用常數 (用於硬邏輯校正)
 # ==========================================
-# 定義明確的陣營關鍵字，用於強制校正座標
 CAMP_KEYWORDS = {
     "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨"],
     "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營"],
@@ -73,6 +89,18 @@ CAMP_KEYWORDS = {
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
+
+# [V15.8] 引用樣式處理器
+def format_citation_style(text):
+    """
+    將 [Source 1], [Source 1, 2] 等文字替換為帶有 .citation class 的 HTML span
+    """
+    if not text: return ""
+    # Regex 匹配 [Source ...] 格式
+    pattern = r'(\[Source[^\]]*\])'
+    # 替換為 HTML
+    styled_text = re.sub(pattern, r'<span class="citation">\1</span>', text)
+    return styled_text
 
 # ==========================================
 # 3. 核心功能模組
@@ -140,13 +168,8 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 3.2 Mermaid 強力清洗器 (保留 V15.6 的修復版)
+# 3.2 Mermaid 強力清洗器
 def sanitize_mermaid_code(code):
-    """
-    暴力修復 Mermaid 語法錯誤：
-    1. 移除 markdown
-    2. 強制將節點內容轉為 string，並移除所有 () [] 等符號
-    """
     code = re.sub(r'```mermaid', '', code)
     code = re.sub(r'```', '', code)
     code = code.strip()
@@ -159,18 +182,12 @@ def sanitize_mermaid_code(code):
         
     for line in lines:
         if not line.strip(): continue
-        
-        # 使用 Regex 找出所有 "..." 中的內容，並替換掉裡面的 ( )
         def clean_match(match):
             content = match.group(1)
             content = content.replace('(', ' ').replace(')', ' ').replace('[', ' ').replace(']', ' ')
             return f'["{content}"]'
-
-        # 將 A[Text] 轉換為 A["Text"]
         line = re.sub(r'\[(.*?)\]', clean_match, line)
-        # 將 A(Text) 轉換為 A["Text"]
         line = re.sub(r'\((.*?)\)', clean_match, line)
-        
         clean_lines.append(line)
             
     return "\n".join(clean_lines)
@@ -230,16 +247,21 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜 (回歸 V15.4 的 Prompt 風格，但保留格式)
+# 3.4 核心邏輯：輿情光譜
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位精通台灣政治光譜的媒體分析師。請針對「{query}」進行媒體框架分析。
     
-    【任務】：
-    1. 識別每個來源的「政治立場」與「可信度」。
-    2. **評分標準 (非常重要)**：
-       - 立場 (Stance): -10 (泛綠/批判/反對) <---> 0 (中立) <---> 10 (泛藍/體制/支持)。
-       - 可信度 (Credibility): 0 (內容農場) <---> 10 (權威機構)。
+    【評分嚴格規定】：
+    1. **立場分數 (Stance)**：必須區分正負！
+       - **負數 (-10 到 -1)**：代表【批判 / 改革 / 反對黨 / 泛綠 / 獨派】觀點。
+       - **零 (0)**：代表【中立 / 純事實 / 外媒】。
+       - **正數 (1 到 10)**：代表【支持 / 體制 / 執政黨 / 泛藍 / 統派 / 紅媒】觀點。
+    
+    2. **可信度 (Credibility)**：
+       - 0-3：內容農場、社群留言、極端言論。
+       - 4-7：一般商業媒體、有立場但有查證。
+       - 8-10：官方公報、學術期刊、權威外媒、Cofacts 認證事實。
     
     【輸出格式 (請保持格式整潔，每行一筆)】：
     ### [DATA_TIMELINE]
@@ -254,30 +276,24 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器 (包含 V15.7 的強制座標校正)
+# 3.5 資料解析器
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
-    # 提取 Mermaid
     mermaid_match = re.search(r"```mermaid\n(.*?)\n```", text, re.DOTALL)
     if mermaid_match:
         data["mermaid"] = mermaid_match.group(1)
         text = text.replace(mermaid_match.group(0), "")
 
-    # 使用 Regex 進行更穩健的分割，避免 V15.6 的排版錯誤
-    # 先抓取各個區塊
-    
     lines = text.split('\n')
     for line in lines:
         line = line.strip()
         if not line: continue
         
-        # Timeline Parsing
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum Parsing
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
@@ -286,25 +302,19 @@ def parse_gemini_data(text):
                 base_cred = float(parts[2].strip())
                 url = parts[3].strip()
                 
-                # [V15.7 強制校正邏輯]
-                # AI 有時候給分不準，這裡用 Python 強制介入
+                # [V15.8 硬邏輯校正]
                 final_stance = base_stance
-                
-                # 1. 檢查是否為泛綠/批判媒體 -> 強制為負數
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
-                    if final_stance > 0: final_stance = final_stance * -1 # 轉負
-                    if final_stance == 0: final_stance = -5 # 若 AI 給中立但其實是綠媒，強制給分
-                
-                # 2. 檢查是否為泛藍/紅/體制媒體 -> 強制為正數
+                    if final_stance > 0: final_stance = final_stance * -1
+                    if final_stance == 0: final_stance = -5
                 elif any(k in name for k in CAMP_KEYWORDS["BLUE"] + CAMP_KEYWORDS["RED"]):
-                    if final_stance < 0: final_stance = final_stance * -1 # 轉正
+                    if final_stance < 0: final_stance = final_stance * -1
                     if final_stance == 0: final_stance = 5
                 
-                # Jitter (防止重疊)
+                # Jitter
                 jitter_x = random.uniform(-1.5, 1.5)
                 jitter_y = random.uniform(-0.5, 0.5)
                 
-                # 邊界限制
                 final_stance = max(-13, min(13, final_stance + jitter_x))
                 final_cred = max(0, min(10, base_cred + jitter_y))
                 
@@ -316,12 +326,10 @@ def parse_gemini_data(text):
                 })
             except: pass
 
-    # Report Text Extraction (Regex is safer)
     report_split = re.split(r'###\s*\[?REPORT_TEXT\]?', text)
     if len(report_split) > 1:
         data["report_text"] = report_split[-1].strip()
     else:
-        # Fallback: 找不到標籤時，假設最後剩下的長文字是報告
         data["report_text"] = text
 
     return data
@@ -336,8 +344,6 @@ def render_spectrum_chart(spectrum_data):
         range_x=[-15, 15], range_y=[-2, 13], opacity=0.9,
         labels={"stance": "政治光譜", "credibility": "可信度"}
     )
-    
-    # 背景象限 (綠 vs 藍)
     fig.add_shape(type="rect", x0=-15, y0=0, x1=0, y1=13, fillcolor="rgba(46, 125, 50, 0.05)", layer="below", line_width=0)
     fig.add_shape(type="rect", x0=0, y0=0, x1=15, y1=13, fillcolor="rgba(21, 101, 192, 0.05)", layer="below", line_width=0)
     
@@ -371,7 +377,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V15.7")
+    st.title("全域觀點解析 V15.8")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -390,10 +396,28 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
+    # [V15.8] 新增透明化側邊欄
+    with st.expander("🧠 AI 推論邏輯與公式 (透明化)", expanded=False):
+        st.markdown("""
+        ### 1. 輿情光譜 (Spectrum Logic)
+        * **X軸 (立場)**: 
+            * 範圍：-10 (泛綠/批判) ~ +10 (泛藍/體制)。
+            * **強制校正**: 為避免 AI 幻覺，若偵測到特定媒體關鍵字（如自由、三立 vs 中時、聯合），系統會強制修正其正負號。
+            * **抖動 (Jitter)**: 加入 ±1.5 的隨機數值，避免立場相近的媒體點重疊。
+        * **Y軸 (可信度)**: 
+            * 基於來源權威性、內容農場特徵、Cofacts 查核紀錄綜合評分。
+        
+        ### 2. 未來推演 (War Game Logic)
+        * **多代理人架構**:
+            * 🦅 **鷹派**: 專注分析衝突升級與風險。
+            * 🕊️ **鴿派**: 專注分析經濟理性與避險。
+            * 📜 **歷史學家**: 尋找過去 50 年的相似案例 (Historical Analogy)。
+        * **系統動力圖**: 使用 Mermaid.js 繪製變數間的正負回饋迴路。
+        """)
+
     with st.expander("📂 匯入舊情報", expanded=False):
         past_report_input = st.text_area("貼上舊報告 Markdown：", height=100)
         
-    # 下載按鈕
     st.markdown("### 📥 報告匯出")
     if st.session_state.get('spectrum_result') or st.session_state.get('wargame_result'):
         active_data = st.session_state.get('wargame_result') if "Scenario" in analysis_mode else st.session_state.get('spectrum_result')
@@ -411,7 +435,6 @@ if 'wargame_opinions' not in st.session_state: st.session_state.wargame_opinions
 if 'sources' not in st.session_state: st.session_state.sources = None
 if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
-# 邏輯執行
 if search_btn and query and google_key and tavily_key:
     st.session_state.spectrum_result = None
     st.session_state.wargame_result = None
@@ -444,7 +467,9 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### 📝 媒體識讀報告")
-    st.markdown(f'<div class="report-paper">{data.get("report_text")}</div>', unsafe_allow_html=True)
+    # [V15.8] 應用引用樣式
+    formatted_text = format_citation_style(data.get("report_text", ""))
+    st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
     st.info("覺得議題需要更深度推演？請點擊下方按鈕。")
@@ -468,13 +493,17 @@ if st.session_state.wargame_result:
         c_a, c_b, c_ctx = st.columns(3)
         with c_a:
             st.markdown(f'<div class="perspective-box box-blue"><b>🔵 體制/現狀視角</b><br>{ops.get("A_SIDE")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看完整論述"): st.markdown(ops.get("A_SIDE"))
+            with st.popover("查看完整論述"): 
+                # [V15.8] 應用引用樣式
+                st.markdown(format_citation_style(ops.get("A_SIDE")), unsafe_allow_html=True)
         with c_b:
             st.markdown(f'<div class="perspective-box box-green"><b>🟢 批判/改革視角</b><br>{ops.get("B_SIDE")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看完整論述"): st.markdown(ops.get("B_SIDE"))
+            with st.popover("查看完整論述"): 
+                st.markdown(format_citation_style(ops.get("B_SIDE")), unsafe_allow_html=True)
         with c_ctx:
             st.markdown(f'<div class="perspective-box box-neutral"><b>📜 深層脈絡分析</b><br>{ops.get("CONTEXT")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("查看完整論述"): st.markdown(ops.get("CONTEXT"))
+            with st.popover("查看完整論述"): 
+                st.markdown(format_citation_style(ops.get("CONTEXT")), unsafe_allow_html=True)
 
     data_wg = st.session_state.wargame_result
     
@@ -487,7 +516,9 @@ if st.session_state.wargame_result:
         st.warning("⚠️ 系統未能生成有效的因果圖代碼。")
 
     st.markdown("### 📝 總編輯深度決策報告")
-    st.markdown(f'<div class="report-paper">{data_wg.get("report_text")}</div>', unsafe_allow_html=True)
+    # [V15.8] 應用引用樣式
+    formatted_report = format_citation_style(data_wg.get("report_text", ""))
+    st.markdown(f'<div class="report-paper">{formatted_report}</div>', unsafe_allow_html=True)
 
 # 文獻列表
 if st.session_state.sources:
