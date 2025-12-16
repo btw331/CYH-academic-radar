@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V33.0 (深度全量版)", page_icon="📚", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V33.1 (2.5全系列版)", page_icon="🧠", layout="wide")
 
 st.markdown("""
 <style>
@@ -51,7 +51,7 @@ st.markdown("""
 
     /* V33 極簡卷軸表格 */
     .scrollable-table-container {
-        height: 600px; /* 加高以容納更多資料 */
+        height: 600px; 
         overflow-y: auto; 
         border: 1px solid #e0e0e0;
         border-radius: 8px;
@@ -109,7 +109,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數
+# 2. 資料庫與共用常數 (Strict Domain Lists)
 # ==========================================
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
@@ -229,7 +229,7 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
-            "max_results": max_results # [V33.0] Support high volume
+            "max_results": max_results
         }
 
         suffixes = []
@@ -288,7 +288,7 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             else:
                 pub_date = pub_date[:10]
             
-            # [V33.0] 全量閱讀：增加內文長度限制至 3000 字，讓 AI 讀更多
+            # 全量閱讀
             content = res.get('content', '')[:3000]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
@@ -300,15 +300,14 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    # [V33.0] Temperature = 0.0 強制一致性
+    # [V33.1] 強制使用溫度 0.0 以確保一致性
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V33.0] 深度全量戰略分析 (Deep Research Mode)
+# [V33.1] 深度戰略分析 (學術框架應用 + 樣本檢定)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
-    # 模式 A: 基礎搜尋分析
     if mode == "FUSION":
         system_prompt = f"""
         你是一位極度嚴謹的社會科學研究員與情報分析師。
@@ -318,10 +317,10 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         1. **語言**：所有輸出內容必須使用繁體中文 (Traditional Chinese) 撰寫。
         2. **一致性**：嚴格基於提供的事實資料進行分析，不做無根據的推測。
         3. **證據鎖定**：每一句關鍵論述，都必須標註來源編號 (如 [Source 1])。若無來源支持，請回答「資料不足」。
-        4. **樣本檢定 (Sample Check)**：請在分析時自我檢核提供的資料來源是否過於集中（如僅有單一立場）。若有，請在報告開頭標註「⚠️ 樣本偏差警告」。
+        4. **樣本檢定**：請自我檢核來源是否過於集中。若有，請在報告開頭標註「⚠️ 樣本偏差警告」。
         
         【分析方法論 (Methodology)】：
-        1. **資訊檢索**：閱讀大量文本，識別資訊飽和度 (Information Saturation)。
+        1. **資訊檢索**：閱讀大量文本，識別資訊飽和度。
         2. **框架分析**：依據 Entman (1993) 理論，解構不同陣營的敘事框架。
         3. **三角驗證**：交叉比對官方說法、媒體報導與第三方查核。
         
@@ -335,19 +334,12 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         (Markdown 報告)
         請包含以下章節 (繁體中文)：
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 綜合概述目前的核心爭議，並評估資訊充足度。
         2. **🔍 爭議點事實查核 (Fact-Check)**
-           - 列出關鍵爭議陳述，並引用來源進行驗證。
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
-           - 分析泛綠/批判陣營如何定義問題。
-           - 分析泛藍/體制陣營如何定義問題。
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
-           - 誰是潛在獲益者？誰是受害者？
         5. **🤔 結構性反思 (Critical Reflection)**
-           - 跳脫表象，分析背後的制度或結構性因素。
         """
         
-    # 模式 B: 未來發展推演 (滾動模式)
     elif mode == "DEEP_SCENARIO":
         system_prompt = f"""
         你是一位專精於未來學 (Futures Studies) 的戰略顧問。
@@ -359,24 +351,24 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         4. 所有內容必須使用繁體中文。
         
         【分析方法論 (Methodology)】：
-        1. **CLA 層次分析**：由表象 (Litany) 深入至系統 (System)、世界觀 (Worldview) 與神話 (Myth)。
+        1. **CLA 層次分析**：表象 (Litany) -> 系統 (System) -> 世界觀 (Worldview) -> 神話 (Myth)。
         2. **可能性圓錐**：推演三種情境。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
-        (留空，本模式不產出時間軸)
+        (留空)
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **🎯 CLA 深度解構 (Causal Layered Analysis)**
-           - **Litany (表象層)**: 媒體頭條與大眾焦慮。
-           - **System (系統層)**: 政策、法規、經濟誘因結構。
-           - **Worldview (世界觀層)**: 背後的意識形態與文化典範。
-           - **Myth (神話/隱喻層)**: 深層的集體潛意識或譬喻。
+           - **Litany (表象層)**: ...
+           - **System (系統層)**: ...
+           - **Worldview (世界觀層)**: ...
+           - **Myth (神話/隱喻層)**: ...
         2. **🔮 未來情境模擬 (Scenario Planning)**
-           - **基準情境 (Baseline)**: 現狀延續，最可能的發展。
-           - **轉折情境 (Alternative)**: 關鍵變數改變後的發展。
-           - **極端情境 (Wild Card)**: 小機率但高衝擊的事件。
+           - **基準情境 (Baseline)**: ...
+           - **轉折情境 (Alternative)**: ...
+           - **極端情境 (Wild Card)**: ...
         3. **💡 綜合戰略建議**
         """
     else:
@@ -430,7 +422,6 @@ def parse_gemini_data(text):
 
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
-        # 如果是 DEEP_SCENARIO 模式，可能沒有 timeline，這很正常
         return
 
     table_rows = ""
@@ -440,7 +431,7 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
-        # [V33.0] 絕對網域分類
+        # [V33.1] 絕對網域分類
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -502,7 +493,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V33.0")
+    st.title("全域觀點解析 V33.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -527,7 +518,13 @@ with st.sidebar:
         else:
             tavily_key = st.text_input("Tavily Key", type="password")
             
-        model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
+        # [V33.1] 2.5 全系列模型選擇 (Pro 預設)
+        model_name = st.selectbox(
+            "模型 (Gemini 2.5 Series)", 
+            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"], 
+            index=0,
+            help="建議使用 Pro 版以獲得最佳的邏輯推演與指令遵循能力。"
+        )
         
         search_days = st.number_input(
             "搜尋時間範圍 (天數)",
@@ -538,7 +535,6 @@ with st.sidebar:
             help="請輸入欲搜尋的過去天數，上限為 1825 天 (5年)。"
         )
         
-        # [V33.0] 提升搜尋篇數上限至 100
         max_results = st.slider("搜尋篇數上限 (Sample Size)", 10, 100, 30, help="增加篇數可避免小樣本偏誤，但會增加分析時間。")
         
         selected_regions = st.multiselect(
@@ -606,7 +602,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V33.0 深度全量版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V33.1 深度全量版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -623,7 +619,7 @@ if search_btn and query and google_key and tavily_key:
         
         st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
         
-        mode_code = "V205" if "未來" in analysis_mode else "FUSION"
+        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
         
         # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
         if mode_code == "DEEP_SCENARIO" and past_report_input:
