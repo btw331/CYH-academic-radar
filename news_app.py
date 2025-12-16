@@ -26,7 +26,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V15.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V15.4", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -352,7 +352,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V15.3")
+    st.title("全域觀點解析 V15.4")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來戰棋 (War Game)"], index=0)
     st.markdown("---")
     
@@ -369,7 +369,8 @@ with st.sidebar:
         else:
             tavily_key = st.text_input("Tavily Key", type="password")
             
-        model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
+        # [V15.4 Update] Added gemini-2.5-flash-lite
+        model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
     with st.expander("📂 匯入舊情報", expanded=False):
         past_report_input = st.text_area("貼上舊報告 Markdown：", height=100)
