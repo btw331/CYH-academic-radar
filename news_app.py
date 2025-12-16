@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V17.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V17.2", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -83,8 +83,8 @@ st.markdown("""
 # 2. 資料庫與共用常數
 # ==========================================
 CAMP_KEYWORDS = {
-    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥"],
-    "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營"],
+    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥", "中央社"],
+    "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營", "赵少康"],
     "RED": ["新華", "人民日報", "環球", "央視", "中評", "国台办"]
 }
 
@@ -137,24 +137,43 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V17.0] 新增 days_back 參數，允許自訂搜尋範圍
-def get_search_context(query, api_key_tavily, days_back=14, context_report=None):
+# [V17.2] 搜尋核心：支援 Region 與 Unlimited Time
+def get_search_context(query, api_key_tavily, days_back, region_mode, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
-        if is_chinese(query):
-            search_q = f"{query} 最新新聞 爭議"
+        # 1. 區域關鍵字策略
+        # 根據選擇的 Region 自動添加後綴，確保搜尋引擎往正確的地理位置找
+        if "台灣" in region_mode:
+            suffix = "台灣 新聞" if is_chinese(query) else "Taiwan News"
+        elif "亞洲" in region_mode:
+            suffix = "Asia News 亞洲新聞"
+        elif "歐洲" in region_mode:
+            suffix = "Europe News 歐洲新聞"
+        elif "美洲" in region_mode:
+            suffix = "Americas US News 美國新聞"
         else:
-            search_q = f"{query} latest news analysis"
-            
-        if context_report: search_q += " updates"
+            suffix = "News" # Fallback
+
+        search_q = f"{query} {suffix}"
+        if context_report: search_q += " analysis"
         
+        # 2. 網域黑名單
+        junk_domains = [
+            "daum.net", "naver.com", "tistory.com",
+            "espn.com", "bleacherreport.com", "cbssports.com", "si.com",
+            "pinterest.com", "amazon.com", "ebay.com", "tripadvisor.com"
+        ]
+        
+        # 3. 執行搜尋
+        # 注意：days_back 如果很大 (例如 1825)，Tavily 會搜尋很舊的資料
         response = tavily.search(
             query=search_q,
             search_depth="advanced",
-            topic="news", 
-            days=days_back, # [V17.0] 使用使用者選擇的天數
-            max_results=10
+            topic="general", 
+            days=days_back,
+            max_results=10,
+            exclude_domains=junk_domains
         )
         
         results = response.get('results', [])
@@ -427,7 +446,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V17.0")
+    st.title("全域觀點解析 V17.2")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -446,28 +465,33 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
         
-        # [V17.0] 搜尋時間範圍選擇器
+        # [V17.2] 自定義天數 (含 5 年選項)
         search_days = st.selectbox(
-            "搜尋時間範圍 (Days Back)",
-            options=[3, 7, 14, 30, 90],
-            format_func=lambda x: f"近 {x} 天",
-            index=2 # 預設 14 天
+            "搜尋時間範圍 (Time Range)",
+            options=[3, 7, 14, 30, 90, 1825],
+            format_func=lambda x: "📅 不限時間 (All Time)" if x == 1825 else f"近 {x} 天",
+            index=2
+        )
+        
+        # [V17.2] 區域視角選擇
+        region_mode = st.selectbox(
+            "搜尋視角 (Region)",
+            ["🇹🇼 台灣限定 (Taiwan Only)", "🌏 亞洲視角 (Asia)", "🌍 歐洲視角 (Europe)", "🌎 美洲視角 (Americas)"]
         )
 
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
-        **1. 政治光譜校正機制 (Calibration)**
-        * **🟢 泛綠/批判區**：包含自由、三立、民視等，強制歸類為負分。
-        * **🔵 泛藍/體制區**：包含中時、聯合、TVBS等，強制歸類為正分。
+        **1. 搜尋優化 (Search Strategy)**
+        * **區域鎖定**: 根據所選地區，自動添加對應關鍵字 (如 "Taiwan News", "Asia News")。
+        * **不限時間**: 啟用深度歷史搜尋，回溯最多 5 年資料。
         
-        **2. 深度報告生成邏輯 (Report Logic)**
-        * **媒體框架分析**: 偵測衝突與歸責框架。
-        * **識讀建議**: 基於資訊落差提出建議。
-
-        **3. 數位戰情室設定 (Scenario)**
-        * **🦅 鷹派**: 專注衝突升級。
-        * **🕊️ 鴿派**: 專注經濟理性。
-        * **📜 歷史學家**: 尋找歷史案例。
+        **2. 政治光譜校正 (Calibration)**
+        * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
+        * **🔵 泛藍/體制區**：中時、聯合、TVBS... (強制正分)
+        
+        **3. 深度報告 (Report)**
+        * **框架分析**: 偵測衝突、歸責與經濟框架。
+        * **識讀建議**: 提出交叉比對建議。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -495,11 +519,13 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V17.0)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V17.2)...", expanded=True) as status:
         
-        # [V17.0] 將選定的 search_days 傳入
-        st.write(f"📡 1. 連線 Tavily 搜尋全球新聞資料 (近 {search_days} 天)...")
-        context_text, sources = get_search_context(query, tavily_key, search_days, past_report_input)
+        # [V17.2] 傳遞 Region 與 Days 參數
+        days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
+        st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {region_mode} / 時間: {days_label})...")
+        
+        context_text, sources = get_search_context(query, tavily_key, search_days, region_mode, past_report_input)
         st.session_state.sources = sources
         
         st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
