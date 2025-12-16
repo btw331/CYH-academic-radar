@@ -25,7 +25,7 @@ import streamlit.components.v1 as components
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.5", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V16.4", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -234,7 +234,7 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜
+# 3.4 核心邏輯：輿情光譜 (新增：請求 AI 提供標題)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
@@ -263,7 +263,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器 (含彈性解析與防呆)
+# 3.5 資料解析器 (含硬邏輯校正 + 標題解析)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -282,29 +282,16 @@ def parse_gemini_data(text):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum: [V16.5] 彈性解析 (Handle 4 or 5 columns)
-        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
+        # Spectrum (更新：解析 5 個欄位)
+        if "|" in line and len(line.split("|")) >= 5 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
-                # 預設值
                 name = parts[0].strip()
-                title = "點擊閱讀報導" # Default Fallback
-                url = ""
-                base_stance = 0
-                base_cred = 0
+                title = parts[1].strip() # [V16.4] 新增標題
+                base_stance = float(parts[2].strip())
+                base_cred = float(parts[3].strip())
+                url = parts[4].strip()
                 
-                # Case A: 完整 5 欄 (Name|Title|Stance|Cred|URL)
-                if len(parts) >= 5:
-                    title = parts[1].strip()
-                    base_stance = float(parts[2].strip())
-                    base_cred = float(parts[3].strip())
-                    url = parts[4].strip()
-                # Case B: 舊版/缺漏 4 欄 (Name|Stance|Cred|URL)
-                else:
-                    base_stance = float(parts[1].strip())
-                    base_cred = float(parts[2].strip())
-                    url = parts[3].strip()
-
                 # 硬邏輯校正
                 final_stance = base_stance
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
@@ -316,7 +303,7 @@ def parse_gemini_data(text):
                 
                 data["spectrum"].append({
                     "source": name,
-                    "title": title,
+                    "title": title, # [V16.4] 儲存標題
                     "stance": int(final_stance),
                     "credibility": int(base_cred), 
                     "url": url
@@ -331,7 +318,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V16.5] 渲染含標題的表格 (含安全取值)
+# [V16.4] 渲染含標題的表格
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
@@ -350,6 +337,7 @@ def render_spectrum_split(spectrum_data):
     
     def make_md_table(items):
         if not items: return "_無相關資料_"
+        # [V16.4] 新增「新聞標題」欄位
         md = "| 媒體 | 新聞標題 (點擊閱讀) | 立場 | 可信度 |\n|:---|:---|:---:|:---:|\n"
         for i in items:
             s = i['stance']
@@ -362,10 +350,8 @@ def render_spectrum_split(spectrum_data):
             elif c >= 4: c_txt = f"🟡 {c}"
             else: c_txt = f"🔴 {c}"
             
-            # [V16.5] 安全取值：使用 .get 防止 KeyError
-            t_text = i.get('title', '點擊閱讀報導')
-            t_url = i.get('url', '#')
-            title_link = f"[{t_text}]({t_url})"
+            # [V16.4] 標題即連結
+            title_link = f"[{i['title']}]({i['url']})"
             
             md += f"| {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
@@ -403,7 +389,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.5")
+    st.title("全域觀點解析 V16.4")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
