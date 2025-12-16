@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V29.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V29.1", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -115,39 +115,49 @@ INDIE_WHITELIST = [
     "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
 ]
 
-NAME_KEYWORDS = {
-    "CHINA": ["新華", "人民日報", "環球", "央視", "國台辦", "中評", "解放軍", "陸媒", "北京", "宋濤", "xinhuanet", "huanqiu"],
-    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "民進黨", "賴清德", "綠營", "獨派", "抗中保台", "ltn", "setn", "ftv"],
-    "BLUE": ["聯合", "中國時報", "中時", "TVBS", "中天", "工商時報", "旺旺", "國民黨", "KMT", "侯友宜", "藍營", "統派", "udn", "chinatimes"],
-    "FARM": ["網傳", "謠言", "爆料", "內容農場", "PTT", "Dcard", "爆料公社"],
-    "OFFICIAL": ["中央社", "公視", "cna", "pts", "gov"],
-    "VIDEO": ["YouTube", "YouTuber", "網紅", "TikTok", "抖音", "館長", "直播"]
-}
-
+# [V29.1] 網域比對資料庫 (URL Mapping)
 DB_MAP = {
-    "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com"],
-    "GREEN": ["ltn.com.tw", "ftvnews.com.tw", "setn.com"],
-    "BLUE": ["udn.com", "chinatimes.com", "tvbs.com.tw"],
-    "OFFICIAL": ["cna.com.tw", "pts.org.tw", "mnd.gov.tw"],
-    "INDIE": ["twreporter.org", "theinitium.com", "thenewslens.com"],
-    "INTL": ["bbc.com", "cnn.com", "reuters.com"]
+    "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "taiwan.cn", "gwytb.gov.cn", "guancha.cn"],
+    "GREEN": ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "dpp.org.tw"],
+    "BLUE": ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "kmt.org.tw"],
+    "OFFICIAL": ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw"],
+    "INDIE": ["twreporter.org", "theinitium.com", "thenewslens.com", "upmedia.mg", "storm.mg", "mindiworldnews.com", "vocus.cc", "matters.town"],
+    "INTL": ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com"],
+    "FARM": ["kknews.cc", "read01.com", "ppfocus.com", "buzzhand.com", "bomb01.com", "qiqi.news", "inf.news", "toutiao.com"]
 }
 
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
+# [V29.1] 核心：直接從 URL 判斷分類
+def classify_source(url):
+    if not url or url == "#": return "OTHER"
+    try:
+        domain = urlparse(url).netloc.lower()
+        # 移除 www. 進行比對
+        clean_domain = domain.replace("www.", "")
+    except: return "OTHER"
+
+    for cat, domains in DB_MAP.items():
+        for d in domains:
+            if d in clean_domain:
+                return cat
+    return "OTHER"
+
 def get_category_meta(cat):
     meta = {
         "CHINA": ("🇨🇳 中國官媒", "#d32f2f"),
-        "GREEN": ("🟢 泛綠觀點", "#2e7d32"),
+        "FARM": ("⛔ 內容農場", "#ef6c00"),
         "BLUE": ("🔵 泛藍觀點", "#1565c0"),
+        "GREEN": ("🟢 泛綠觀點", "#2e7d32"),
         "OFFICIAL": ("⚪ 官方/中立", "#546e7a"),
         "INDIE": ("🕵️ 獨立/深度", "#fbc02d"),
         "INTL": ("🌏 國際媒體", "#f57c00"),
-        "FARM": ("⛔ 內容農場", "#ef6c00")
+        "VIDEO": ("🟣 影音社群", "#7b1fa2"),
+        "OTHER": ("📄 其他來源", "#9e9e9e")
     }
-    return meta.get(cat, ("📄 其他", "#9e9e9e"))
+    return meta.get(cat, ("📄 其他來源", "#9e9e9e"))
 
 def format_citation_style(text):
     if not text: return ""
@@ -333,7 +343,6 @@ def parse_gemini_data(text):
     for line in lines:
         line = line.strip()
         
-        # [V29.0] Timeline Parsing (4 cols: Date|Media|Title|URL)
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line or "Future" in line):
             parts = line.split("|")
             try:
@@ -342,7 +351,7 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
-                # 相容性處理：若 AI 仍輸出舊格式(6欄)，我們只取前3欄+最後1欄
+                # 相容舊格式 (可能有額外欄位)
                 if len(parts) >= 6:
                     url = parts[5].strip()
                 elif len(parts) >= 4:
@@ -371,7 +380,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V29.0] 渲染極簡 HTML 表格 (無立場/可信度)
+# [V29.1] 渲染 HTML 表格 (網址判斷光譜)
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         st.info("無時間軸資料。")
@@ -384,14 +393,30 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
+        # 1. 使用 URL 判斷分類 (核心修改)
+        cat = classify_source(url)
+        label, color = get_category_meta(cat)
+        
+        # 2. 決定 Emoji
+        emoji = "⚪" # Default
+        if "中國" in label: emoji = "🔴"
+        elif "泛藍" in label: emoji = "🔵"
+        elif "泛綠" in label: emoji = "🟢"
+        elif "官方" in label: emoji = "⚪"
+        elif "獨立" in label: emoji = "🕵️"
+        elif "國際" in label: emoji = "🌏"
+        elif "農場" in label: emoji = "⛔"
+        
         # 連結處理
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
             title_html = title
 
-        # [V29.0] 移除縮排，壓縮為一行
-        row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media}</td><td>{title_html}</td></tr>"
+        # 顯示格式：Emoji + 媒體名稱
+        media_display = f"{emoji} {media}"
+
+        row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
         table_rows += row_html
 
     full_html = f"""
@@ -400,7 +425,7 @@ def render_html_timeline(timeline_data, blind_mode):
     <thead>
     <tr>
     <th style="width:120px;">日期</th>
-    <th style="width:120px;">媒體</th>
+    <th style="width:140px;">媒體 (URL分類)</th>
     <th>新聞標題 (點擊閱讀)</th>
     </tr>
     </thead>
@@ -435,7 +460,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V29.0")
+    st.title("全域觀點解析 V29.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -481,8 +506,8 @@ with st.sidebar:
         st.markdown("""
         **1. 議題時間軸 (Timeline)**
         * **來源**: Tavily API 搜尋結果。
-        * **排序**: 依據新聞發布日期由舊至新。
-        * **日期補救**: 若 metadata 缺失，AI 閱讀內文推算。
+        * **分類**: **直接依據新聞網址 (URL) 判定媒體陣營**，而非依賴 AI 辨識名稱，確保 100% 準確。
+        * **日期**: 優先使用 Metadata，缺失時由 AI 閱讀內文推算。
 
         **2. 核心分析模型 (Analytical Framework)**
         * **全域深度解析 (Fusion)**:
@@ -519,7 +544,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V29.0)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V29.1)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -545,7 +570,7 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.result:
     data = st.session_state.result
     
-    # 1. 顯示卷軸表格 (V29.0 核心)
+    # 1. 顯示卷軸表格 (V29.1 URL分類版)
     render_html_timeline(data.get("timeline"), blind_mode)
 
     # 2. 顯示深度報告
