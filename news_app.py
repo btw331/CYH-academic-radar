@@ -24,15 +24,27 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V27.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V27.4", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton button[kind="secondary"] {
-        border: 2px solid #673ab7;
-        color: #673ab7;
-        font-weight: bold;
+    /* V-Legacy 經典指標卡片 */
+    .metric-container {
+        text-align: center;
+        padding: 15px;
+        background-color: #ffffff;
+        border-radius: 8px;
+        border: 1px solid #f0f0f0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: transform 0.2s;
+        margin-bottom: 10px;
     }
+    .metric-container:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .metric-score { font-size: 2.5em; font-weight: 700; margin: 0; line-height: 1.2; }
+    .metric-label { font-size: 1.0em; font-weight: 500; margin-top: 5px; color: #666; letter-spacing: 1px; }
     
     .report-paper {
         background-color: #fdfbf7; 
@@ -94,6 +106,12 @@ st.markdown("""
     .custom-table a:hover {
         text-decoration: underline;
     }
+    
+    .stButton button[kind="secondary"] {
+        border: 2px solid #673ab7;
+        color: #673ab7;
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,6 +151,13 @@ DB_MAP = {
     "INTL": ["bbc.com", "cnn.com", "reuters.com"]
 }
 
+# 用於資料庫校正 (Database Calibration)
+CAMP_KEYWORDS = {
+    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥", "中央社", "Liberty Times"],
+    "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營", "赵少康", "United Daily", "China Times"],
+    "RED": ["新華", "人民日報", "環球", "央視", "中評", "国台办", "China Daily"]
+}
+
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
@@ -156,6 +181,13 @@ def get_category_meta(cat):
         "OTHER": ("📄 其他來源", "#9e9e9e")
     }
     return meta.get(cat, ("📄 其他", "#9e9e9e"))
+
+def get_score_text_color(score):
+    if score >= 80: return "#d32f2f"
+    if score >= 60: return "#e65100"
+    if score >= 40: return "#f57f17"
+    if score >= 20: return "#388e3c"
+    return "#757575"
 
 def format_citation_style(text):
     if not text: return ""
@@ -290,16 +322,25 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         你是一位集「深度調查記者」與「媒體識讀專家」於一身的情報分析師。
         請針對議題「{query}」進行【全域深度解析】，整合事實查核與觀點分析。
         
-        【任務重點】：
-        1. **時間軸建立**: 從 Context 中提取正確的日期與事件順序。
-        2. **立場判定**: 請根據「語意分析」與「媒體背景」判斷立場 (-10~+10)。
-        3. **深度分析**: 執行「Cui Bono (誰獲益)」利益分析與事實查核。
+        【評分指標 (0-100)】(請根據 Context 內容進行量化評估)：
+        1. Attack (傳播熱度): 討論密度與情緒強烈度。
+        2. Division (觀點分歧): 陣營間的對立程度。
+        3. Impact (影響潛力): 對政策或社會的潛在影響。
+        4. Resilience (資訊透明): 官方資料與查核的完整度。
+        *Threat (綜合爭議指數): 綜合上述指標的加權評分。
 
         【輸出格式 (嚴格遵守)】：
+        ### [DATA_SCORES]
+        Threat: [分數]
+        Attack: [分數]
+        Impact: [分數]
+        Division: [分數]
+        Resilience: [分數]
+        
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|立場(-10~10)|可信度(0-10)|網址) 
         -> **網址 (URL)** 必須對應到 Context 中的 Source Link，不可留白。
-        -> 日期若無，請根據內文推斷或標示 "Recent"。
+        -> 日期請從 Context [Date:...] 提取。
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 請使用 [Source X] 引用來源)
@@ -310,16 +351,29 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
         5. **🤔 關鍵反思**
         """
-        
-    else: # SCENARIO
+    else:
         system_prompt = f"""
         你是一位資深的趨勢預測分析師。請針對「{query}」進行戰略推演。
         
         【分析核心 (Foresight Framework)】：
-        1. **第一性原理 (First Principles)**：剖析議題背後的底層驅動力。
-        2. **可能性圓錐 (Cone of Plausibility)**：推演三種未來發展路徑。
+        1. **第一性原理**：剖析議題背後的底層驅動力。
+        2. **可能性圓錐**：推演三種未來發展路徑。
+
+        【評分定義】：
+        1. Attack -> 影響顯著性
+        2. Division -> 發展不確定性
+        3. Impact -> 時間緊迫度
+        4. Resilience -> 系統複雜度
+        *Threat -> 綜合影響力
 
         【輸出格式】：
+        ### [DATA_SCORES]
+        Threat: [分數]
+        Attack: [分數]
+        Impact: [分數]
+        Division: [分數]
+        Resilience: [分數]
+        
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|立場(0)|可信度(5)|網址)
         -> **網址 (URL)** 必須保留，以便使用者點擊查證。
@@ -328,9 +382,6 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         (Markdown 報告)
         1. **🎯 第一性原理拆解 (底層邏輯)**
         2. **🔮 未來情境模擬 (可能性圓錐)**
-           - 基準情境
-           - 轉折情境
-           - 極端情境
         3. **💡 綜合戰略建議**
         """
 
@@ -340,14 +391,12 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
 def calibrate_stance(media_name, ai_score):
     name_clean = media_name.replace("新聞", "").replace("報導", "").replace("網", "")
     
-    # 綠營
-    if any(k in name_clean for k in ["自由", "三立", "民視", "新頭殼", "鏡週刊"]):
+    if any(k in name_clean for k in CAMP_KEYWORDS["GREEN"]):
         if ai_score > 0: return ai_score * -1
         if ai_score == 0: return -3
         return ai_score
 
-    # 藍營
-    if any(k in name_clean for k in ["聯合", "中時", "TVBS", "中天", "風傳媒"]):
+    if any(k in name_clean for k in CAMP_KEYWORDS["BLUE"] + CAMP_KEYWORDS["RED"]):
         if ai_score < 0: return ai_score * -1
         if ai_score == 0: return 3
         return ai_score
@@ -355,7 +404,8 @@ def calibrate_stance(media_name, ai_score):
     return ai_score
 
 def parse_gemini_data(text):
-    data = {"timeline": [], "report_text": ""}
+    data = {"scores": {"Threat":0, "Attack":0, "Impact":0, "Division":0, "Resilience":0}, 
+            "timeline": [], "report_text": ""}
     
     if not text: return data
 
@@ -363,27 +413,36 @@ def parse_gemini_data(text):
     for line in lines:
         line = line.strip()
         
-        # [V27.3] Timeline Parsing
-        if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line or "Future" in line):
+        for key in data["scores"]:
+            if f"{key}:" in line:
+                try: 
+                    score_match = re.search(r'\d+', line)
+                    if score_match: data["scores"][key] = int(score_match.group())
+                except: pass
+        
+        # [V27.4 Fix] Robust Timeline Parsing
+        # 兼容 4 欄 (舊) 或 6 欄 (新)
+        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "YYYY" in line:
             parts = line.split("|")
             try:
                 date = parts[0].strip()
                 name = parts[1].strip()
                 title = parts[2].strip()
                 base_stance = 0
-                base_cred = 0
+                base_cred = 5
                 url = "#"
                 
+                # 6 Columns: Date|Media|Title|Stance|Cred|URL
                 if len(parts) >= 6:
                     base_stance = float(parts[3].strip())
                     base_cred = float(parts[4].strip())
                     url = parts[5].strip()
-                    url = url.rstrip(")").rstrip("]").strip()
+                # 5 Columns: ...|Title|Cred|URL
                 elif len(parts) == 5:
                     base_cred = float(parts[3].strip())
                     url = parts[4].strip()
-                    url = url.rstrip(")").rstrip("]").strip()
-
+                
+                url = url.rstrip(")").rstrip("]").strip()
                 final_stance = calibrate_stance(name, base_stance)
                 
                 data["timeline"].append({
@@ -409,23 +468,23 @@ def parse_gemini_data(text):
 
     return data
 
-# [V27.3] 渲染 HTML 卷軸表格 (這是實現您截圖效果的關鍵)
+# [V27.4] 渲染 HTML 卷軸表格 (安全版)
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         st.info("無時間軸資料。")
         return
 
-    # 生成 HTML 表格內容
     table_rows = ""
     for item in timeline_data:
-        date = item['date']
-        media = "*****" if blind_mode else item['media']
-        title = item['title']
-        url = item['url']
-        stance = item['stance']
-        cred = item['credibility']
+        # [V27.4 Fix] 使用 .get() 防止 KeyError
+        date = item.get('date', 'Unknown')
+        media = "*****" if blind_mode else item.get('media', 'Unknown')
+        title = item.get('title', 'No Title')
+        url = item.get('url', '#')
+        stance = item.get('stance', 0)
+        cred = item.get('credibility', 5)
         
-        # 燈號邏輯
+        # 燈號
         stance_dot = "⚪"
         if stance < -2: stance_dot = f'<span style="color:#2e7d32; font-weight:bold;">🟢 {stance}</span>'
         elif stance > 2: stance_dot = f'<span style="color:#1565c0; font-weight:bold;">🔵 +{stance}</span>'
@@ -436,7 +495,7 @@ def render_html_timeline(timeline_data, blind_mode):
         elif cred >= 5: cred_dot = f'<span style="color:#f9a825;">🟡 中</span>'
         else: cred_dot = f'<span style="color:#c62828;">🔴 低</span>'
         
-        # 超連結處理
+        # Link
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
@@ -452,7 +511,6 @@ def render_html_timeline(timeline_data, blind_mode):
         </tr>
         """
 
-    # 組合完整 HTML (含 CSS)
     full_html = f"""
     <div class="scrollable-table-container">
         <table class="custom-table">
@@ -483,12 +541,15 @@ def convert_data_to_json(data):
 def convert_data_to_md(data):
     return f"""
 # 全域觀點分析報告
-產生時間: {datetime.now()}
+产生時間: {datetime.now()}
 
-## 1. 深度分析
+## 1. 核心指標
+Threat: {data['scores'].get('Threat', 0)} | Attack: {data['scores'].get('Attack', 0)}
+
+## 2. 深度分析
 {data.get('report_text')}
 
-## 2. 時間軸
+## 3. 時間軸
 {pd.DataFrame(data.get('timeline')).to_markdown(index=False)}
     """
 
@@ -496,7 +557,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V27.3")
+    st.title("全域觀點解析 V27.4")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -538,23 +599,35 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    with st.expander("🧠 詳細分析方法論 (Methodology)", expanded=False):
+    # [V27.4] 🧠 詳細方法論
+    with st.expander("🧠 全域分析方法論詳解 (Methodology)", expanded=False):
         st.markdown("""
-        **1. 議題時間軸 (Timeline)**
-        * **來源**: Tavily API 搜尋結果。
-        * **排序**: 依據新聞發布日期由舊至新。
-        * **日期補救**: 若 metadata 缺失，AI 閱讀內文推算。
+        **1. 搜尋與資料採集 (Search Strategy)**
+        * **混合搜尋 (Hybrid Search)**: 結合 Tavily AI 搜尋引擎，針對不同區域採取不同策略。
+          - **台灣視角**: 嚴格白名單 (只搜主流與獨立媒體，排除內容農場)。
+          - **國際視角**: 關鍵字鎖定 (如 "Taiwan News" + "Asia News")，並排除垃圾網域。
+        * **時間回溯**: 支援從「近3天」到「近5年 (1825天)」的歷史搜尋。
+        * **日期補救**: 若新聞 metadata 缺日期，AI 會閱讀內文前段 (如 '昨日', '週三') 進行推算。
 
         **2. 政治立場判定 (Hybrid Stance)**
         * **採用「雙重驗證機制」**：
         * **Step A (AI 語意)**：分析標題與內文的情緒強弱 (-10~+10)。
-        * **Step B (資料庫校正)**：
+        * **Step B (資料庫校正)**：針對已知陣營媒體進行強制校正。
           - **🟢 泛綠/批判**: 自由、三立、民視 (強制歸類為負分)。
           - **🔵 泛藍/體制**: 中時、聯合、TVBS (強制歸類為正分)。
+          - **⚪ 中立**: 官方、獨立媒體 (依據內容客觀性判斷)。
         
         **3. 可信度評估 (Credibility)**
-        * **權威度**: 考量媒體聲譽 (如中央社 vs 農場)。
-        * **完整性**: 檢視是否包含消息來源、數據佐證。
+        * **權威度 (Authority)**: 考量媒體聲譽 (如中央社 > 內容農場)。
+        * **完整性 (Completeness)**: 檢視是否包含明確消息來源、數據佐證。
+        * **查核 (Fact-Check)**: 自動對照 Cofacts 謠言資料庫。
+
+        **4. 戰略分析模型 (Strategic Framework)**
+        * **第一性原理 (First Principles)**: 拆解議題的最底層驅動力 (如人口、地緣、經濟)。
+        * **可能性圓錐 (Cone of Plausibility)**: 
+          - **基準情境 (Baseline)**: 現狀延續。
+          - **轉折情境 (Plausible)**: 關鍵變數改變。
+          - **極端情境 (Wild Card)**: 黑天鵝事件。
         """)
 
     with st.expander("📚 監測資料庫清單", expanded=False):
@@ -583,7 +656,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V27.3)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V27.4)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -608,18 +681,36 @@ if search_btn and query and google_key and tavily_key:
 
 if st.session_state.result:
     data = st.session_state.result
+    scores = data.get("scores", {})
     
-    # 1. 顯示卷軸表格 (V27.3 核心)
+    # 1. 指標卡片 (V-Legacy 靈魂)
+    c1, c2, c3, c4 = st.columns(4)
+    if "未來" in analysis_mode:
+        metrics = [("影響顯著性", scores.get("Attack", 0)), ("發展不確定性", scores.get("Division", 0)),
+                   ("時間緊迫度", scores.get("Impact", 0)), ("系統複雜度", scores.get("Resilience", 0))]
+    else:
+        metrics = [("傳播熱度", scores.get("Attack", 0)), ("觀點分歧", scores.get("Division", 0)),
+                   ("影響潛力", scores.get("Impact", 0)), ("資訊透明", scores.get("Resilience", 0))]
+    
+    for col, (label, score) in zip([c1, c2, c3, c4], metrics):
+        text_color = get_score_text_color(score)
+        col.markdown(f"""
+        <div class="metric-container">
+            <p class="metric-score" style="color: {text_color};">{score}</p>
+            <p class="metric-label">{label}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # 2. 時間軸 (V27.4 安全版 HTML)
     render_html_timeline(data.get("timeline"), blind_mode)
 
-    # 2. 顯示深度報告
+    # 3. 深度報告
     st.markdown("---")
     st.markdown("### 📝 綜合戰略分析報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    # 滾動式按鈕
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             pass 
