@@ -20,12 +20,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 import streamlit.components.v1 as components
-from tavily import TavilyClient # [V16.9] 改用原生 Client
+from tavily import TavilyClient
 
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V16.9", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V17.0", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -102,7 +102,6 @@ def format_citation_style(text):
     text = re.sub(pattern_compress, compress_match, text)
     return text
 
-# [V16.9] 檢查是否包含中文字符
 def is_chinese(text):
     return bool(re.search(r'[\u4e00-\u9fff]', text))
 
@@ -138,25 +137,23 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V16.9] 大修：改用 TavilyClient 原生搜尋，精準控制 Topic 和 Days
-def get_search_context(query, api_key_tavily, context_report=None):
+# [V17.0] 新增 days_back 參數，允許自訂搜尋範圍
+def get_search_context(query, api_key_tavily, days_back=14, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
-        # 1. 智慧構建查詢字串
         if is_chinese(query):
-            search_q = f"{query} 最新新聞 爭議" # 中文模式
+            search_q = f"{query} 最新新聞 爭議"
         else:
-            search_q = f"{query} latest news analysis" # 英文模式
+            search_q = f"{query} latest news analysis"
             
         if context_report: search_q += " updates"
         
-        # 2. 執行原生搜尋 (鎖定 News, 最近 14 天)
         response = tavily.search(
             query=search_q,
             search_depth="advanced",
-            topic="news", # 關鍵：鎖定新聞，排除 Daum login 等垃圾
-            days=14,      # 關鍵：只看近兩週
+            topic="news", 
+            days=days_back, # [V17.0] 使用使用者選擇的天數
             max_results=10
         )
         
@@ -168,12 +165,10 @@ def get_search_context(query, api_key_tavily, context_report=None):
             
         context_text += "【最新網路情報】(請嚴格使用 [Source ID] 引用)\n"
         
-        # 3. 格式化結果 (包含 Title!)
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
             content = res.get('content', '')[:800]
-            # 傳遞完整的 title 給 AI，這樣 AI 生成表格時就能填入正確標題
             context_text += f"Source {i+1}: [Title: {title}] {content} (URL: {url})\n"
             
         return context_text, results
@@ -280,7 +275,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     YYYY-MM-DD|媒體|標題
     
     ### [DATA_SPECTRUM]
-    (重要：必須包含 5 個欄位，標題請從 Context 中提取，不可省略)
+    (重要：必須包含 5 個欄位，標題不可省略)
     來源名稱|新聞標題|立場(-10~10)|可信度(0~10)|網址
     
     ### [REPORT_TEXT]
@@ -318,7 +313,6 @@ def parse_gemini_data(text):
                 base_cred = 0
                 url = "#"
                 
-                # [V16.9] 彈性解析 5 欄位
                 if len(parts) >= 5:
                     title = parts[1].strip()
                     base_stance = float(parts[2].strip())
@@ -433,7 +427,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V16.9")
+    st.title("全域觀點解析 V17.0")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -451,24 +445,29 @@ with st.sidebar:
             tavily_key = st.text_input("Tavily Key", type="password")
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
+        
+        # [V17.0] 搜尋時間範圍選擇器
+        search_days = st.selectbox(
+            "搜尋時間範圍 (Days Back)",
+            options=[3, 7, 14, 30, 90],
+            format_func=lambda x: f"近 {x} 天",
+            index=2 # 預設 14 天
+        )
 
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
-        **1. 搜尋引擎 (Search Engine)**
-        * 使用 Tavily 官方新聞介面。
-        * 自動偵測語言：
-          - 中文：搜尋新聞、爭議。
-          - 英文：搜尋 News, Analysis。
-        * **過濾機制**：強制排除體育、購物、登入頁面等雜訊，鎖定近 14 天內容。
-
-        **2. 政治光譜校正 (Calibration)**
-        * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
-        * **🔵 泛藍/體制區**：中時、聯合、TVBS... (強制正分)
+        **1. 政治光譜校正機制 (Calibration)**
+        * **🟢 泛綠/批判區**：包含自由、三立、民視等，強制歸類為負分。
+        * **🔵 泛藍/體制區**：包含中時、聯合、TVBS等，強制歸類為正分。
         
-        **3. 數位戰情室 (Scenario)**
-        * **🦅 鷹派**: 衝突升級分析。
-        * **🕊️ 鴿派**: 經濟理性分析。
-        * **📜 歷史學家**: 歷史案例借鏡。
+        **2. 深度報告生成邏輯 (Report Logic)**
+        * **媒體框架分析**: 偵測衝突與歸責框架。
+        * **識讀建議**: 基於資訊落差提出建議。
+
+        **3. 數位戰情室設定 (Scenario)**
+        * **🦅 鷹派**: 專注衝突升級。
+        * **🕊️ 鴿派**: 專注經濟理性。
+        * **📜 歷史學家**: 尋找歷史案例。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -496,11 +495,11 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V16.9)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V17.0)...", expanded=True) as status:
         
-        st.write("📡 1. 連線 Tavily 搜尋全球新聞資料 (Native Client)...")
-        # [V16.9] 使用原生 Client 確保標題存在與過濾雜訊
-        context_text, sources = get_search_context(query, tavily_key, past_report_input)
+        # [V17.0] 將選定的 search_days 傳入
+        st.write(f"📡 1. 連線 Tavily 搜尋全球新聞資料 (近 {search_days} 天)...")
+        context_text, sources = get_search_context(query, tavily_key, search_days, past_report_input)
         st.session_state.sources = sources
         
         st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
@@ -586,7 +585,6 @@ if st.session_state.sources:
     st.markdown("### 📚 引用文獻列表")
     md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
     for i, s in enumerate(st.session_state.sources):
-        # [V16.9] 原生 Client 回傳的結構是 'title' 和 'url'
         domain = get_domain_name(s.get('url'))
         title = s.get('title', 'No Title')
         if len(title) > 60: title = title[:60] + "..."
