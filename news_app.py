@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V35.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V35.3", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -102,18 +102,6 @@ CSS_STYLE = """
     .custom-table a:hover {
         text-decoration: underline;
         color: #1557b0;
-    }
-    
-    .methodology-text {
-        font-size: 0.9em;
-        line-height: 1.6;
-        color: #444;
-    }
-    .methodology-header {
-        font-weight: bold;
-        color: #1a237e;
-        margin-top: 10px;
-        margin-bottom: 5px;
     }
     
     @media print {
@@ -300,7 +288,6 @@ def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, d
                     all_results.append(item)
     return all_results
 
-# [V35.2 Fix] 修正函式定義：移除 past_report_input，參數對齊呼叫端
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, enable_outpost, dynamic_keywords):
     try:
         active_blacklist = [d for d in NOISE_BLACKLIST if d not in ["ptt.cc", "dcard.tw"]] if enable_outpost else NOISE_BLACKLIST
@@ -548,7 +535,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V35.2)</h1>
+        <h1>全域觀點分析報告 (V35.3)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -628,7 +615,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V35.2)
+# 全域觀點分析報告 (V35.3)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -642,7 +629,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V35.2")
+    st.title("全域觀點解析 V35.3")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -711,8 +698,7 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    # [V35.2] 完整方法論說明 (整合 V34.7 與 V35.0)
-    with st.expander("🧠 V35.2 情報分析方法論 (完整版)", expanded=False):
+    with st.expander("🧠 V35.3 情報分析方法論 (完整版)", expanded=False):
         st.markdown("""
         <div class="methodology-text">
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
@@ -775,7 +761,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V35.2 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V35.3 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -783,7 +769,6 @@ if search_btn and query and google_key and tavily_key:
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行蜂群搜尋 (視角: {regions_label})...")
         
-        # [V35.2 Fix] 移除 past_report_input
         context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, enable_outpost, dynamic_keywords
         )
@@ -816,9 +801,17 @@ if st.session_state.result:
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     st.markdown("---")
+    # [V35.3] 使用 markdown 套件將文字轉為 HTML，並注入 CSS
     st.markdown("### 📝 平衡報導分析")
-    formatted_text = format_citation_style(data.get("report_text", ""))
-    st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
+    
+    # 1. 處理引用格式 (正則表達式)
+    formatted_md = format_citation_style(data.get("report_text", ""))
+    
+    # 2. 將 Markdown 轉換為 HTML (解決瀏覽器直接顯示源代碼的問題)
+    html_content = markdown.markdown(formatted_md, extensions=['tables'])
+    
+    # 3. 渲染
+    st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
@@ -833,8 +826,11 @@ if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
     scenario_data = st.session_state.scenario_result
-    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
-    st.markdown(f'<div class="report-paper">{formatted_scenario}</div>', unsafe_allow_html=True)
+    
+    # 同樣的渲染邏輯
+    formatted_md_2 = format_citation_style(scenario_data.get("report_text", ""))
+    html_content_2 = markdown.markdown(formatted_md_2, extensions=['tables'])
+    st.markdown(f'<div class="report-paper">{html_content_2}</div>', unsafe_allow_html=True)
 
 if st.session_state.sources:
     st.markdown("---")
