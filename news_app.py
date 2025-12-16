@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V32.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V33.0 (深度全量版)", page_icon="📚", layout="wide")
 
 st.markdown("""
 <style>
@@ -33,11 +33,11 @@ st.markdown("""
     .report-paper {
         background-color: #fdfbf7; 
         color: #2c3e50; 
-        padding: 30px; 
+        padding: 40px; 
         border-radius: 4px; 
         margin-bottom: 15px; 
         border: 1px solid #e0e0e0;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         font-family: "Microsoft JhengHei", "Georgia", serif;
         line-height: 1.8;
         font-size: 1.05rem;
@@ -49,9 +49,9 @@ st.markdown("""
         font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
     }
 
-    /* V30 極簡卷軸表格 */
+    /* V33 極簡卷軸表格 */
     .scrollable-table-container {
-        height: 500px; 
+        height: 600px; /* 加高以容納更多資料 */
         overflow-y: auto; 
         border: 1px solid #e0e0e0;
         border-radius: 8px;
@@ -109,7 +109,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (Strict Domain Lists)
+# 2. 資料庫與共用常數
 # ==========================================
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
@@ -126,7 +126,6 @@ INDIE_WHITELIST = [
     "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
 ]
 
-# [V31.0] 絕對分類對照表
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
     "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
@@ -137,20 +136,29 @@ DB_MAP = {
     "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"]
 }
 
+NAME_KEYWORDS = {
+    "CHINA": ["新華", "人民日報", "環球", "央視", "國台辦", "中評", "解放軍", "陸媒", "北京", "宋濤", "xinhuanet", "huanqiu"],
+    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "民進黨", "賴清德", "綠營", "獨派", "抗中保台", "ltn", "setn", "ftv"],
+    "BLUE": ["聯合", "中國時報", "中時", "TVBS", "中天", "工商時報", "旺旺", "國民黨", "KMT", "侯友宜", "藍營", "統派", "udn", "chinatimes"],
+    "FARM": ["網傳", "謠言", "爆料", "內容農場", "PTT", "Dcard", "爆料公社"],
+    "OFFICIAL": ["中央社", "公視", "cna", "pts", "gov"],
+    "VIDEO": ["YouTube", "YouTuber", "網紅", "TikTok", "抖音", "館長", "直播"]
+}
+
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
-# [V31.0 核心邏輯] 嚴格網域分類器
 def classify_source(url):
     if not url or url == "#": return "OTHER"
     try:
         domain = urlparse(url).netloc.lower()
+        clean_domain = domain.replace("www.", "")
     except: return "OTHER"
 
-    for cat, keywords in DB_MAP.items():
-        for kw in keywords:
-            if kw in domain:
+    for cat, domains in DB_MAP.items():
+        for d in domains:
+            if d in clean_domain:
                 return cat
     return "OTHER"
 
@@ -221,7 +229,7 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
-            "max_results": max_results
+            "max_results": max_results # [V33.0] Support high volume
         }
 
         suffixes = []
@@ -273,14 +281,15 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
-            # 日期修復：後端處理
+            # 日期修復
             pub_date = res.get('published_date')
             if not pub_date:
                 pub_date = "近期" 
             else:
                 pub_date = pub_date[:10]
             
-            content = res.get('content', '')[:1200]
+            # [V33.0] 全量閱讀：增加內文長度限制至 3000 字，讓 AI 讀更多
+            content = res.get('content', '')[:3000]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
         return context_text, results, actual_query, (has_taiwan or has_indie) and not has_intl
@@ -291,30 +300,30 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    # [V32.0] Temperature = 0.0 強制一致性
+    # [V33.0] Temperature = 0.0 強制一致性
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V32.0] 深度戰略分析 (思維鏈鎖定 + 證據鎖定)
+# [V33.0] 深度全量戰略分析 (Deep Research Mode)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     # 模式 A: 基礎搜尋分析
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位訓練有素的社會科學研究員與情報分析師。
-        請針對議題「{query}」進行【全域深度解析】。
+        你是一位極度嚴謹的社會科學研究員與情報分析師。
+        請針對議題「{query}」進行【全域深度全量解析】。
         
         【⚠️ 最高指令 (PRIME DIRECTIVES)】：
         1. **語言**：所有輸出內容必須使用繁體中文 (Traditional Chinese) 撰寫。
-        2. **一致性**：基於提供的事實資料進行分析，不做無根據的推測。
+        2. **一致性**：嚴格基於提供的事實資料進行分析，不做無根據的推測。
         3. **證據鎖定**：每一句關鍵論述，都必須標註來源編號 (如 [Source 1])。若無來源支持，請回答「資料不足」。
+        4. **樣本檢定 (Sample Check)**：請在分析時自我檢核提供的資料來源是否過於集中（如僅有單一立場）。若有，請在報告開頭標註「⚠️ 樣本偏差警告」。
         
-        【分析步驟 (Chain of Thought)】：
-        1. **閱讀**：仔細閱讀提供的 Context，提取日期、事實、數據。
-        2. **分類**：利用 Entman 的框架理論，將資訊分類為「定義問題」、「歸因」與「解方」。
-        3. **驗證**：對照不同來源，標註一致或矛盾之處 (三角驗證)。
-        4. **撰寫**：依照以下格式輸出報告。
+        【分析方法論 (Methodology)】：
+        1. **資訊檢索**：閱讀大量文本，識別資訊飽和度 (Information Saturation)。
+        2. **框架分析**：依據 Entman (1993) 理論，解構不同陣營的敘事框架。
+        3. **三角驗證**：交叉比對官方說法、媒體報導與第三方查核。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -326,7 +335,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         (Markdown 報告)
         請包含以下章節 (繁體中文)：
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 綜合概述目前的核心爭議。
+           - 綜合概述目前的核心爭議，並評估資訊充足度。
         2. **🔍 爭議點事實查核 (Fact-Check)**
            - 列出關鍵爭議陳述，並引用來源進行驗證。
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
@@ -344,15 +353,14 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         你是一位專精於未來學 (Futures Studies) 的戰略顧問。
         
         【⚠️ 最高指令】：
-        1. 你現在接收到的是一份**「現況情報摘要」** (由使用者提供的 Context)。
+        1. 你現在接收到的是一份**「現況情報摘要」**。
         2. 請**不要**重複摘要這份情報。
         3. 請直接應用 **CLA 層次分析法** 向下挖掘，並推演未來。
         4. 所有內容必須使用繁體中文。
         
-        【分析步驟 (Chain of Thought)】：
-        1. **解構**：將現況拆解為 表象 -> 系統 -> 世界觀 -> 神話 四個層次。
-        2. **推演**：基於系統層的驅動力，推演三種不同路徑。
-        3. **建議**：針對不同情境提出避險或利用的策略。
+        【分析方法論 (Methodology)】：
+        1. **CLA 層次分析**：由表象 (Litany) 深入至系統 (System)、世界觀 (Worldview) 與神話 (Myth)。
+        2. **可能性圓錐**：推演三種情境。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
@@ -432,7 +440,7 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
-        # [V31.0] 絕對網域分類
+        # [V33.0] 絕對網域分類
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -494,7 +502,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V32.0")
+    st.title("全域觀點解析 V33.0")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -530,7 +538,8 @@ with st.sidebar:
             help="請輸入欲搜尋的過去天數，上限為 1825 天 (5年)。"
         )
         
-        max_results = st.slider("搜尋篇數上限", 10, 60, 20)
+        # [V33.0] 提升搜尋篇數上限至 100
+        max_results = st.slider("搜尋篇數上限 (Sample Size)", 10, 100, 30, help="增加篇數可避免小樣本偏誤，但會增加分析時間。")
         
         selected_regions = st.multiselect(
             "搜尋視角 (Region) - 可複選",
@@ -541,31 +550,32 @@ with st.sidebar:
     with st.expander("🧠 學術分析方法論 (Research Methodology)", expanded=True):
         st.markdown("""
         <div class="methodology-text">
-        <div class="methodology-header">1. 資訊檢索與篩選 (OSINT Strategy)</div>
+        <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
-            <li><b>搜尋廣度</b>：整合 Tavily API，進行多維度關鍵字排列組合 (Permutations) 搜尋。</li>
-            <li><b>來源驗證</b>：採用白名單機制優先鎖定具公信力之主流媒體與獨立媒體。</li>
-            <li><b>時序重構</b>：系統會針對內文進行 NLP 分析以推斷確切事件時間。</li>
+            <li><b>大數據吞吐 (High Volume)</b>：單次分析最高可處理 100 篇文獻，以確保統計顯著性，避免小樣本偏誤 (Small Sample Bias)。</li>
+            <li><b>來源多樣性 (Diversity)</b>：系統會自動偵測來源是否過於集中，並提出樣本偏差警告。</li>
         </ul>
 
-        <div class="methodology-header">2. 框架分析 (Framing Analysis)</div>
-        本研究採用 <b>Entman (1993) 的框架理論</b> 進行深度解構：
+        <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
+        本研究採用 <b>Entman (1993) 的框架理論 (Framing Theory)</b> 與 <b>批判話語分析 (CDA)</b>。
         <ul>
-            <li><b>定義問題 (Define Problems)</b>：不同陣營如何界定核心問題？</li>
-            <li><b>診斷原因 (Diagnose Causes)</b>：歸咎於何種因素或行動者？</li>
-            <li><b>道德評價 (Make Moral Judgments)</b>：如何評價相關行為的正當性？</li>
-            <li><b>處方建議 (Suggest Remedies)</b>：提出何種解決方案？</li>
+            <li><b>語意層次</b>：分析文本中的修辭 (Rhetoric)、隱喻 (Metaphor) 與標籤化 (Labeling) 策略。</li>
+            <li><b>機構層次</b>：結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫，進行雙重驗證 (Triangulation)。</li>
         </ul>
 
         <div class="methodology-header">3. 可信度與查核 (Verification)</div>
-        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>，並與 <b>Cofacts</b> 查核資料庫進行三角驗證 (Triangulation)。
+        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>。
+        <ul>
+            <li><b>交叉比對</b>：將媒體報導與 <b>Cofacts 謠言查核資料庫</b> 及官方原始文件進行比對。</li>
+        </ul>
 
-        <div class="methodology-header">4. 戰略推演 (Futures Framework)</div>
+        <div class="methodology-header">4. 戰略推演模型 (Futures Framework)</div>
         僅應用於「未來發展推演」模式。
         <ul>
-            <li><b>CLA 層次分析法</b>：由表象 (Litany) 深入至系統 (System)、世界觀 (Worldview) 與神話 (Myth)。</li>
-            <li><b>可能性圓錐</b>：區分基準、轉折與極端情境。</li>
+            <li><b>第一性原理 (First Principles)</b>：解構議題至最基礎的物理或經濟限制。</li>
+            <li><b>層次分析法 (CLA)</b>：由表象 (Litany) 深入至系統結構 (System) 與社會神話 (Myth)。</li>
+            <li><b>可能性圓錐 (Cone of Plausibility)</b>：區分基準情境 (Probable)、轉折情境 (Plausible) 與極端情境 (Possible)。</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -596,11 +606,13 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V32.0)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V33.0 深度全量版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
+        
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
+        st.write(f"   ↳ 目標樣本數: {max_results} 篇 (深度全量模式)")
         
         context_text, sources, actual_query, is_strict_tw = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         st.session_state.sources = sources
@@ -609,9 +621,9 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 3. AI 進行深度戰略分析 (溫度歸零/思維鏈鎖定)...")
+        st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
         
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
+        mode_code = "V205" if "未來" in analysis_mode else "FUSION"
         
         # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
         if mode_code == "DEEP_SCENARIO" and past_report_input:
@@ -629,7 +641,7 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.result:
     data = st.session_state.result
     
-    # 1. 顯示卷軸表格 (V30 極簡版)
+    # 1. 顯示卷軸表格 (V33 極簡版)
     render_html_timeline(data.get("timeline"), blind_mode)
 
     # 2. 顯示深度報告
@@ -639,7 +651,7 @@ if st.session_state.result:
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    # [V30.1 Fix] 資訊滾動按鈕 (DEEP_SCENARIO 強制觸發)
+    # [V30.1 Fix] 資訊滾動按鈕邏輯補完
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
