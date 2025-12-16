@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V17.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V17.3", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -82,6 +82,14 @@ st.markdown("""
 # ==========================================
 # 2. 資料庫與共用常數
 # ==========================================
+# [V17.3] 台灣媒體白名單 (確保只搜這些網站)
+TAIWAN_DOMAINS = [
+    "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
+    "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
+    "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
+    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw"
+]
+
 CAMP_KEYWORDS = {
     "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥", "中央社"],
     "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營", "赵少康"],
@@ -137,44 +145,49 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V17.2] 搜尋核心：支援 Region 與 Unlimited Time
+# [V17.3] 搜尋核心：白名單機制
 def get_search_context(query, api_key_tavily, days_back, region_mode, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
-        # 1. 區域關鍵字策略
-        # 根據選擇的 Region 自動添加後綴，確保搜尋引擎往正確的地理位置找
-        if "台灣" in region_mode:
-            suffix = "台灣 新聞" if is_chinese(query) else "Taiwan News"
-        elif "亞洲" in region_mode:
-            suffix = "Asia News 亞洲新聞"
-        elif "歐洲" in region_mode:
-            suffix = "Europe News 歐洲新聞"
-        elif "美洲" in region_mode:
-            suffix = "Americas US News 美國新聞"
-        else:
-            suffix = "News" # Fallback
+        search_params = {
+            "query": query,
+            "search_depth": "advanced",
+            "topic": "general",
+            "days": days_back,
+            "max_results": 10
+        }
 
-        search_q = f"{query} {suffix}"
-        if context_report: search_q += " analysis"
+        # 1. 區域策略
+        if "台灣" in region_mode:
+            # 台灣模式：強制鎖定網域 (Whitelist)
+            search_params["query"] = f"{query}" # 關鍵字保持純淨
+            search_params["include_domains"] = TAIWAN_DOMAINS # 強制只搜這些
         
-        # 2. 網域黑名單
-        junk_domains = [
-            "daum.net", "naver.com", "tistory.com",
-            "espn.com", "bleacherreport.com", "cbssports.com", "si.com",
-            "pinterest.com", "amazon.com", "ebay.com", "tripadvisor.com"
-        ]
+        elif "亞洲" in region_mode:
+            search_params["query"] = f"{query} Asia News"
+        elif "歐洲" in region_mode:
+            search_params["query"] = f"{query} Europe News"
+        elif "美洲" in region_mode:
+            search_params["query"] = f"{query} US Americas News"
+        else:
+            # 預設模式：加上關鍵字，使用排除名單
+            if is_chinese(query):
+                search_params["query"] = f"{query} 台灣 新聞"
+            else:
+                search_params["query"] = f"{query} news"
+            
+            search_params["exclude_domains"] = [
+                "daum.net", "naver.com", "espn.com", "pinterest.com", "amazon.com"
+            ]
+
+        if context_report: search_params["query"] += " analysis"
         
-        # 3. 執行搜尋
-        # 注意：days_back 如果很大 (例如 1825)，Tavily 會搜尋很舊的資料
-        response = tavily.search(
-            query=search_q,
-            search_depth="advanced",
-            topic="general", 
-            days=days_back,
-            max_results=10,
-            exclude_domains=junk_domains
-        )
+        # 保存實際搜尋的字串供 Debug
+        actual_query = search_params["query"]
+        
+        # 2. 執行搜尋
+        response = tavily.search(**search_params)
         
         results = response.get('results', [])
         context_text = ""
@@ -190,10 +203,10 @@ def get_search_context(query, api_key_tavily, days_back, region_mode, context_re
             content = res.get('content', '')[:800]
             context_text += f"Source {i+1}: [Title: {title}] {content} (URL: {url})\n"
             
-        return context_text, results
+        return context_text, results, actual_query
         
     except Exception as e:
-        return f"Error: {str(e)}", []
+        return f"Error: {str(e)}", [], "Error"
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
@@ -446,7 +459,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V17.2")
+    st.title("全域觀點解析 V17.3")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -465,7 +478,6 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
         
-        # [V17.2] 自定義天數 (含 5 年選項)
         search_days = st.selectbox(
             "搜尋時間範圍 (Time Range)",
             options=[3, 7, 14, 30, 90, 1825],
@@ -473,7 +485,6 @@ with st.sidebar:
             index=2
         )
         
-        # [V17.2] 區域視角選擇
         region_mode = st.selectbox(
             "搜尋視角 (Region)",
             ["🇹🇼 台灣限定 (Taiwan Only)", "🌏 亞洲視角 (Asia)", "🌍 歐洲視角 (Europe)", "🌎 美洲視角 (Americas)"]
@@ -482,8 +493,8 @@ with st.sidebar:
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 搜尋優化 (Search Strategy)**
-        * **區域鎖定**: 根據所選地區，自動添加對應關鍵字 (如 "Taiwan News", "Asia News")。
-        * **不限時間**: 啟用深度歷史搜尋，回溯最多 5 年資料。
+        * **台灣模式**: 啟用「白名單機制」，僅搜尋聯合、自由、中時、中央社等主流台媒，徹底排除國外雜訊。
+        * **國際模式**: 自動添加區域關鍵字。
         
         **2. 政治光譜校正 (Calibration)**
         * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
@@ -491,7 +502,6 @@ with st.sidebar:
         
         **3. 深度報告 (Report)**
         * **框架分析**: 偵測衝突、歸責與經濟框架。
-        * **識讀建議**: 提出交叉比對建議。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -519,14 +529,20 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V17.2)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V17.3)...", expanded=True) as status:
         
-        # [V17.2] 傳遞 Region 與 Days 參數
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {region_mode} / 時間: {days_label})...")
         
-        context_text, sources = get_search_context(query, tavily_key, search_days, region_mode, past_report_input)
+        # [V17.3] 傳遞白名單邏輯
+        context_text, sources, actual_query = get_search_context(query, tavily_key, search_days, region_mode, past_report_input)
         st.session_state.sources = sources
+        
+        # 顯示實際搜尋關鍵字，讓使用者安心
+        if "include_domains" in actual_query or "台灣" in region_mode:
+             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Whitelist Active)")
+        else:
+             st.info(f"🔍 實際搜尋關鍵字: {actual_query}")
         
         st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
         cofacts_txt = search_cofacts(query)
