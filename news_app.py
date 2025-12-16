@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V33.7 (蜂群搜尋版)", page_icon="🐝", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.0", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -49,7 +49,7 @@ st.markdown("""
         font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
     }
 
-    /* V33 極簡卷軸表格 */
+    /* 關鍵時序卷軸表格 (HTML Style) */
     .scrollable-table-container {
         height: 600px; 
         overflow-y: auto; 
@@ -111,7 +111,6 @@ st.markdown("""
 # ==========================================
 # 2. 資料庫與共用常數 (Strict Domain Lists)
 # ==========================================
-# [V33.6] 嚴格白名單 (用於強制 include_domains)
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
     "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
@@ -225,25 +224,23 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V33.7] 蜂群搜尋核心 (Swarm Search Engine)
-def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode):
+# [V34.0] 三軌平行搜尋核心 (Tri-Track Search)
+def execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode):
     # 如果用戶要的篇數不多，或者沒開嚴格模式，就用單次搜尋
     if search_params['max_results'] <= 20 and not is_strict_mode:
         tavily = TavilyClient(api_key=api_key_tavily)
         return tavily.search(query=query, **search_params).get('results', [])
 
-    # 否則，啟動蜂群戰術
+    # 三軌定義
     queries = [
-        f"{query}",
-        f"{query} 爭議",
-        f"{query} 懶人包",
-        f"{query} 分析",
-        f"{query} 最新"
+        f"{query} 新聞 事件 時間軸",      # Track 1: Fact & Timeline
+        f"{query} 評論 觀點 爭議 分析",   # Track 2: Opinion & Controversy
+        f"{query} 懶人包 重點 影響"       # Track 3: Deep Dive & Summary
     ]
     
-    # 限制單次搜尋上限為 20 (API 物理極限)，總量靠次數堆疊
+    # 每個軌道最大搜尋數 (確保總數足夠)
     sub_params = search_params.copy()
-    sub_params['max_results'] = 20 
+    sub_params['max_results'] = 20  # API 單次物理極限
     
     all_results = []
     seen_urls = set()
@@ -254,7 +251,8 @@ def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode):
             return t.search(query=q, **sub_params).get('results', [])
         except: return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # 平行執行 3 個軌道
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(fetch, q) for q in queries]
         for future in concurrent.futures.as_completed(futures):
             res_list = future.result()
@@ -297,8 +295,8 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             target_domains = list(set(target_domains))
             search_params["include_domains"] = target_domains
 
-        # [V33.7] 執行蜂群搜尋
-        results = execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode)
+        # [V34.0] 執行三軌搜尋
+        results = execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode)
         
         # 排序：優先顯示有日期的
         results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
@@ -449,6 +447,7 @@ def parse_gemini_data(text):
 
     return data
 
+# [V33.8] 渲染 HTML 表格 (含超連結)
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         return
@@ -471,12 +470,14 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
+        # 標題超連結
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
             title_html = title
 
         media_display = f"{emoji} {media}"
+        # 使用 CSS 控制不換行與欄寬
         row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
         table_rows += row_html
 
@@ -521,7 +522,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V33.7")
+    st.title("全域觀點解析 V34.0")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -576,7 +577,7 @@ with st.sidebar:
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
-            <li><b>蜂群搜尋 (Swarm Search)</b>：啟用多執行緒平行搜尋技術，針對議題進行多角度裂變 (如：爭議、懶人包、最新進度)，以突破單次搜尋上限。</li>
+            <li><b>三軌平行搜尋 (Tri-Track Search)</b>：同時針對「事實/時序」、「觀點/爭議」、「深度/懶人包」三條軌道進行搜尋，確保資訊完整性。</li>
             <li><b>網域圍籬 (Domain Fencing)</b>：嚴格執行白名單機制，確保資訊來源僅限於監測資料庫內的權威媒體。</li>
         </ul>
 
@@ -634,13 +635,13 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V33.7 蜂群搜尋版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.0 三軌搜尋版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
-        st.write(f"   ↳ 目標樣本數: {max_results} 篇 (啟動蜂群戰術：5路平行搜索)")
+        st.write(f"   ↳ 啟動三軌搜尋：1.事實/時序 2.觀點/爭議 3.分析/總結")
         
         context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         
