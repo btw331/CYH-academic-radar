@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V35.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V35.4", page_icon="📊", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -357,6 +357,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
+# [V35.4] 深度戰略分析 (Timeline Table Fix)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -387,6 +388,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **📊 全域現況摘要 (Situational Analysis)**
+           - 請務必以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響)。
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
            - *包含：邏輯謬誤偵測、證據強度評估*
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
@@ -535,7 +537,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V35.3)</h1>
+        <h1>全域觀點分析報告 (V35.4)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -615,7 +617,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V35.3)
+# 全域觀點分析報告 (V35.4)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -629,7 +631,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V35.3")
+    st.title("全域觀點解析 V35.4")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -698,7 +700,7 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    with st.expander("🧠 V35.3 情報分析方法論 (完整版)", expanded=False):
+    with st.expander("🧠 V35.4 情報分析方法論 (完整版)", expanded=False):
         st.markdown("""
         <div class="methodology-text">
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
@@ -761,7 +763,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V35.3 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V35.4 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -801,16 +803,9 @@ if st.session_state.result:
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     st.markdown("---")
-    # [V35.3] 使用 markdown 套件將文字轉為 HTML，並注入 CSS
     st.markdown("### 📝 平衡報導分析")
-    
-    # 1. 處理引用格式 (正則表達式)
-    formatted_md = format_citation_style(data.get("report_text", ""))
-    
-    # 2. 將 Markdown 轉換為 HTML (解決瀏覽器直接顯示源代碼的問題)
-    html_content = markdown.markdown(formatted_md, extensions=['tables'])
-    
-    # 3. 渲染
+    formatted_text = format_citation_style(data.get("report_text", ""))
+    html_content = markdown.markdown(formatted_text, extensions=['tables'])
     st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
@@ -826,11 +821,9 @@ if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
     scenario_data = st.session_state.scenario_result
-    
-    # 同樣的渲染邏輯
-    formatted_md_2 = format_citation_style(scenario_data.get("report_text", ""))
-    html_content_2 = markdown.markdown(formatted_md_2, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_content_2}</div>', unsafe_allow_html=True)
+    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
+    html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
+    st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
 
 if st.session_state.sources:
     st.markdown("---")
