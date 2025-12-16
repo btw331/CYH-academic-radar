@@ -377,8 +377,19 @@ with st.sidebar:
     blind_mode = st.toggle("🙈 盲測模式", value=False)
     
     with st.expander("🔑 設定", expanded=True):
-        google_key = st.text_input("Gemini Key", value="", type="password")
-        tavily_key = st.text_input("Tavily Key", value="", type="password")
+        # [修改] 自動偵測 Secrets 並自動填入
+        if "GOOGLE_API_KEY" in st.secrets:
+            google_key = st.secrets["GOOGLE_API_KEY"]
+            st.success("✅ Gemini Key Auto-filled")
+        else:
+            google_key = st.text_input("Gemini Key", value="", type="password")
+
+        if "TAVILY_API_KEY" in st.secrets:
+            tavily_key = st.secrets["TAVILY_API_KEY"]
+            st.success("✅ Tavily Key Auto-filled")
+        else:
+            tavily_key = st.text_input("Tavily Key", value="", type="password")
+            
         model_options = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"]
         selected_model = st.selectbox("模型選擇", model_options, index=0)
 
