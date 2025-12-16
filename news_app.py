@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V30.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V30.1", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -49,7 +49,7 @@ st.markdown("""
         font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
     }
 
-    /* V30 極簡卷軸表格 (保持 V29 樣式) */
+    /* V30 極簡卷軸表格 */
     .scrollable-table-container {
         height: 500px; 
         overflow-y: auto; 
@@ -95,7 +95,6 @@ st.markdown("""
         color: #1557b0;
     }
     
-    /* 方法論區塊增強 */
     .methodology-text {
         font-size: 0.9em;
         line-height: 1.6;
@@ -127,7 +126,6 @@ INDIE_WHITELIST = [
     "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
 ]
 
-# 網域比對資料庫
 DB_MAP = {
     "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "taiwan.cn", "gwytb.gov.cn", "guancha.cn"],
     "GREEN": ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "dpp.org.tw"],
@@ -305,7 +303,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V30.0] 深度戰略分析 (學術框架升級)
+# 深度戰略分析
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     if mode == "FUSION":
         system_prompt = f"""
@@ -338,7 +336,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         
         【方法論框架 (Futures Methodology)】：
         1. **第一性原理 (First Principles)**：回歸議題的最基本事實與驅動力 (Drivers)。
-        2. **層次分析法 (Causal Layered Analysis, CLA)**：從表象(Litany)深入到系統(System)與世界觀(Worldview)。
+        2. **層次分析法 (Causal Layered Analysis, CLA)**：從表象 (Litany) 深入到系統(System)與世界觀(Worldview)。
         3. **可能性圓錐 (Cone of Plausibility)**：推演三種不同機率的未來路徑。
 
         【輸出格式】：
@@ -375,7 +373,6 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
-                # 相容性處理
                 if len(parts) >= 6: url = parts[5].strip()
                 elif len(parts) >= 4: url = parts[3].strip()
                 
@@ -402,7 +399,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V30.0] 渲染 HTML 表格
+# 渲染 HTML 表格
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         st.info("無時間軸資料。")
@@ -415,7 +412,6 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
-        # 網域分類與 Emoji
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -427,7 +423,6 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
-        # 連結處理
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
@@ -478,7 +473,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V30.0")
+    st.title("全域觀點解析 V30.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -520,7 +515,6 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    # [V30.0] 學術級方法論詳解
     with st.expander("🧠 學術分析方法論 (Research Methodology)", expanded=True):
         st.markdown("""
         <div class="methodology-text">
@@ -586,7 +580,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V30.0)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V30.1)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -612,7 +606,7 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.result:
     data = st.session_state.result
     
-    # 1. 顯示卷軸表格 (V30.0 極簡版)
+    # 1. 顯示卷軸表格 (V30 極簡版)
     render_html_timeline(data.get("timeline"), blind_mode)
 
     # 2. 顯示深度報告
@@ -622,9 +616,15 @@ if st.session_state.result:
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
+    # [V30.1] 資訊滾動按鈕實作
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
-            pass 
+            with st.spinner("🔮 正在讀取前次情報，啟動第一性原理推演..."):
+                # 將當前報告作為 Context 餵給 Scenario 模式
+                current_report = data.get("report_text", "")
+                raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="V205")
+                st.session_state.result = parse_gemini_data(raw_text)
+                st.rerun()
 
 if st.session_state.sources:
     st.markdown("---")
