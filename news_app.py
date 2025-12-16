@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.1", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.3", page_icon="🏛️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -117,7 +117,6 @@ st.markdown(CSS_STYLE, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫與共用常數
 # ==========================================
-# 分眾保底名單
 BLUE_WHITELIST = ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "storm.mg"]
 GREEN_WHITELIST = ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "upmedia.mg"]
 OFFICIAL_WHITELIST = ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "gov.tw"]
@@ -190,18 +189,29 @@ def extract_date_from_url(url):
     return None
 
 # ==========================================
-# 3. 核心功能模組 (Hybrid Weighted Search)
+# 3. 核心功能模組 (Tri-Track Fixed)
 # ==========================================
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def generate_dynamic_keywords(query, api_key):
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
-        prompt = f"請針對議題「{query}」，生成 3 組最具情報價值的搜尋關鍵字 (爭議, 事實, 影響)。請直接輸出字串，用逗號分隔。"
+        # [V36.3 Fix] 強制約束 LLM 必須針對「三軌」生成對應關鍵字
+        prompt = f"""
+        請針對議題「{query}」，生成 3 組搜尋關鍵字，分別對應以下三個維度：
+        1. [事實軌]：針對事件發展、時間軸、新聞報導。
+        2. [觀點軌]：針對爭議、正反評論、社論。
+        3. [深度軌]：針對懶人包、影響分析、法規細節。
+        
+        請直接輸出 3 個字串，用逗號分隔，不要標號。
+        範例："{query} 事件進度, {query} 正反爭議, {query} 懶人包重點"
+        """
         resp = llm.invoke(prompt).content
         keywords = [k.strip() for k in resp.split(',') if k.strip()]
-        return keywords[:3] if keywords else [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"]
-    except: return [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"] 
+        # 保底機制：若 LLM 輸出格式錯誤，回退到預設的三軌關鍵字
+        return keywords[:3] if len(keywords) >= 3 else [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
+    except:
+        return [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"] 
 
 def search_cofacts(query):
     url = "https://cofacts-api.g0v.tw/graphql"
@@ -225,7 +235,7 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# 混和權重搜尋引擎
+# [V36.3] 系統整合架構 (Swarm + Hybrid + Tri-Track)
 def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions):
     tavily = TavilyClient(api_key=api_key_tavily)
     all_results = []
@@ -233,31 +243,42 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
     
     tasks = []
     
-    # 1. 通用熱度搜尋
+    # 1. 通用熱度搜尋 (Swarm Container -> Tri-Track Content)
     general_domains = []
     if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
     if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
     if "亞洲" in str(selected_regions): general_domains.extend(INTL_WHITELIST)
     
     general_params = search_params.copy()
-    general_params['max_results'] = 20 
+    general_params['max_results'] = 10 # 每一軌抓 10 篇，確保量足夠
     if is_strict_mode and general_domains:
         general_params['include_domains'] = list(set(general_domains))
     
-    tasks.append({"name": "General", "query": query, "params": general_params})
+    # 建立三軌任務 (Tri-Track Tasks)
+    # Track 0: Main Query (Backup)
+    tasks.append({"name": "General_Main", "query": query, "params": general_params})
+    # Track 1: Fact
+    tasks.append({"name": "General_Fact", "query": dynamic_keywords[0], "params": general_params})
+    # Track 2: Opinion
+    tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
+    # Track 3: Deep
+    tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
     
-    # 2. 分眾保底搜尋
+    # 2. 分眾保底搜尋 (Hybrid Weighted Sources)
     if "台灣" in str(selected_regions):
+        # 藍營保底
         blue_params = search_params.copy()
         blue_params['max_results'] = 5 
         blue_params['include_domains'] = BLUE_WHITELIST
         tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
         
+        # 綠營保底
         green_params = search_params.copy()
         green_params['max_results'] = 5 
         green_params['include_domains'] = GREEN_WHITELIST
         tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
         
+        # 官方保底
         official_params = search_params.copy()
         official_params['max_results'] = 5
         official_params['include_domains'] = OFFICIAL_WHITELIST
@@ -268,15 +289,19 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
             return tavily.search(query=task['query'], **task['params']).get('results', [])
         except: return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # 執行 Swarm (平行處理所有軌道)
+    # 將 max_workers 提升至 8，因為現在有 4個通用軌 + 3個保底軌 = 7個任務
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fetch, t): t['name'] for t in tasks}
         results_map = {}
         for future in concurrent.futures.as_completed(futures):
             t_name = futures[future]
             results_map[t_name] = future.result()
             
-    # 智慧合併：保底優先 -> 熱度補完
+    # 3. 智慧合併策略 (Smart Merge)
     final_list = []
+    
+    # A. 優先加入保底資料 (Diversity Safety Net)
     for guard_name in ["Blue_Guard", "Green_Guard", "Official_Guard"]:
         if guard_name in results_map:
             for item in results_map[guard_name]:
@@ -284,11 +309,18 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
                     seen_urls.add(item['url'])
                     final_list.append(item)
     
-    if "General" in results_map:
-        for item in results_map["General"]:
-            if item['url'] not in seen_urls:
-                seen_urls.add(item['url'])
-                final_list.append(item)
+    # B. 再加入三軌通用資料 (Tri-Track Volume)
+    # 我們輪詢 Fact, Opn, Deep, Main 來確保每一軌都有代表作進入清單
+    general_keys = ["General_Fact", "General_Opn", "General_Deep", "General_Main"]
+    max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
+    
+    for i in range(max_len):
+        for key in general_keys:
+            if key in results_map and i < len(results_map[key]):
+                item = results_map[key][i]
+                if item['url'] not in seen_urls:
+                    seen_urls.add(item['url'])
+                    final_list.append(item)
                 
     return final_list
 
@@ -338,7 +370,6 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V36.1] 深度戰略分析 (新增聲量權重校正 Prompt)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -366,7 +397,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
            - **挖掘長尾**：在「熱度補完」的資料中，優先尋找 **「非主流但具獨特視角」** 的觀點，而非重複主流論述。
            - **沉默的螺旋**：若某一方聲量顯著低落，請明確指出這是「策略性冷處理」或是「話語權失衡」，而非視為該方無意見。
         
-        【輸出格式】：
+        【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|Source_ID)
         
@@ -523,7 +554,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V36.1)</h1>
+        <h1>全域觀點分析報告 (V36.3)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -603,7 +634,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V36.1)
+# 全域觀點分析報告 (V36.3)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -617,7 +648,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V36.1")
+    st.title("全域觀點解析 V36.3")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -686,34 +717,35 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    # [V36.1] 詳細方法論說明 (UI優化)
     st.markdown("### 🧠 情報分析方法論詳解")
     
-    with st.expander("1. 資訊檢索：混和權重與三軌搜尋"):
+    with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)"):
         st.markdown("""
-        **核心機制：混和權重搜尋 (Hybrid Weighted Search)**
-        我們採用「保底不封頂」策略來解決聲量偏差：
+        **核心機制：混和權重搜尋**
         - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
         - **熱度補完 (Volume Fill)**：剩餘名額開放給全網熱度排序，反映真實輿論聲量。
         
-        **三軌搜尋架構 (Tri-Track Search)**
-        將單一任務拆解為三組不同目的的指令同時發射：
+        **三軌搜尋架構 (Tri-Track via Dynamic Keywords)**
+        將「通用搜尋 (General)」任務拆解為三組不同目的的指令，確保抓取內容的維度完整：
         1. **事實與時序 (Facts & Timeline)**
            - 指令：`{query} 新聞 事件 時間軸`
-           - 目標：抓取硬資訊，構建準確的時間軸骨架。
+           - 任務：只關心「發生了什麼事？」「什麼時候發生的？」。它負責抓取硬資訊，構建時間軸表格。
+           - 目標：確保報告的骨架（人、事、時、地、物）是準確的。
         2. **觀點與爭議 (Opinions & Controversy)**
            - 指令：`{query} 評論 觀點 爭議 分析`
-           - 目標：捕捉正反方論述邏輯，作為框架分析原料。
+           - 任務：專門尋找「吵架的點」。它會刻意去抓社論、投書、政論節目的摘要。
+           - 目標：捕捉不同陣營（正方/反方）的論述邏輯，這是 Entman 框架分析的原料。
         3. **深度與結構 (Deep Dive)**
            - 指令：`{query} 懶人包 重點 影響`
-           - 目標：快速獲取議題全貌與背景知識。
+           - 任務：尋找已經被整理過的結構化資訊（如：五大爭議點、法條比較表）。
+           - 目標：快速獲取議題的全貌與背景知識。
         """)
         
-    with st.expander("2. 框架分析：Entman 理論與立場判定"):
+    with st.expander("2. 框架分析：Entman 理論與立場判定 (Framing)"):
         st.markdown("""
         **Entman 框架理論 (Framing Theory)**
         我們分析文本如何透過「選擇 (Selection)」與「凸顯 (Salience)」來建構現實。
-        - **問題定義**：不同陣營如何定義問題的核心？(例如：是財政正義還是奪權？)
+        - **問題定義**：不同陣營如何定義問題的核心？
         - **歸因分析**：將責任歸咎於誰？
         - **道德評價**：使用什麼樣的形容詞來進行道德審判？
         
@@ -721,7 +753,7 @@ with st.sidebar:
         結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫 (DB_MAP)，對文章立場進行雙重驗證。
         """)
         
-    with st.expander("3. 可信度驗證：水平閱讀與邏輯偵錯"):
+    with st.expander("3. 可信度驗證：水平閱讀與邏輯偵錯 (Verification)"):
         st.markdown("""
         **水平閱讀法 (Lateral Reading)**
         採用史丹佛歷史教育群 (SHEG) 提倡之方法，不只深讀單一來源，而是橫向比對多個來源以確認事實。
@@ -735,17 +767,20 @@ with st.sidebar:
         即時串接 g0v Cofacts 謠言資料庫，標註已被社群查核為錯誤的資訊。
         """)
         
-    with st.expander("4. 戰略推演：CLA 層次分析與預警"):
+    with st.expander("4. 戰略推演：CLA 層次分析與預警 (Futures)"):
         st.markdown("""
         **CLA 層次分析法 (Causal Layered Analysis)**
-        由未來學家 Inayatullah 提出，深入挖掘議題的四個層次：
+        深入挖掘議題的四個層次：
         1. **表象 (Litany)**：公眾看到的事件與數據。
         2. **系統 (System)**：造成事件的社會結構與政策成因。
         3. **世界觀 (Worldview)**：利益相關者的深層價值觀與意識形態。
         4. **神話/隱喻 (Myth)**：潛意識中的集體焦慮或故事原型。
         
         **早期預警指標 (Signposts)**
-        為每個未來情境設定具體的監測訊號，讓決策者知道「該看什麼」來判斷局勢走向。
+        為每個未來情境設定具體的監測訊號。
+        
+        **驗屍分析 (Pre-mortem)**
+        假設預測失敗，反推可能的隱蔽變數。
         """)
         
     st.markdown("### 📥 報告匯出")
@@ -772,14 +807,15 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V36.1 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.3 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
+        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords)}")
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方各5篇) + 熱度補完")
+        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方各5篇) + 熱度補完 (動態三軌)")
         
         context_text, sources, actual_query, is_strict_tw = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, enable_outpost, dynamic_keywords
