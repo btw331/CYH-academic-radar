@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V30.1", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V30.2", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -303,7 +303,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 深度戰略分析
+# [V30.0] 深度戰略分析 (學術框架升級)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     if mode == "FUSION":
         system_prompt = f"""
@@ -373,6 +373,7 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
+                # 相容性處理
                 if len(parts) >= 6: url = parts[5].strip()
                 elif len(parts) >= 4: url = parts[3].strip()
                 
@@ -399,7 +400,7 @@ def parse_gemini_data(text):
 
     return data
 
-# 渲染 HTML 表格
+# [V30.0] 渲染 HTML 表格
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         st.info("無時間軸資料。")
@@ -412,6 +413,7 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
+        # 網域分類與 Emoji
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -423,6 +425,7 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
+        # 連結處理
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
@@ -473,7 +476,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V30.1")
+    st.title("全域觀點解析 V30.2")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -500,11 +503,14 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
         
-        search_days = st.selectbox(
-            "搜尋時間範圍",
-            options=[3, 7, 14, 30, 90, 1825],
-            format_func=lambda x: "📅 不限時間 (All Time)" if x == 1825 else f"近 {x} 天",
-            index=2
+        # [V30.2] 改為 Number Input (自訂天數)
+        search_days = st.number_input(
+            "搜尋時間範圍 (天數)",
+            min_value=1,
+            max_value=1825,
+            value=30,
+            step=1,
+            help="請輸入欲搜尋的過去天數，上限為 1825 天 (5年)。"
         )
         
         max_results = st.slider("搜尋篇數上限", 10, 60, 20)
@@ -580,9 +586,9 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V30.1)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V30.2)...", expanded=True) as status:
         
-        days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
+        days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
         
@@ -616,7 +622,7 @@ if st.session_state.result:
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    # [V30.1] 資訊滾動按鈕實作
+    # [V30.1] 資訊滾動按鈕實作 (修復版)
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動第一性原理推演..."):
