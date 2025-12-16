@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V26.1", page_icon="🔗", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V26.2", page_icon="🔗", layout="wide")
 
 st.markdown("""
 <style>
@@ -239,7 +239,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V26.1] 深度戰略分析 (強調 URL 輸出)
+# 深度戰略分析 (保留 V26.0 核心)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     if mode == "FUSION":
         system_prompt = f"""
@@ -292,7 +292,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
 
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 強制校正邏輯
+# 強制校正邏輯 (保留)
 def calibrate_stance(media_name, ai_score):
     name_clean = media_name.replace("新聞", "").replace("報導", "").replace("網", "")
     
@@ -308,7 +308,7 @@ def calibrate_stance(media_name, ai_score):
         
     return ai_score
 
-# [V26.1] 資料解析器 (含網址清洗)
+# 資料解析器 (含網址清洗)
 def parse_gemini_data(text):
     data = {"timeline": [], "report_text": ""}
     
@@ -332,7 +332,6 @@ def parse_gemini_data(text):
                     base_stance = float(parts[3].strip())
                     base_cred = float(parts[4].strip())
                     url = parts[5].strip()
-                    # [V26.1] URL Cleaning
                     url = url.rstrip(")").rstrip("]").strip()
                 elif len(parts) == 5:
                     base_cred = float(parts[3].strip())
@@ -364,7 +363,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V26.1] 渲染時間軸 (超連結強化)
+# [V26.2] 渲染時間軸 (樣式不變，加入超連結)
 def render_timeline_enhanced(timeline_data):
     if not timeline_data: 
         st.warning("⚠️ 無法生成時間軸：可能是搜尋結果不足，或 AI 無法解析日期。")
@@ -372,6 +371,7 @@ def render_timeline_enhanced(timeline_data):
     
     st.markdown("### 📅 議題發展時間軸 (News Timeline)")
     
+    # 保持 V26.0 的圖例樣式
     st.markdown("""
     <div style="background-color:#f0f2f6; padding:10px; border-radius:5px; font-size:0.9em; margin-bottom:15px;">
         <b>💡 燈號說明：</b><br>
@@ -396,11 +396,11 @@ def render_timeline_enhanced(timeline_data):
         if len(t_text) > 35: t_text = t_text[:35] + "..."
         t_url = item['url']
         
-        # [V26.1] 強制 Markdown 連結格式
+        # [V26.2 Feature] 加入超連結
         if t_url and t_url != "#":
             title_link = f"[{t_text}]({t_url})"
         else:
-            title_link = t_text # 若無連結則顯示純文字
+            title_link = t_text
             
         md += f"| {item['date']} | {item['media']} | {title_link} | {s_txt} | {c_txt} |\n"
     
@@ -427,7 +427,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V26.1")
+    st.title("全域觀點解析 V26.2")
     analysis_mode = st.radio("選擇模式：", options=["📰 議題時序分析 (Timeline)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -500,7 +500,7 @@ with st.sidebar:
 
 st.title(f"{analysis_mode.split(' ')[0]}")
 query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
-search_btn = st.button("🚀 啟動分析引擎", type="primary")
+search_btn = st.button("🚀 啟動全域掃描", type="primary")
 
 if 'result' not in st.session_state: st.session_state.result = None
 if 'sources' not in st.session_state: st.session_state.sources = None
@@ -508,7 +508,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V26.1)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V26.2)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -534,7 +534,7 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.result:
     data = st.session_state.result
     
-    # 1. 顯示時間軸 (V26.1 含超連結)
+    # 1. 顯示時間軸 (V26.2 含超連結)
     if data.get("timeline"):
         render_timeline_enhanced(data["timeline"])
 
@@ -545,7 +545,6 @@ if st.session_state.result:
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    # 滾動式按鈕 (保留功能)
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             pass 
