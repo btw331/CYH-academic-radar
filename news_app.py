@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.4", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.5", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -45,6 +45,7 @@ CSS_STYLE = """
         font-size: 1.05rem;
     }
     
+    /* V36.5: 修復後的引用樣式 */
     .citation {
         font-size: 0.75em;          
         color: #777777;             
@@ -169,6 +170,7 @@ def get_category_meta(cat):
     }
     return meta.get(cat, ("📄 其他來源", "#9e9e9e"))
 
+# [V36.5 Fix] 引用格式化函式 (HTML 注入版)
 def format_citation_style(text):
     if not text: return ""
     def replacement(match):
@@ -176,6 +178,7 @@ def format_citation_style(text):
         if not nums: return match.group(0)
         unique_nums = sorted(list(set(nums)), key=int)
         return f'<span class="citation">Source {", ".join(unique_nums)}</span>'
+    
     text = re.sub(r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)', replacement, text)
     text = re.sub(r'([\[\(（]\s*Source\s+[\d,，、\s]+[\]\)）])', replacement, text)
     return text
@@ -189,7 +192,7 @@ def extract_date_from_url(url):
     return None
 
 # ==========================================
-# 3. 核心功能模組 (Hybrid Weighted + Tri-Track)
+# 3. 核心功能模組
 # ==========================================
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
@@ -346,38 +349,37 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0) # V36.4: Temp 0 for strict adherence
+    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V36.4] 深度推理與結構化分析 (Deep Reasoning & SATs)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 核心指令：深思慢想 + 嚴格中立
     tone_instruction = """
-    【⚠️ 核心指導原則 (Core Doctrine)】：
-    1. **極度審慎 (Extreme Caution)**：你是一位正在撰寫機密情報評估的高級分析官。任何論斷都必須有「證據」支撐，嚴禁臆測。若證據不足，請直接標示「目前資訊不足」。
-    2. **結構化分析 (SATs)**：請應用「競爭假設分析 (ACH)」與「魔鬼代言人 (Devil's Advocate)」技術。不要只報告主流觀點，必須主動尋找反證。
-    3. **去情緒/去軍事化**：語氣必須如法庭判決書般冷靜、精確。嚴禁使用戰場隱喻 (攻防、焦土) 或情緒性形容詞 (痛批、怒斥)。
-    4. **事實與觀點分離**：明確區分「發生了什麼 (Fact)」與「各方怎麼說 (Opinion)」。
+    【⚠️ 語氣風格指令】：
+    1. **去軍事化**：嚴禁使用軍事隱喻。
+    2. **中性專業**：使用社會科學術語。
+    3. **建設性**：側重問題解決。
     """
 
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位極度嚴謹的高級情報分析師。
+        你是一位極度嚴謹的情報分析師。
         
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
         【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
         
-        【分析任務清單】：
-        1. **現況重構**：基於事實軌資料，重建無爭議的事件時間軸。
-        2. **邏輯偵錯**：掃描文本，指出論述中的「滑坡謬誤」、「稻草人論證」或「斷章取義」。
-        3. **證據分級**：將新聞來源分為「強證據 (具名/有數據)」與「弱證據 (匿名/純推測)」。
-        4. **聲量校正**：若某方聲量過大，請標註為「強勢傳播波段」，並主動挖掘另一方的「沉默觀點」。
+        【分析方法論】：
+        1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
+        2. **證據強度分級**：評估證據力（強/弱）。
+        3. **聲量權重校正 (Volume Calibration)**：
+           - **識別複讀機**：若某一陣營的來源大量重複相同觀點，請將其歸納為「單一強勢論點」，不要讓其佔據所有篇幅。
+           - **挖掘長尾**：在「熱度補完」的資料中，優先尋找 **「非主流但具獨特視角」** 的觀點，而非重複主流論述。
+           - **沉默的螺旋**：若某一方聲量顯著低落，請明確指出這是「策略性冷處理」或是「話語權失衡」，而非視為該方無意見。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -386,15 +388,13 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (日期 | 事件摘要 | 關鍵影響)。
+           - 請務必以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響)。
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
-           - *針對核心爭議，列出正反論點，並標註邏輯謬誤與證據強度。*
+           - *包含：邏輯謬誤偵測、證據強度評估*
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
-           - *分析不同陣營如何設定議題框架 (例如：是「財政正義」還是「中央集權」？)。*
+           - *請應用聲量權重校正，指出話語權是否失衡*
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
-           - *誰從中獲益？誰受損？背後的結構性動機為何？*
         5. **🤔 結構性反思 (Structural Reflection)**
-           - *跳脫藍綠視角，從國家治理或制度設計的角度進行總結。*
         """
         
     elif mode == "DEEP_SCENARIO":
@@ -404,10 +404,9 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
-        【分析任務清單】：
-        1. **CLA 深度解構**：挖掘表象下的神話與世界觀。
-        2. **預警指標設定**：設定具體的監測訊號。
-        3. **驗屍分析 (Pre-mortem)**：假設你的預測完全失敗，反推原因。這能幫助使用者看到盲點。
+        【分析任務】：
+        1. **早期預警指標**：列出監測訊號。
+        2. **驗屍分析**：反推失敗變數。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
@@ -422,7 +421,6 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
            - **轉折路徑 (Alternative)** + 🚩 預警指標
            - **極端路徑 (Wild Card)** + 🚩 預警指標
         3. **💀 驗屍分析 (Pre-mortem Analysis)**
-           - *若上述預測完全失準，最可能是因為忽略了什麼隱蔽變數？*
         4. **💡 綜合發展與因應建議**
         """
     else:
@@ -476,54 +474,77 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
     if data_result and data_result.get("timeline"):
         rows = ""
         for item in data_result["timeline"]:
-            date = item.get('date', '近期')
-            media = "*****" if blind_mode else item.get('media', 'Unknown')
-            title = item.get('title', 'No Title')
+            # [V36.5 Fix] 媒體與日期 強制使用 Source Metadata
             s_id = item.get('source_id', 0)
             real_url = "#"
+            real_date = "------" # 預設為破折號
+            display_media = "未知來源"
+            
             if sources and 0 < s_id <= len(sources):
-                real_url = sources[s_id-1].get('url', '#')
-                if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
-                    final_d = sources[s_id-1]['final_date']
-                    if final_d and final_d != "Missing": date = final_d
+                source_data = sources[s_id-1]
+                real_url = source_data.get('url', '#')
+                
+                # 日期瀑布流：API > URL > LLM(僅當正規時)
+                meta_date = source_data.get('published_date') # Tavily API
+                url_date = extract_date_from_url(real_url) # URL Regex
+                llm_date = item.get('date') # LLM Generated
+                
+                if meta_date and meta_date != "Missing":
+                    real_date = meta_date
+                elif url_date:
+                    real_date = url_date
+                elif llm_date and re.match(r'\d{4}-\d{2}-\d{2}', llm_date) and "XX" not in llm_date:
+                    real_date = llm_date
+                
+                # 媒體強制分類 (忽略 LLM 寫的)
+                cat = classify_source(real_url)
+                label, _ = get_category_meta(cat)
+                domain = get_domain_name(real_url)
+                
+                emoji = "⚪"
+                if "中國" in label: emoji = "🔴"
+                elif "泛藍" in label: emoji = "🔵"
+                elif "泛綠" in label: emoji = "🟢"
+                elif "官方" in label: emoji = "⚪"
+                elif "獨立" in label: emoji = "🕵️"
+                elif "國際" in label: emoji = "🌏"
+                elif "農場" in label: emoji = "⛔"
+                elif "社群" in label: emoji = "⚠️"
+                
+                display_media = f"{emoji} {label.split(' ')[1]} ({domain})"
             
-            cat = classify_source(real_url)
-            label, _ = get_category_meta(cat)
-            emoji = "⚪"
-            if "中國" in label: emoji = "🔴"
-            elif "泛藍" in label: emoji = "🔵"
-            elif "泛綠" in label: emoji = "🟢"
-            elif "官方" in label: emoji = "⚪"
-            elif "獨立" in label: emoji = "🕵️"
-            elif "國際" in label: emoji = "🌏"
-            elif "農場" in label: emoji = "⛔"
-            elif "社群" in label: emoji = "⚠️"
-            
+            title = item.get('title', 'No Title')
             title_html = f'<a href="{real_url}" target="_blank">{title}</a>' if real_url != "#" else title
-            rows += f"<tr><td>{date}</td><td>{emoji} {media}</td><td>{title_html}</td></tr>"
+            
+            if blind_mode: display_media = "*****"
+            
+            rows += f"<tr><td style='white-space:nowrap;'>{real_date}</td><td style='white-space:nowrap;'>{display_media}</td><td>{title_html}</td></tr>"
         
         timeline_html = f"""
         <h3>📅 關鍵發展時序</h3>
         <table class="custom-table" border="1" cellspacing="0" cellpadding="5" style="width:100%; border-collapse:collapse;">
-            <thead><tr><th width="120">日期</th><th width="140">媒體</th><th>標題</th></tr></thead>
+            <thead><tr><th width="120">日期</th><th width="180">媒體來源 (Code Verified)</th><th>新聞標題 (點擊閱讀)</th></tr></thead>
             <tbody>{rows}</tbody>
         </table>
         <hr>
         """
 
+    # [V36.5 Fix] 渲染流程：MD -> HTML -> Regex Citation
     report_html_1 = ""
     if data_result:
         raw_md = data_result.get("report_text", "")
-        raw_md = format_citation_style(raw_md)
+        # 先轉 HTML，避免 Markdown Parser 吃掉 span
         html_content = markdown.markdown(raw_md, extensions=['tables'])
-        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{html_content}</div>'
+        # 再處理 Citation 樣式
+        final_html = format_citation_style(html_content)
+        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{final_html}</div>'
 
     report_html_2 = ""
     if scenario_result:
         raw_md_2 = scenario_result.get("report_text", "")
-        raw_md_2 = format_citation_style(raw_md_2)
         html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
-        report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{html_content_2}</div>'
+        final_html_2 = format_citation_style(html_content_2)
+        report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{final_html_2}</div>'
 
     sources_html = ""
     if sources:
@@ -544,7 +565,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V36.4)</h1>
+        <h1>全域觀點分析報告 (V36.5)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -555,44 +576,55 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
     """
     return full_html
 
+# [V36.5 Fix] Streamlit 介面渲染函式 (同步修正)
 def render_html_timeline(timeline_data, sources, blind_mode):
-    if not timeline_data:
-        return
+    if not timeline_data: return
 
     table_rows = ""
     for item in timeline_data:
-        date = item.get('date', '近期')
-        media = "*****" if blind_mode else item.get('media', 'Unknown')
-        title = item.get('title', 'No Title')
-        
+        # 重複上述邏輯，確保介面與下載報告一致
         s_id = item.get('source_id', 0)
         real_url = "#"
-        if 0 < s_id <= len(sources):
-            real_url = sources[s_id-1].get('url', '#')
-            if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
-                final_d = sources[s_id-1]['final_date']
-                if final_d and final_d != "Missing": date = final_d
+        real_date = "------"
+        display_media = "未知來源"
         
-        cat = classify_source(real_url)
-        label, _ = get_category_meta(cat)
-        emoji = "⚪"
-        if "中國" in label: emoji = "🔴"
-        elif "泛藍" in label: emoji = "🔵"
-        elif "泛綠" in label: emoji = "🟢"
-        elif "官方" in label: emoji = "⚪"
-        elif "獨立" in label: emoji = "🕵️"
-        elif "國際" in label: emoji = "🌏"
-        elif "農場" in label: emoji = "⛔"
-        elif "社群" in label: emoji = "⚠️"
+        if sources and 0 < s_id <= len(sources):
+            source_data = sources[s_id-1]
+            real_url = source_data.get('url', '#')
+            
+            meta_date = source_data.get('published_date')
+            url_date = extract_date_from_url(real_url)
+            llm_date = item.get('date')
+            
+            if meta_date and meta_date != "Missing":
+                real_date = meta_date
+            elif url_date:
+                real_date = url_date
+            elif llm_date and re.match(r'\d{4}-\d{2}-\d{2}', llm_date) and "XX" not in llm_date:
+                real_date = llm_date
+            
+            cat = classify_source(real_url)
+            label, _ = get_category_meta(cat)
+            domain = get_domain_name(real_url)
+            
+            emoji = "⚪"
+            if "中國" in label: emoji = "🔴"
+            elif "泛藍" in label: emoji = "🔵"
+            elif "泛綠" in label: emoji = "🟢"
+            elif "官方" in label: emoji = "⚪"
+            elif "獨立" in label: emoji = "🕵️"
+            elif "國際" in label: emoji = "🌏"
+            elif "農場" in label: emoji = "⛔"
+            elif "社群" in label: emoji = "⚠️"
+            
+            display_media = f"{emoji} {label.split(' ')[1]} ({domain})"
         
-        if real_url and real_url != "#":
-            title_html = f'<a href="{real_url}" target="_blank">{title}</a>'
-        else:
-            title_html = title
-
-        media_display = f"{emoji} {media}"
-        row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
-        table_rows += row_html
+        title = item.get('title', 'No Title')
+        title_html = f'<a href="{real_url}" target="_blank">{title}</a>' if real_url != "#" else title
+        
+        if blind_mode: display_media = "*****"
+        
+        table_rows += f"<tr><td style='white-space:nowrap;'>{real_date}</td><td style='white-space:nowrap;'>{display_media}</td><td>{title_html}</td></tr>"
 
     full_html = f"""
     <div class="scrollable-table-container">
@@ -600,7 +632,7 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     <thead>
     <tr>
     <th style="width:120px;">日期</th>
-    <th style="width:140px;">媒體 (URL分類)</th>
+    <th style="width:180px;">媒體 (URL分類)</th>
     <th>新聞標題 (點擊閱讀)</th>
     </tr>
     </thead>
@@ -610,7 +642,6 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     </table>
     </div>
     """
-    
     st.markdown("### 📅 關鍵發展時序")
     st.markdown(full_html, unsafe_allow_html=True)
 
@@ -624,7 +655,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V36.4)
+# 全域觀點分析報告 (V36.5)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -638,12 +669,12 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V36.4")
+    st.title("全域觀點解析 V36.5")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架 + 邏輯偵錯 + 證據分級", "學術框架：CLA + 預警指標 + 驗屍分析"],
+        captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
         index=0
     )
     st.markdown("---")
@@ -797,7 +828,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V36.4 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.5 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -835,13 +866,17 @@ if search_btn and query and google_key and tavily_key:
 
 if st.session_state.result:
     data = st.session_state.result
+    # [V36.5] 使用新的嚴格渲染函式
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     st.markdown("---")
     st.markdown("### 📝 平衡報導分析")
-    formatted_text = format_citation_style(data.get("report_text", ""))
-    html_content = markdown.markdown(formatted_text, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+    
+    # [V36.5 Fix] 渲染順序：Markdown -> HTML -> Regex Citation
+    raw_md = data.get("report_text", "")
+    html_content = markdown.markdown(raw_md, extensions=['tables'])
+    final_html = format_citation_style(html_content)
+    st.markdown(f'<div class="report-paper">{final_html}</div>', unsafe_allow_html=True)
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
@@ -856,9 +891,11 @@ if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
     scenario_data = st.session_state.scenario_result
-    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
-    html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
+    
+    raw_md_2 = scenario_data.get("report_text", "")
+    html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
+    final_html_2 = format_citation_style(html_content_2)
+    st.markdown(f'<div class="report-paper">{final_html_2}</div>', unsafe_allow_html=True)
 
 if st.session_state.sources:
     st.markdown("---")
