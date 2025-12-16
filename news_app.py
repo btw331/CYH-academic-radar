@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V18.1", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V18.2", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -145,8 +145,8 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V18.1] 搜尋核心：自訂數量 + 日期補救
-def get_search_context(query, api_key_tavily, days_back, region_mode, max_results, context_report=None):
+# [V18.2] 搜尋核心：支援複選區域 (List) + 智慧白名單切換
+def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
@@ -154,43 +154,71 @@ def get_search_context(query, api_key_tavily, days_back, region_mode, max_result
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
-            "max_results": max_results # 使用自訂數量
+            "max_results": max_results
         }
 
-        if "台灣" in region_mode:
-            search_params["query"] = f"{query}" 
-            search_params["include_domains"] = TAIWAN_DOMAINS 
-        else:
-            if "亞洲" in region_mode: suffix = "Asia News"
-            elif "歐洲" in region_mode: suffix = "Europe News"
-            elif "美洲" in region_mode: suffix = "Americas News"
-            else: suffix = "news"
-            
-            search_params["query"] = f"{query} {suffix}"
-            search_params["exclude_domains"] = ["daum.net", "naver.com", "espn.com", "pinterest.com"]
+        # --- 構建查詢字串 ---
+        suffixes = []
+        is_strict_taiwan = False
+        
+        # 1. 關鍵字策略
+        # 遍歷所有被勾選的區域，加入對應關鍵字
+        for r in selected_regions:
+            if "台灣" in r: suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
+            if "亞洲" in r: suffixes.append("Asia News")
+            if "歐洲" in r: suffixes.append("Europe News")
+            if "美洲" in r: suffixes.append("US Americas News")
+        
+        if not suffixes: suffixes.append("News") # 防呆
+        
+        # 組合: "議題 + (台灣新聞 OR 亞洲新聞 ...)"
+        search_q = f"{query} {' '.join(suffixes)}"
+        if context_report: search_q += " analysis"
+        
+        search_params["query"] = search_q
 
-        if context_report: search_params["query"] += " analysis"
+        # --- 2. 網域控制邏輯 ---
+        # 如果「只」勾選了台灣 -> 啟用嚴格白名單
+        if len(selected_regions) == 1 and "台灣" in selected_regions[0]:
+            is_strict_taiwan = True
+            search_params["include_domains"] = TAIWAN_DOMAINS
+        else:
+            # 如果是混選 (台灣+美國) 或 純國際 -> 啟用黑名單 (排除垃圾，保留廣度)
+            search_params["exclude_domains"] = [
+                "daum.net", "naver.com", "tistory.com",
+                "espn.com", "bleacherreport.com", "cbssports.com", 
+                "pinterest.com", "amazon.com", "tripadvisor.com"
+            ]
+        
         actual_query = search_params["query"]
         
+        # 執行搜尋
         response = tavily.search(**search_params)
         results = response.get('results', [])
         context_text = ""
         
+        if context_report:
+            context_text += f"【歷史背景】\n{context_report[:800]}...\n\n"
+            
+        context_text += "【最新網路情報】(請嚴格使用 [Source ID] 引用)\n"
+        
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
-            # [V18.1] 日期補救：若 published_date 為空，嘗試抓 content 開頭
-            raw_date = res.get('published_date', '')
-            if not raw_date:
-                raw_date = "Recent" # 標記為近期
-            else:
-                raw_date = raw_date[:10] # 只取 YYYY-MM-DD
-                
-            content = res.get('content', '')[:800]
-            # 傳給 AI 時明確標註 Date
-            context_text += f"Source {i+1}: [Date: {raw_date}] [Title: {title}] {content} (URL: {url})\n"
             
-        return context_text, results, actual_query, ("台灣" in region_mode)
+            # [V18.2] 日期補救機制
+            pub_date = res.get('published_date')
+            if not pub_date:
+                # 嘗試標記為 Recent，讓 AI 從內容找
+                pub_date = "Recent"
+            else:
+                pub_date = pub_date[:10]
+            
+            content = res.get('content', '')[:800]
+            # 將 Date 明確放入 context，指示 AI 優先使用
+            context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
+            
+        return context_text, results, actual_query, is_strict_taiwan
         
     except Exception as e:
         return f"Error: {str(e)}", [], "Error", False
@@ -291,7 +319,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     
     【輸出格式 (請保持格式整潔，每行一筆，使用 | 分隔)】：
     ### [DATA_TIMELINE]
-    YYYY-MM-DD|媒體|標題
+    (YYYY-MM-DD|媒體|事件標題) -> 請務必從 Context 中抓取時間
     
     ### [DATA_SPECTRUM]
     (重要：必須包含 6 個欄位，日期請務必從 Context 中的 [Date: ...] 提取，若無則填 Recent)
@@ -317,23 +345,24 @@ def parse_gemini_data(text):
         line = line.strip()
         if not line: continue
         
-        # Timeline
+        # Timeline Parsing
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line):
             parts = line.split("|")
-            data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
+            if len(parts) == 3: 
+                data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum
+        # Spectrum Parsing
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "YYYY" in line:
             parts = line.split("|")
             try:
                 name = parts[0].strip()
-                date = "Recent" # [V18.1] 預設為 Recent
+                date = "Recent" 
                 title = "點擊閱讀報導"
                 base_stance = 0
                 base_cred = 0
                 url = "#"
                 
-                # 彈性解析
+                # 6 欄位解析
                 if len(parts) >= 6:
                     date = parts[1].strip()
                     title = parts[2].strip()
@@ -436,6 +465,14 @@ def render_spectrum_split(spectrum_data):
         st.markdown('<div class="table-header-neutral">⚪ 中立 / 其他觀點 (Neutral/Other)</div>', unsafe_allow_html=True)
         st.markdown(make_md_table(neutral_list))
 
+# [V18.1 Feature] 渲染時間軸
+def render_timeline_markdown(timeline_data):
+    if not timeline_data: return
+    md = "| 日期 | 媒體 | 事件/標題 |\n|:---:|:---|:---|\n"
+    for item in timeline_data:
+        md += f"| {item.get('date','')} | {item.get('media','')} | {item.get('event','')} |\n"
+    st.markdown(md)
+
 # 4. 下載功能
 def convert_data_to_json(data):
     return json.dumps(data, indent=2, ensure_ascii=False)
@@ -456,7 +493,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V18.1")
+    st.title("全域觀點解析 V18.2")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -482,19 +519,19 @@ with st.sidebar:
             index=2
         )
         
-        # [V18.1] 自訂搜尋數量
-        max_results = st.slider("搜尋篇數上限", min_value=10, max_value=50, value=20, step=5, help="增加篇數可提升完整度，但會增加等待時間。")
-        
-        region_mode = st.selectbox(
-            "搜尋視角 (Region)",
-            ["🇹🇼 台灣限定 (Taiwan Only)", "🌏 亞洲視角 (Asia)", "🌍 歐洲視角 (Europe)", "🌎 美洲視角 (Americas)"]
+        # [V18.2] 恢復 Multi-Select
+        max_results = st.slider("搜尋篇數上限", 10, 50, 20)
+        selected_regions = st.multiselect(
+            "搜尋視角 (Region) - 可複選",
+            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)"],
+            default=["🇹🇼 台灣 (Taiwan)"]
         )
 
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 搜尋優化 (Search Strategy)**
-        * **台灣模式**: 啟用「白名單機制」，僅搜尋聯合、自由、中時、中央社等 15 家主流台媒。
-        * **日期補救**: 自動修復 Tavily 回傳的空日期欄位。
+        * **台灣模式**: 若只選台灣，啟用嚴格白名單 (只搜聯合、自由、中時...)。
+        * **混選模式**: 若選台灣+國際，啟用黑名單 (排除垃圾農場)，保留廣度。
         
         **2. 政治光譜校正 (Calibration)**
         * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
@@ -526,19 +563,20 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V18.1)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V18.2)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
-        st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {region_mode} / 時間: {days_label} / 數量: {max_results})...")
+        regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
+        st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
         
-        # [V18.1] 傳入自訂 max_results
-        context_text, sources, actual_query, is_tw_only = get_search_context(query, tavily_key, search_days, region_mode, max_results, past_report_input)
+        # [V18.2] 傳入 list 類型的 selected_regions
+        context_text, sources, actual_query, is_strict_tw = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         st.session_state.sources = sources
         
-        if is_tw_only:
-             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Whitelist Mode)")
+        if is_strict_tw:
+             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Strict Whitelist Mode)")
         else:
-             st.info(f"🔍 實際搜尋關鍵字: {actual_query}")
+             st.info(f"🔍 混選模式：啟用垃圾過濾 (Smart Blacklist) - 關鍵字: {actual_query}")
         
         st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
         cofacts_txt = search_cofacts(query)
@@ -567,6 +605,11 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     if data.get("spectrum"):
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
         render_spectrum_split(data["spectrum"])
+    
+    # [V18.2] 時間軸顯示
+    if data.get("timeline"):
+        st.markdown("### 📅 議題發展時間軸 (News Timeline)")
+        render_timeline_markdown(data["timeline"])
 
     st.markdown("### 📝 媒體識讀報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
