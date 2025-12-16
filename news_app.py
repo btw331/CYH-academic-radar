@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V35.4", page_icon="📊", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.1", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -117,45 +117,28 @@ st.markdown(CSS_STYLE, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫與共用常數
 # ==========================================
-TAIWAN_WHITELIST = [
-    "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
-    "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
-    "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
-    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw",
-    "news.yahoo.com.tw", "ftvnews.com.tw", "newtalk.tw", "nownews.com", "mygopen.com"
-]
+# 分眾保底名單
+BLUE_WHITELIST = ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "storm.mg"]
+GREEN_WHITELIST = ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "upmedia.mg"]
+OFFICIAL_WHITELIST = ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "gov.tw"]
+FULL_TAIWAN_WHITELIST = BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw"]
 
-INDIE_WHITELIST = [
-    "twreporter.org", "theinitium.com", "thenewslens.com", 
-    "mindiworldnews.com", "vocus.cc", "matters.town", 
-    "plainlaw.me", "whogovernstw.org", "rightplus.org", 
-    "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
-]
-
-INTL_WHITELIST = [
-    "bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", 
-    "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
-]
-
-GRAY_WHITELIST = [
-    "ptt.cc", "dcard.tw", "mobile01.com"
-]
+INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me"]
+INTL_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp"]
+GRAY_WHITELIST = ["ptt.cc", "dcard.tw", "mobile01.com"]
 
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
-    "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
-    "BLUE": ["udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt.org", "uniteddaily"],
+    "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia"],
+    "BLUE": ["udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt", "storm"],
     "OFFICIAL": ["cna.com", "pts.org", "mnd.gov", "mac.gov", "tfc-taiwan", "gov.tw"],
-    "INDIE": ["twreporter", "theinitium", "thenewslens", "upmedia", "storm.mg", "mindiworld", "vocus", "matters", "plainlaw"],
-    "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi.fr"],
+    "INDIE": ["twreporter", "theinitium", "thenewslens", "mindiworld", "vocus", "matters", "plainlaw"],
+    "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi"],
     "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"],
-    "SOCIAL": ["ptt.cc", "dcard.tw", "mobile01.com", "facebook.com", "youtube.com"]
+    "SOCIAL": ["ptt.cc", "dcard", "mobile01", "facebook", "youtube"]
 }
 
-NOISE_BLACKLIST = [
-    "zhihu.com", "baidu.com", "pinterest.com", "instagram.com", 
-    "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"
-]
+NOISE_BLACKLIST = ["zhihu.com", "baidu.com", "pinterest.com", "instagram.com", "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"]
 
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
@@ -167,11 +150,9 @@ def classify_source(url):
         domain = urlparse(url).netloc.lower()
         clean_domain = domain.replace("www.", "")
     except: return "OTHER"
-
     for cat, keywords in DB_MAP.items():
         for kw in keywords:
-            if kw in domain:
-                return cat
+            if kw in domain: return cat
     return "OTHER"
 
 def get_category_meta(cat):
@@ -202,49 +183,29 @@ def format_citation_style(text):
 
 def extract_date_from_url(url):
     if not url: return None
-    patterns = [
-        r'/(\d{4})[-/](\d{2})[-/](\d{2})/',
-        r'/(\d{4})(\d{2})(\d{2})/',
-        r'-(\d{4})(\d{2})(\d{2})'
-    ]
+    patterns = [r'/(\d{4})[-/](\d{2})[-/](\d{2})/', r'/(\d{4})(\d{2})(\d{2})/', r'-(\d{4})(\d{2})(\d{2})']
     for p in patterns:
         match = re.search(p, url)
-        if match:
-            y, m, d = match.groups()
-            return f"{y}-{m}-{d}"
+        if match: return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
     return None
 
-def is_chinese(text):
-    return bool(re.search(r'[\u4e00-\u9fff]', text))
-
 # ==========================================
-# 3. 核心功能模組
+# 3. 核心功能模組 (Hybrid Weighted Search)
 # ==========================================
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def generate_dynamic_keywords(query, api_key):
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
-        prompt = f"""
-        你是專業的情報分析師。請針對議題「{query}」，生成 3 組「最具情報價值」的搜尋關鍵字。
-        策略：核心爭議、數據事實、深度分析。
-        請直接輸出 3 個關鍵字字串，用逗號分隔。例如："{query} 爭議, {query} 懶人包, {query} 影響"
-        """
+        prompt = f"請針對議題「{query}」，生成 3 組最具情報價值的搜尋關鍵字 (爭議, 事實, 影響)。請直接輸出字串，用逗號分隔。"
         resp = llm.invoke(prompt).content
         keywords = [k.strip() for k in resp.split(',') if k.strip()]
         return keywords[:3] if keywords else [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"]
-    except:
-        return [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"] 
+    except: return [f"{query} 爭議", f"{query} 分析", f"{query} 懶人包"] 
 
 def search_cofacts(query):
     url = "https://cofacts-api.g0v.tw/graphql"
-    graphql_query = """
-    query ListArticles($text: String!) {
-      ListArticles(filter: {q: $text}, orderBy: [{_score: DESC}], first: 3) {
-        edges { node { text articleReplies(status: NORMAL) { reply { text type } } } }
-      }
-    }
-    """
+    graphql_query = """query ListArticles($text: String!) { ListArticles(filter: {q: $text}, orderBy: [{_score: DESC}], first: 3) { edges { node { text articleReplies(status: NORMAL) { reply { text type } } } } } }"""
     try:
         response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=3)
         if response.status_code == 200:
@@ -264,29 +225,72 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-def execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_queries):
+# 混和權重搜尋引擎
+def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions):
     tavily = TavilyClient(api_key=api_key_tavily)
-    queries = [query] + dynamic_queries
-    sub_params = search_params.copy()
-    sub_params['max_results'] = 20 
     all_results = []
     seen_urls = set()
     
-    def fetch(q):
+    tasks = []
+    
+    # 1. 通用熱度搜尋
+    general_domains = []
+    if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
+    if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
+    if "亞洲" in str(selected_regions): general_domains.extend(INTL_WHITELIST)
+    
+    general_params = search_params.copy()
+    general_params['max_results'] = 20 
+    if is_strict_mode and general_domains:
+        general_params['include_domains'] = list(set(general_domains))
+    
+    tasks.append({"name": "General", "query": query, "params": general_params})
+    
+    # 2. 分眾保底搜尋
+    if "台灣" in str(selected_regions):
+        blue_params = search_params.copy()
+        blue_params['max_results'] = 5 
+        blue_params['include_domains'] = BLUE_WHITELIST
+        tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
+        
+        green_params = search_params.copy()
+        green_params['max_results'] = 5 
+        green_params['include_domains'] = GREEN_WHITELIST
+        tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
+        
+        official_params = search_params.copy()
+        official_params['max_results'] = 5
+        official_params['include_domains'] = OFFICIAL_WHITELIST
+        tasks.append({"name": "Official_Guard", "query": f"{query} 聲明 新聞稿", "params": official_params})
+
+    def fetch(task):
         try:
-            return tavily.search(query=q, **sub_params).get('results', [])
+            return tavily.search(query=task['query'], **task['params']).get('results', [])
         except: return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(fetch, q) for q in queries]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fetch, t): t['name'] for t in tasks}
+        results_map = {}
         for future in concurrent.futures.as_completed(futures):
-            res_list = future.result()
-            for item in res_list:
-                url = item.get('url')
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    all_results.append(item)
-    return all_results
+            t_name = futures[future]
+            results_map[t_name] = future.result()
+            
+    # 智慧合併：保底優先 -> 熱度補完
+    final_list = []
+    for guard_name in ["Blue_Guard", "Green_Guard", "Official_Guard"]:
+        if guard_name in results_map:
+            for item in results_map[guard_name]:
+                if item['url'] not in seen_urls:
+                    seen_urls.add(item['url'])
+                    final_list.append(item)
+    
+    if "General" in results_map:
+        for item in results_map["General"]:
+            if item['url'] not in seen_urls:
+                seen_urls.add(item['url'])
+                final_list.append(item)
+                
+    return final_list
 
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, enable_outpost, dynamic_keywords):
     try:
@@ -296,35 +300,12 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
-            "max_results": max_results,
             "exclude_domains": active_blacklist
         }
 
-        target_domains = []
-        is_strict_mode = False
+        is_strict_mode = bool(selected_regions)
+        results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions)
         
-        if not isinstance(selected_regions, list): selected_regions = [selected_regions]
-
-        for r in selected_regions:
-            if "台灣" in r:
-                target_domains.extend(TAIWAN_WHITELIST)
-                is_strict_mode = True
-            if "獨立" in r:
-                target_domains.extend(INDIE_WHITELIST)
-                is_strict_mode = True
-            if "亞洲" in r or "歐洲" in r or "美洲" in r:
-                target_domains.extend(INTL_WHITELIST)
-                is_strict_mode = True
-        
-        if enable_outpost:
-            target_domains.extend(GRAY_WHITELIST)
-            if not is_strict_mode: is_strict_mode = True 
-
-        if is_strict_mode and target_domains:
-            target_domains = list(set(target_domains))
-            search_params["include_domains"] = target_domains
-
-        results = execute_swarm_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords)
         results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
         results = results[:max_results]
         
@@ -344,10 +325,10 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             content = res.get('content', '')[:3000]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
-        return context_text, results, query, is_strict_mode, len(target_domains)
+        return context_text, results, query, is_strict_mode
         
     except Exception as e:
-        return f"Error: {str(e)}", [], "Error", False, 0
+        return f"Error: {str(e)}", [], "Error", False
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
@@ -357,7 +338,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V35.4] 深度戰略分析 (Timeline Table Fix)
+# [V36.1] 深度戰略分析 (新增聲量權重校正 Prompt)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -377,11 +358,15 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         
         【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
         
-        【分析任務升級】：
+        【分析方法論】：
         1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
         2. **證據強度分級**：評估證據力（強/弱）。
+        3. **聲量權重校正 (Volume Calibration)**：
+           - **識別複讀機**：若某一陣營的來源大量重複相同觀點，請將其歸納為「單一強勢論點」，不要讓其佔據所有篇幅。
+           - **挖掘長尾**：在「熱度補完」的資料中，優先尋找 **「非主流但具獨特視角」** 的觀點，而非重複主流論述。
+           - **沉默的螺旋**：若某一方聲量顯著低落，請明確指出這是「策略性冷處理」或是「話語權失衡」，而非視為該方無意見。
         
-        【輸出格式 (嚴格遵守)】：
+        【輸出格式】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|Source_ID)
         
@@ -392,6 +377,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
            - *包含：邏輯謬誤偵測、證據強度評估*
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
+           - *請應用聲量權重校正，指出話語權是否失衡*
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
         5. **🤔 結構性反思 (Structural Reflection)**
         """
@@ -403,7 +389,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
-        【分析任務升級】：
+        【分析任務】：
         1. **早期預警指標**：列出監測訊號。
         2. **驗屍分析**：反推失敗變數。
 
@@ -537,7 +523,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V35.4)</h1>
+        <h1>全域觀點分析報告 (V36.1)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -617,7 +603,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V35.4)
+# 全域觀點分析報告 (V36.1)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -631,7 +617,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V35.4")
+    st.title("全域觀點解析 V36.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -700,44 +686,67 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
-    with st.expander("🧠 V35.4 情報分析方法論 (完整版)", expanded=False):
+    # [V36.1] 詳細方法論說明 (UI優化)
+    st.markdown("### 🧠 情報分析方法論詳解")
+    
+    with st.expander("1. 資訊檢索：混和權重與三軌搜尋"):
         st.markdown("""
-        <div class="methodology-text">
-        <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
-        本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
-        <ul>
-            <li><b>三軌平行搜尋 (Tri-Track)</b>：同時針對「事實/時序」、「觀點/爭議」、「深度/懶人包」三條軌道進行搜尋，確保資訊完整性。</li>
-            <li><b>網域圍籬 (Domain Fencing)</b>：嚴格執行白名單機制，確保資訊來源可靠。</li>
-            <li><b>前哨站模式 (Outpost)</b>：可選監測 PTT/Dcard 等社群論壇，獲取早期預警。</li>
-            <li><b>動態關鍵字 (Dynamic Query)</b>：AI 自動生成衍生搜尋詞，精準打擊爭議點。</li>
-            <li><b>智慧日期提取</b>：結合 API 元數據、URL 規則與 AI 內文推斷，最大化還原事件時間。</li>
-        </ul>
-
-        <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
-        本研究採用 <b>Entman (1993) 的框架理論 (Framing Theory)</b> 與 <b>批判話語分析 (CDA)</b>。
-        <ul>
-            <li><b>語意層次</b>：分析文本中的修辭 (Rhetoric)、隱喻 (Metaphor) 與標籤化 (Labeling) 策略。</li>
-            <li><b>機構層次</b>：結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫，進行雙重驗證 (Triangulation)。</li>
-        </ul>
-
-        <div class="methodology-header">3. 可信度與查核 (Verification)</div>
-        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>。
-        <ul>
-            <li><b>交叉比對</b>：將媒體報導與 <b>Cofacts 謠言查核資料庫</b> 及官方原始文件進行比對。</li>
-            <li><b>邏輯偵錯 (Logic Scan)</b>：AI 自動識別滑坡謬誤、稻草人論證。</li>
-            <li><b>證據分級</b>：評估新聞來源的證據強度（強/弱）。</li>
-        </ul>
-
-        <div class="methodology-header">4. 戰略推演模型 (Futures Framework)</div>
-        僅應用於「未來發展推演」模式。
-        <ul>
-            <li><b>第一性原理 (First Principles)</b>：解構議題至最基礎的物理或經濟限制。</li>
-            <li><b>層次分析法 (CLA)</b>：由表象 (Litany) 深入至系統結構 (System) 與社會神話 (Myth)。</li>
-            <li><b>可能性圓錐 (Cone of Plausibility)</b>：區分基準情境 (Probable)、轉折情境 (Plausible) 與極端情境 (Possible)。</li>
-            <li><b>驗屍分析 (Pre-mortem)</b>：反向推演預測失敗的可能原因。</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
+        **核心機制：混和權重搜尋 (Hybrid Weighted Search)**
+        我們採用「保底不封頂」策略來解決聲量偏差：
+        - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
+        - **熱度補完 (Volume Fill)**：剩餘名額開放給全網熱度排序，反映真實輿論聲量。
+        
+        **三軌搜尋架構 (Tri-Track Search)**
+        將單一任務拆解為三組不同目的的指令同時發射：
+        1. **事實與時序 (Facts & Timeline)**
+           - 指令：`{query} 新聞 事件 時間軸`
+           - 目標：抓取硬資訊，構建準確的時間軸骨架。
+        2. **觀點與爭議 (Opinions & Controversy)**
+           - 指令：`{query} 評論 觀點 爭議 分析`
+           - 目標：捕捉正反方論述邏輯，作為框架分析原料。
+        3. **深度與結構 (Deep Dive)**
+           - 指令：`{query} 懶人包 重點 影響`
+           - 目標：快速獲取議題全貌與背景知識。
+        """)
+        
+    with st.expander("2. 框架分析：Entman 理論與立場判定"):
+        st.markdown("""
+        **Entman 框架理論 (Framing Theory)**
+        我們分析文本如何透過「選擇 (Selection)」與「凸顯 (Salience)」來建構現實。
+        - **問題定義**：不同陣營如何定義問題的核心？(例如：是財政正義還是奪權？)
+        - **歸因分析**：將責任歸咎於誰？
+        - **道德評價**：使用什麼樣的形容詞來進行道德審判？
+        
+        **機構層次驗證**
+        結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫 (DB_MAP)，對文章立場進行雙重驗證。
+        """)
+        
+    with st.expander("3. 可信度驗證：水平閱讀與邏輯偵錯"):
+        st.markdown("""
+        **水平閱讀法 (Lateral Reading)**
+        採用史丹佛歷史教育群 (SHEG) 提倡之方法，不只深讀單一來源，而是橫向比對多個來源以確認事實。
+        
+        **邏輯偵錯 (Logic Scan)**
+        AI 會自動掃描文本中的邏輯謬誤：
+        - **滑坡謬誤**：誇大微小行動的災難性後果。
+        - **稻草人論證**：扭曲對手觀點以便攻擊。
+        
+        **Cofacts 協作查核**
+        即時串接 g0v Cofacts 謠言資料庫，標註已被社群查核為錯誤的資訊。
+        """)
+        
+    with st.expander("4. 戰略推演：CLA 層次分析與預警"):
+        st.markdown("""
+        **CLA 層次分析法 (Causal Layered Analysis)**
+        由未來學家 Inayatullah 提出，深入挖掘議題的四個層次：
+        1. **表象 (Litany)**：公眾看到的事件與數據。
+        2. **系統 (System)**：造成事件的社會結構與政策成因。
+        3. **世界觀 (Worldview)**：利益相關者的深層價值觀與意識形態。
+        4. **神話/隱喻 (Myth)**：潛意識中的集體焦慮或故事原型。
+        
+        **早期預警指標 (Signposts)**
+        為每個未來情境設定具體的監測訊號，讓決策者知道「該看什麼」來判斷局勢走向。
+        """)
         
     st.markdown("### 📥 報告匯出")
     if st.session_state.get('result') or st.session_state.get('scenario_result'):
@@ -763,22 +772,22 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V35.4 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.1 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
-        st.write(f"📡 2. 執行蜂群搜尋 (視角: {regions_label})...")
+        st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
+        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方各5篇) + 熱度補完")
         
-        context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(
+        context_text, sources, actual_query, is_strict_tw = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, enable_outpost, dynamic_keywords
         )
         
+        st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
         if is_strict_tw:
-            st.write(f"🛡️ 網域圍籬已啟動 (鎖定 {domain_count} 個來源)。")
-        if enable_outpost:
-            st.write("⚠️ 前哨站模式已開啟：納入 PTT/Dcard 社群聲量監測。")
+            st.write(f"🛡️ 網域圍籬已啟動。")
         
         st.session_state.sources = sources
         
