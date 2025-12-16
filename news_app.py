@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V30.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V30.3", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -303,41 +303,50 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V30.0] 深度戰略分析 (學術框架升級)
+# [V30.3] 深度戰略分析 (Strict Methodology Enforcement)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位社會科學研究員與情報分析師。請針對「{query}」進行【全域深度解析】，並嚴格遵循學術方法論。
+        你是一位社會科學研究員與情報分析師。請針對「{query}」進行【全域深度解析】，並嚴格遵循以下學術方法論進行報告撰寫。
         
-        【方法論框架 (Methodological Framework)】：
-        1. **資訊檢索 (Information Retrieval)**：基於提供的 Context 進行證據權重評估。
-        2. **框架分析 (Framing Analysis)**：依據 Entman (1993) 理論，分析各方媒體如何「選擇」與「凸顯」特定事實。
-        3. **三角驗證 (Triangulation)**：交叉比對官方說法、媒體報導與第三方查核(Cofacts)。
+        【強制方法論框架 (Mandatory Framework)】：
+        1. **資訊檢索 (Information Retrieval)**：基於 Context 進行證據權重評估。
+        2. **框架分析 (Framing Analysis)**：**必須** 依據 Robert Entman (1993) 的四大維度分析不同陣營的敘事差異：
+           - **定義問題 (Define Problems)**: 雙方認為問題出在哪？
+           - **診斷原因 (Diagnose Causes)**: 誰造成的？
+           - **道德評價 (Make Moral Judgments)**: 誰是好人/壞人？
+           - **處方建議 (Suggest Remedies)**: 雙方主張該怎麼做？
+        3. **三角驗證 (Triangulation)**：在事實查核中，必須明確標註來源比對 (如：官方數據 vs 媒體說法)。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
         (格式：YYYY-MM-DD|媒體|標題|網址) 
         -> 網址請務必對應 Context 中的 Source Link。
-        -> 日期請從 Context [Date:...] 提取，若無則依據內文推斷。
+        -> 日期請從 Context [Date:...] 提取。
         
         ### [REPORT_TEXT]
-        (Markdown 報告 - 請使用 [Source X] 格式引用)
+        (Markdown 報告)
         請包含以下章節：
-        1. **📊 全域現況摘要 (Situational Analysis)**：整合主要事實。
-        2. **🔍 爭議點事實查核 (Fact-Check Matrix)**：列出爭議陳述與驗證結果。
-        3. **⚖️ 媒體框架光譜 (Media Framing Spectrum)**：分析不同陣營的敘事框架差異。
-        4. **🧠 深度識讀與利益分析 (Cui Bono)**：分析誰是受益者，誰是受害者。
-        5. **🤔 關鍵反思 (Critical Reflection)**：對議題的結構性思考。
+        1. **📊 全域現況摘要 (Situational Analysis)**
+        2. **🔍 爭議點事實查核 (Fact-Check with Triangulation)**
+        3. **⚖️ 媒體框架分析 (Entman's Framing Analysis)**
+           - 🟢 泛綠/批判陣營框架：(請依 Entman 四維度解構)
+           - 🔵 泛藍/體制陣營框架：(請依 Entman 四維度解構)
+        4. **🧠 深度識讀與利益分析 (Cui Bono)**
+        5. **🤔 結構性反思 (Structural Reflection)**
         """
         
     else: # SCENARIO (Futures Studies)
         system_prompt = f"""
         你是一位未來學家 (Futurist)。請針對「{query}」應用未來學方法論進行戰略推演。
         
-        【方法論框架 (Futures Methodology)】：
-        1. **第一性原理 (First Principles)**：回歸議題的最基本事實與驅動力 (Drivers)。
-        2. **層次分析法 (Causal Layered Analysis, CLA)**：從表象 (Litany) 深入到系統(System)與世界觀(Worldview)。
-        3. **可能性圓錐 (Cone of Plausibility)**：推演三種不同機率的未來路徑。
+        【強制方法論框架 (Mandatory Framework)】：
+        1. **CLA 層次分析 (Causal Layered Analysis)**：必須由淺入深解構議題：
+           - **表象 (Litany)**: 媒體頭條、公開的爭議。
+           - **系統 (System)**: 政策、經濟結構、技術限制。
+           - **世界觀 (Worldview)**: 意識形態、文化典範。
+           - **神話/隱喻 (Myth/Metaphor)**: 深層的集體潛意識或譬喻。
+        2. **可能性圓錐 (Cone of Plausibility)**：推演三種情境。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
@@ -345,12 +354,15 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         
         ### [REPORT_TEXT]
         (Markdown 報告)
-        1. **🎯 第一性原理拆解 (First Principles Decomposition)**
-           - 核心驅動力分析
+        1. **🎯 CLA 層次深度解構 (Causal Layered Analysis)**
+           - Litany (表象)
+           - System (系統)
+           - Worldview (世界觀)
+           - Myth (神話/隱喻)
         2. **🔮 未來情境模擬 (Scenario Planning)**
-           - 基準情境 (Baseline): 延續現狀 (Business as Usual)
-           - 轉折情境 (Alternative): 關鍵變數改變
-           - 極端情境 (Wild Card): 黑天鵝事件
+           - 基準情境 (Baseline)
+           - 轉折情境 (Alternative)
+           - 極端情境 (Wild Card)
         3. **💡 綜合戰略建議 (Strategic Recommendations)**
         """
 
@@ -373,7 +385,6 @@ def parse_gemini_data(text):
                 title = parts[2].strip()
                 url = "#"
                 
-                # 相容性處理
                 if len(parts) >= 6: url = parts[5].strip()
                 elif len(parts) >= 4: url = parts[3].strip()
                 
@@ -392,7 +403,7 @@ def parse_gemini_data(text):
     elif "### REPORT_TEXT" in text:
         data["report_text"] = text.split("### REPORT_TEXT")[1].strip()
     else:
-        match = re.search(r"(#+\s*.*摘要|1\.\s*.*摘要|#+\s*.*第一性原理)", text)
+        match = re.search(r"(#+\s*.*摘要|1\.\s*.*摘要|#+\s*.*CLA)", text)
         if match:
             data["report_text"] = text[match.start():]
         else:
@@ -400,7 +411,6 @@ def parse_gemini_data(text):
 
     return data
 
-# [V30.0] 渲染 HTML 表格
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         st.info("無時間軸資料。")
@@ -413,7 +423,6 @@ def render_html_timeline(timeline_data, blind_mode):
         title = item.get('title', 'No Title')
         url = item.get('url', '#')
         
-        # 網域分類與 Emoji
         cat = classify_source(url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
@@ -425,7 +434,6 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
-        # 連結處理
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
@@ -476,12 +484,12 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V30.2")
+    st.title("全域觀點解析 V30.3")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架分析 + 三角驗證", "學術框架：第一性原理 + CLA + 未來學"],
+        captions=["學術框架：Entman 框架分析 + 三角驗證", "學術框架：CLA 層次分析 + 第一性原理"],
         index=0
     )
     st.markdown("---")
@@ -503,7 +511,6 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
         
-        # [V30.2] 改為 Number Input (自訂天數)
         search_days = st.number_input(
             "搜尋時間範圍 (天數)",
             min_value=1,
@@ -528,34 +535,27 @@ with st.sidebar:
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
             <li><b>搜尋廣度</b>：整合 Tavily API，進行多維度關鍵字排列組合 (Permutations) 搜尋。</li>
-            <li><b>來源驗證</b>：採用白名單機制優先鎖定具公信力之主流媒體與獨立媒體，並排除內容農場 (Content Farms)。</li>
-            <li><b>時序重構</b>：若 Metadata 缺失，系統會針對內文進行自然語言處理 (NLP) 以推斷確切事件時間。</li>
+            <li><b>來源驗證</b>：採用白名單機制優先鎖定具公信力之主流媒體與獨立媒體。</li>
+            <li><b>時序重構</b>：系統會針對內文進行 NLP 分析以推斷確切事件時間。</li>
         </ul>
 
-        <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
-        本研究採用 <b>Entman (1993) 的框架理論 (Framing Theory)</b> 與 <b>批判話語分析 (CDA)</b>。
+        <div class="methodology-header">2. 框架分析 (Framing Analysis)</div>
+        本研究採用 <b>Entman (1993) 的框架理論</b> 進行深度解構：
         <ul>
-            <li><b>語意層次</b>：分析文本中的修辭 (Rhetoric)、隱喻 (Metaphor) 與標籤化 (Labeling) 策略。</li>
-            <li><b>機構層次</b>：結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫，進行雙重驗證 (Triangulation)。</li>
-            <li><b>光譜定義</b>：
-                <ul><li><b>批判/挑戰 (Critical)</b>：挑戰現狀或執政當局。</li>
-                <li><b>體制/護航 (Establishment)</b>：維護現狀或政策辯護。</li></ul>
-            </li>
+            <li><b>定義問題 (Define Problems)</b>：不同陣營如何界定核心問題？</li>
+            <li><b>診斷原因 (Diagnose Causes)</b>：歸咎於何種因素或行動者？</li>
+            <li><b>道德評價 (Make Moral Judgments)</b>：如何評價相關行為的正當性？</li>
+            <li><b>處方建議 (Suggest Remedies)</b>：提出何種解決方案？</li>
         </ul>
 
         <div class="methodology-header">3. 可信度與查核 (Verification)</div>
-        採用史丹佛大學歷史教育群 (SHEG) 提倡之 <b>水平閱讀法 (Lateral Reading)</b>。
-        <ul>
-            <li><b>交叉比對</b>：將媒體報導與 <b>Cofacts 謠言查核資料庫</b> 及官方原始文件進行比對。</li>
-            <li><b>證據權重</b>：評估消息來源是否具名、數據是否具備統計顯著性。</li>
-        </ul>
+        採用史丹佛大學 SHEG 提倡之 <b>水平閱讀法 (Lateral Reading)</b>，並與 <b>Cofacts</b> 查核資料庫進行三角驗證 (Triangulation)。
 
-        <div class="methodology-header">4. 戰略推演模型 (Futures Framework)</div>
+        <div class="methodology-header">4. 戰略推演 (Futures Framework)</div>
         僅應用於「未來發展推演」模式。
         <ul>
-            <li><b>第一性原理 (First Principles)</b>：解構議題至最基礎的物理或經濟限制。</li>
-            <li><b>層次分析法 (CLA)</b>：由表象 (Litany) 深入至系統結構 (System) 與社會神話 (Myth)。</li>
-            <li><b>可能性圓錐 (Cone of Plausibility)</b>：區分基準情境 (Probable)、轉折情境 (Plausible) 與極端情境 (Possible)。</li>
+            <li><b>CLA 層次分析法</b>：由表象 (Litany) 深入至系統 (System)、世界觀 (Worldview) 與神話 (Myth)。</li>
+            <li><b>可能性圓錐</b>：區分基準、轉折與極端情境。</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -586,7 +586,7 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V30.2)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V30.3)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -599,7 +599,7 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用)...")
+        st.write("🧠 3. AI 進行深度戰略分析 (學術框架強制應用)...")
         
         mode_code = "V205" if "未來" in analysis_mode else "FUSION"
         raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode=mode_code)
@@ -622,12 +622,12 @@ if st.session_state.result:
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    # [V30.1] 資訊滾動按鈕實作 (修復版)
+    # [V30.1 Fix] 資訊滾動按鈕邏輯補完
     if "未來" not in analysis_mode:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動第一性原理推演..."):
-                # 將當前報告作為 Context 餵給 Scenario 模式
                 current_report = data.get("report_text", "")
+                # 強制切換為 SCENARIO 模式
                 raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="V205")
                 st.session_state.result = parse_gemini_data(raw_text)
                 st.rerun()
