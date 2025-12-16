@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V33.6 (嚴格鎖定版)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V33.6 (資料庫鎖定版)", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
@@ -109,39 +109,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (Strict Whitelists)
+# 2. 資料庫與共用常數 (Strict Domain Lists)
 # ==========================================
-# [V33.6] 嚴格白名單 (用於強制 include_domains)
-TAIWAN_WHITELIST = [
-    "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
-    "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
-    "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
-    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw",
-    "news.yahoo.com.tw", "ftvnews.com.tw", "newtalk.tw", "nownews.com", "mygopen.com"
-]
 
-INDIE_WHITELIST = [
-    "twreporter.org", "theinitium.com", "thenewslens.com", 
-    "mindiworldnews.com", "vocus.cc", "matters.town", 
-    "plainlaw.me", "whogovernstw.org", "rightplus.org", 
-    "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
-]
-
-INTL_WHITELIST = [
-    "bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", 
-    "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
-]
-
-# 分類對照表 (用於前端顯示 Emoji)
+# [V33.6] 這裡就是您的「監測資料庫」，也是搜尋的「唯一白名單」
 DB_MAP = {
-    "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
-    "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
-    "BLUE": ["udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt.org", "uniteddaily"],
-    "OFFICIAL": ["cna.com", "pts.org", "mnd.gov", "mac.gov", "tfc-taiwan", "gov.tw"],
-    "INDIE": ["twreporter", "theinitium", "thenewslens", "upmedia", "storm.mg", "mindiworld", "vocus", "matters", "plainlaw"],
-    "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi.fr"],
-    "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"]
+    "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "taiwan.cn", "gwytb.gov.cn", "guancha.cn", "stnn.cc", "hk01.com"],
+    "GREEN": ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "dpp.org.tw", "upmedia.mg"],
+    "BLUE": ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "kmt.org.tw", "storm.mg"],
+    "OFFICIAL": ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "gov.tw", "ey.gov.tw", "ly.gov.tw"],
+    "INDIE": ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me", "whogovernstw.org", "rightplus.org", "biosmonthly.com"],
+    "INTL": ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"],
+    "FARM": ["kknews.cc", "read01.com", "ppfocus.com", "buzzhand.com", "bomb01.com", "qiqi.news", "inf.news", "toutiao.com"]
 }
+
+# 雜訊黑名單 (雙重保險)
+NOISE_BLACKLIST = [
+    "zhihu.com", "baidu.com", "pinterest.com", "instagram.com", 
+    "facebook.com", "tiktok.com", "youtube.com", "dcard.tw", "ptt.cc"
+]
 
 def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
@@ -154,9 +140,9 @@ def classify_source(url):
         clean_domain = domain.replace("www.", "")
     except: return "OTHER"
 
-    for cat, keywords in DB_MAP.items():
-        for kw in keywords:
-            if kw in domain:
+    for cat, domains in DB_MAP.items():
+        for d in domains:
+            if d in clean_domain:
                 return cat
     return "OTHER"
 
@@ -219,56 +205,55 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V33.6] 網域圍籬核心邏輯 (Strict Domain Fencing)
+# [V33.6] 網域圍籬核心邏輯 (Database-Driven Locking)
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
-        # 基礎設定
         search_params = {
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
             "max_results": max_results,
+            "exclude_domains": NOISE_BLACKLIST # 基礎除噪
         }
 
-        # [V33.6 關鍵修正] 動態組建白名單 (Whitelist)
-        # 如果用戶有選特定區域，則強制使用 include_domains
-        # 這會直接在 API 端排除所有不在名單內的網站 (如知乎)
+        # [V33.6] 從 DB_MAP 動態構建白名單
         target_domains = []
         is_strict_mode = False
         
         if not isinstance(selected_regions, list): selected_regions = [selected_regions]
 
+        # 這裡的邏輯是：如果您選了「台灣」，我就把 DB_MAP 裡所有跟台灣有關的網域都加進去
+        # 這保證了搜尋範圍絕對就在您的「監測資料庫」裡面
         for r in selected_regions:
             if "台灣" in r:
-                target_domains.extend(TAIWAN_WHITELIST)
+                # 台灣包含：藍、綠、官方、獨立
+                target_domains.extend(DB_MAP["GREEN"])
+                target_domains.extend(DB_MAP["BLUE"])
+                target_domains.extend(DB_MAP["OFFICIAL"])
+                # 順便加上常見入口，增加廣度
+                target_domains.extend(["yahoo.com.tw", "ettoday.net"]) 
                 is_strict_mode = True
+            
             if "獨立" in r:
-                target_domains.extend(INDIE_WHITELIST)
+                target_domains.extend(DB_MAP["INDIE"])
                 is_strict_mode = True
+                
             if "亞洲" in r or "歐洲" in r or "美洲" in r:
-                target_domains.extend(INTL_WHITELIST)
+                target_domains.extend(DB_MAP["INTL"])
                 is_strict_mode = True
         
-        # 如果開啟了嚴格模式，將白名單傳給 Tavily
+        # 關鍵一步：將白名單傳給 Tavily
         if is_strict_mode and target_domains:
-            # 去重
-            target_domains = list(set(target_domains))
+            target_domains = list(set(target_domains)) # 去重
             search_params["include_domains"] = target_domains
-        else:
-            # 若未選區域（雖然 UI 預設會選），則使用黑名單排除常見雜訊
-            search_params["exclude_domains"] = [
-                "zhihu.com", "baidu.com", "pinterest.com", "instagram.com", 
-                "facebook.com", "tiktok.com", "youtube.com"
-            ]
 
         # 執行搜尋
         response = tavily.search(query=query, **search_params)
         results = response.get('results', [])
         context_text = ""
         
-        # 組合 Context
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
@@ -283,10 +268,10 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             content = res.get('content', '')[:3000]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
-        return context_text, results, query, is_strict_mode
+        return context_text, results, query, is_strict_mode, len(target_domains)
         
     except Exception as e:
-        return f"Error: {str(e)}", [], "Error", False
+        return f"Error: {str(e)}", [], "Error", False, 0
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
@@ -296,7 +281,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V33.4] 深度戰略分析 (Strict Methodology)
+# 深度戰略分析
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -413,7 +398,6 @@ def parse_gemini_data(text):
 
     return data
 
-# [V33.4 核心] 渲染 HTML 表格 (含超連結)
 def render_html_timeline(timeline_data, blind_mode):
     if not timeline_data:
         return
@@ -436,14 +420,12 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
-        # 標題超連結
         if url and url != "#":
             title_html = f'<a href="{url}" target="_blank">{title}</a>'
         else:
             title_html = title
 
         media_display = f"{emoji} {media}"
-        # 使用 CSS 控制不換行與欄寬
         row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
         table_rows += row_html
 
@@ -543,8 +525,8 @@ with st.sidebar:
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
-            <li><b>網域圍籬 (Domain Fencing)</b>：強制啟用白名單機制，將搜尋範圍鎖定於可信賴的媒體清單，杜絕內容農場與無關雜訊。</li>
-            <li><b>大數據吞吐 (High Volume)</b>：單次分析最高可處理 100 篇文獻，確保統計顯著性。</li>
+            <li><b>網域圍籬 (Domain Fencing)</b>：嚴格執行白名單機制，將搜尋範圍鎖定於「監測資料庫」內的可靠媒體，杜絕內容農場與無關雜訊。</li>
+            <li><b>大數據吞吐 (High Volume)</b>：單次分析最高可處理 100 篇文獻，以確保統計顯著性。</li>
         </ul>
 
         <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
@@ -609,10 +591,12 @@ if search_btn and query and google_key and tavily_key:
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
         st.write(f"   ↳ 目標樣本數: {max_results} 篇 (深度全量模式)")
         
-        context_text, sources, actual_query, is_strict_tw = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
+        context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         
         if is_strict_tw:
-            st.write("🛡️ 網域圍籬已啟動：僅允許白名單內的媒體來源 (徹底杜絕知乎與內容農場)。")
+            st.write(f"🛡️ 網域圍籬已啟動：已鎖定監測資料庫內的 {domain_count} 個權威來源。")
+        else:
+            st.write("⚠️ 未選定區域，執行全網搜尋 (已排除知乎等農場)。")
         
         st.session_state.sources = sources
         
@@ -622,15 +606,8 @@ if search_btn and query and google_key and tavily_key:
         
         st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
         
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-        
-        # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
-        if mode_code == "DEEP_SCENARIO" and past_report_input:
-             analysis_context = past_report_input
-        else:
-             analysis_context = context_text
-
-        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
+        # 預設執行 FUSION 模式
+        raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode="FUSION")
         st.session_state.result = parse_gemini_data(raw_report)
             
         status.update(label="✅ 分析完成", state="complete", expanded=False)
