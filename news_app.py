@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.3", page_icon="🏛️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.4", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -189,16 +189,15 @@ def extract_date_from_url(url):
     return None
 
 # ==========================================
-# 3. 核心功能模組 (Tri-Track Fixed)
+# 3. 核心功能模組 (Hybrid Weighted + Tri-Track)
 # ==========================================
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def generate_dynamic_keywords(query, api_key):
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
-        # [V36.3 Fix] 強制約束 LLM 必須針對「三軌」生成對應關鍵字
         prompt = f"""
-        請針對議題「{query}」，生成 3 組搜尋關鍵字，分別對應以下三個維度：
+        請針對議題「{query}」，生成 3 組最具情報價值的搜尋關鍵字，分別對應以下三個維度：
         1. [事實軌]：針對事件發展、時間軸、新聞報導。
         2. [觀點軌]：針對爭議、正反評論、社論。
         3. [深度軌]：針對懶人包、影響分析、法規細節。
@@ -208,7 +207,6 @@ def generate_dynamic_keywords(query, api_key):
         """
         resp = llm.invoke(prompt).content
         keywords = [k.strip() for k in resp.split(',') if k.strip()]
-        # 保底機制：若 LLM 輸出格式錯誤，回退到預設的三軌關鍵字
         return keywords[:3] if len(keywords) >= 3 else [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
     except:
         return [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"] 
@@ -235,7 +233,6 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V36.3] 系統整合架構 (Swarm + Hybrid + Tri-Track)
 def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions):
     tavily = TavilyClient(api_key=api_key_tavily)
     all_results = []
@@ -243,42 +240,32 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
     
     tasks = []
     
-    # 1. 通用熱度搜尋 (Swarm Container -> Tri-Track Content)
     general_domains = []
     if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
     if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
     if "亞洲" in str(selected_regions): general_domains.extend(INTL_WHITELIST)
     
     general_params = search_params.copy()
-    general_params['max_results'] = 10 # 每一軌抓 10 篇，確保量足夠
+    general_params['max_results'] = 10 
     if is_strict_mode and general_domains:
         general_params['include_domains'] = list(set(general_domains))
     
-    # 建立三軌任務 (Tri-Track Tasks)
-    # Track 0: Main Query (Backup)
     tasks.append({"name": "General_Main", "query": query, "params": general_params})
-    # Track 1: Fact
     tasks.append({"name": "General_Fact", "query": dynamic_keywords[0], "params": general_params})
-    # Track 2: Opinion
     tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
-    # Track 3: Deep
     tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
     
-    # 2. 分眾保底搜尋 (Hybrid Weighted Sources)
     if "台灣" in str(selected_regions):
-        # 藍營保底
         blue_params = search_params.copy()
         blue_params['max_results'] = 5 
         blue_params['include_domains'] = BLUE_WHITELIST
         tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
         
-        # 綠營保底
         green_params = search_params.copy()
         green_params['max_results'] = 5 
         green_params['include_domains'] = GREEN_WHITELIST
         tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
         
-        # 官方保底
         official_params = search_params.copy()
         official_params['max_results'] = 5
         official_params['include_domains'] = OFFICIAL_WHITELIST
@@ -289,8 +276,6 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
             return tavily.search(query=task['query'], **task['params']).get('results', [])
         except: return []
 
-    # 執行 Swarm (平行處理所有軌道)
-    # 將 max_workers 提升至 8，因為現在有 4個通用軌 + 3個保底軌 = 7個任務
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(fetch, t): t['name'] for t in tasks}
         results_map = {}
@@ -298,10 +283,8 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
             t_name = futures[future]
             results_map[t_name] = future.result()
             
-    # 3. 智慧合併策略 (Smart Merge)
     final_list = []
     
-    # A. 優先加入保底資料 (Diversity Safety Net)
     for guard_name in ["Blue_Guard", "Green_Guard", "Official_Guard"]:
         if guard_name in results_map:
             for item in results_map[guard_name]:
@@ -309,8 +292,6 @@ def execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, 
                     seen_urls.add(item['url'])
                     final_list.append(item)
     
-    # B. 再加入三軌通用資料 (Tri-Track Volume)
-    # 我們輪詢 Fact, Opn, Deep, Main 來確保每一軌都有代表作進入清單
     general_keys = ["General_Fact", "General_Opn", "General_Deep", "General_Main"]
     max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
     
@@ -365,37 +346,38 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
     os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
+    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0) # V36.4: Temp 0 for strict adherence
     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
+# [V36.4] 深度推理與結構化分析 (Deep Reasoning & SATs)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
+    # 核心指令：深思慢想 + 嚴格中立
     tone_instruction = """
-    【⚠️ 語氣風格指令】：
-    1. **去軍事化**：嚴禁使用軍事隱喻。
-    2. **中性專業**：使用社會科學術語。
-    3. **建設性**：側重問題解決。
+    【⚠️ 核心指導原則 (Core Doctrine)】：
+    1. **極度審慎 (Extreme Caution)**：你是一位正在撰寫機密情報評估的高級分析官。任何論斷都必須有「證據」支撐，嚴禁臆測。若證據不足，請直接標示「目前資訊不足」。
+    2. **結構化分析 (SATs)**：請應用「競爭假設分析 (ACH)」與「魔鬼代言人 (Devil's Advocate)」技術。不要只報告主流觀點，必須主動尋找反證。
+    3. **去情緒/去軍事化**：語氣必須如法庭判決書般冷靜、精確。嚴禁使用戰場隱喻 (攻防、焦土) 或情緒性形容詞 (痛批、怒斥)。
+    4. **事實與觀點分離**：明確區分「發生了什麼 (Fact)」與「各方怎麼說 (Opinion)」。
     """
 
     if mode == "FUSION":
         system_prompt = f"""
-        你是一位極度嚴謹的情報分析師。
+        你是一位極度嚴謹的高級情報分析師。
         
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
         【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
         
-        【分析方法論】：
-        1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
-        2. **證據強度分級**：評估證據力（強/弱）。
-        3. **聲量權重校正 (Volume Calibration)**：
-           - **識別複讀機**：若某一陣營的來源大量重複相同觀點，請將其歸納為「單一強勢論點」，不要讓其佔據所有篇幅。
-           - **挖掘長尾**：在「熱度補完」的資料中，優先尋找 **「非主流但具獨特視角」** 的觀點，而非重複主流論述。
-           - **沉默的螺旋**：若某一方聲量顯著低落，請明確指出這是「策略性冷處理」或是「話語權失衡」，而非視為該方無意見。
+        【分析任務清單】：
+        1. **現況重構**：基於事實軌資料，重建無爭議的事件時間軸。
+        2. **邏輯偵錯**：掃描文本，指出論述中的「滑坡謬誤」、「稻草人論證」或「斷章取義」。
+        3. **證據分級**：將新聞來源分為「強證據 (具名/有數據)」與「弱證據 (匿名/純推測)」。
+        4. **聲量校正**：若某方聲量過大，請標註為「強勢傳播波段」，並主動挖掘另一方的「沉默觀點」。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -404,13 +386,15 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 請務必以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響)。
+           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (日期 | 事件摘要 | 關鍵影響)。
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
-           - *包含：邏輯謬誤偵測、證據強度評估*
+           - *針對核心爭議，列出正反論點，並標註邏輯謬誤與證據強度。*
         3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
-           - *請應用聲量權重校正，指出話語權是否失衡*
+           - *分析不同陣營如何設定議題框架 (例如：是「財政正義」還是「中央集權」？)。*
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
+           - *誰從中獲益？誰受損？背後的結構性動機為何？*
         5. **🤔 結構性反思 (Structural Reflection)**
+           - *跳脫藍綠視角，從國家治理或制度設計的角度進行總結。*
         """
         
     elif mode == "DEEP_SCENARIO":
@@ -420,9 +404,10 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
         
-        【分析任務】：
-        1. **早期預警指標**：列出監測訊號。
-        2. **驗屍分析**：反推失敗變數。
+        【分析任務清單】：
+        1. **CLA 深度解構**：挖掘表象下的神話與世界觀。
+        2. **預警指標設定**：設定具體的監測訊號。
+        3. **驗屍分析 (Pre-mortem)**：假設你的預測完全失敗，反推原因。這能幫助使用者看到盲點。
 
         【輸出格式】：
         ### [DATA_TIMELINE]
@@ -437,6 +422,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
            - **轉折路徑 (Alternative)** + 🚩 預警指標
            - **極端路徑 (Wild Card)** + 🚩 預警指標
         3. **💀 驗屍分析 (Pre-mortem Analysis)**
+           - *若上述預測完全失準，最可能是因為忽略了什麼隱蔽變數？*
         4. **💡 綜合發展與因應建議**
         """
     else:
@@ -507,6 +493,10 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
             if "中國" in label: emoji = "🔴"
             elif "泛藍" in label: emoji = "🔵"
             elif "泛綠" in label: emoji = "🟢"
+            elif "官方" in label: emoji = "⚪"
+            elif "獨立" in label: emoji = "🕵️"
+            elif "國際" in label: emoji = "🌏"
+            elif "農場" in label: emoji = "⛔"
             elif "社群" in label: emoji = "⚠️"
             
             title_html = f'<a href="{real_url}" target="_blank">{title}</a>' if real_url != "#" else title
@@ -554,7 +544,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V36.3)</h1>
+        <h1>全域觀點分析報告 (V36.4)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -634,7 +624,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V36.3)
+# 全域觀點分析報告 (V36.4)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -648,12 +638,12 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V36.3")
+    st.title("全域觀點解析 V36.4")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
+        captions=["學術框架：框架 + 邏輯偵錯 + 證據分級", "學術框架：CLA + 預警指標 + 驗屍分析"],
         index=0
     )
     st.markdown("---")
@@ -807,7 +797,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V36.3 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.4 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -831,7 +821,7 @@ if search_btn and query and google_key and tavily_key:
         cofacts_txt = search_cofacts(query)
         if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
         
-        st.write("🧠 4. AI 進行深度戰略分析...")
+        st.write("🧠 4. AI 進行深度戰略分析 (ACH 競爭假設 + 邏輯偵錯)...")
         
         mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
         analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
