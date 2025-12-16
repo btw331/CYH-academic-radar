@@ -3,6 +3,7 @@
 # ==========================================
 import warnings
 import os
+import json # [V23.1] 確保此處有 import
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -10,6 +11,9 @@ import streamlit as st
 import re
 import pandas as pd
 import time
+import requests
+import concurrent.futures
+import random
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -20,11 +24,12 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V23.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V23.1", page_icon="📅", layout="wide")
 
 st.markdown("""
 <style>
-    /* 報告紙張風格 */
+    .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
+    
     .report-paper {
         background-color: #fdfbf7; 
         color: #2c3e50; 
@@ -63,19 +68,14 @@ st.markdown("""
         background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-top: 15px;
     }
     
-    /* 表格樣式優化 */
     .stDataFrame { border: 1px solid #f0f0f0; border-radius: 8px; overflow: hidden; }
-    
-    /* 側邊欄說明文字 */
-    .sidebar-text { font-size: 0.9em; color: #555; line-height: 1.5; }
-    .sidebar-header { font-weight: bold; color: #333; margin-top: 10px; margin-bottom: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫定義 (用於側邊欄顯示與搜尋)
+# 2. 資料庫與共用常數
 # ==========================================
-# 台灣主流媒體白名單 (搜尋用)
+# 台灣媒體白名單 (搜尋用)
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
     "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
@@ -92,18 +92,18 @@ INDIE_WHITELIST = [
     "biosmonthly.com", "storystudio.tw", "womany.net", "dq.yam.com"
 ]
 
-# 完整資料庫分類 (側邊欄展示用)
+# 資料庫分類顯示 (側邊欄用)
 DB_MAP = {
-    "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "taiwan.cn", "gwytb.gov.cn", "guancha.cn", "thepaper.cn", "ifeng.com", "crntt.com"],
+    "CHINA": ["xinhuanet.com", "people.com.cn", "huanqiu.com", "cctv.com", "chinadaily.com.cn", "taiwan.cn", "gwytb.gov.cn", "guancha.cn"],
     "GREEN": ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "dpp.org.tw"],
     "BLUE": ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "kmt.org.tw"],
     "OFFICIAL": ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw"],
     "INDIE": ["twreporter.org", "theinitium.com", "thenewslens.com", "upmedia.mg", "storm.mg", "mindiworldnews.com", "vocus.cc"],
-    "INTL": ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "rfi.fr"],
+    "INTL": ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com"],
     "FARM": ["kknews.cc", "read01.com", "ppfocus.com", "buzzhand.com", "bomb01.com", "qiqi.news", "inf.news", "toutiao.com"]
 }
 
-# 關鍵字對照 (用於各種判斷)
+# 關鍵字對照
 CAMP_KEYWORDS = {
     "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥", "中央社"],
     "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營", "赵少康"],
@@ -189,7 +189,6 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         has_indie = False
         has_intl = False
         
-        # [Debug] Ensure list type
         if not isinstance(selected_regions, list): selected_regions = [selected_regions]
 
         for r in selected_regions:
@@ -214,7 +213,6 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         
         search_params["query"] = search_q
 
-        # 網域邏輯：只有在「未選國際」且「有選台灣/獨立」時才啟用白名單
         if (has_taiwan or has_indie) and not has_intl:
             search_params["include_domains"] = list(set(target_domains))
         else:
@@ -233,12 +231,13 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
-            # 日期處理
+            
+            # [V23.1] 強化日期處理
             pub_date = res.get('published_date')
             if pub_date:
                 pub_date = pub_date[:10]
             else:
-                pub_date = "----" # 留空給 AI 判讀
+                pub_date = "----" 
             
             content = res.get('content', '')[:1200]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
@@ -294,8 +293,7 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     prompts = {
         "A_SIDE": "你是一位【體制內/現狀分析師】。請找出支持現狀、政策合理性或官方解釋的證據。必須引用來源 [Source ID]。",
         "B_SIDE": "你是一位【改革/批判派分析師】。請找出質疑現狀、結構性問題或反對意見的證據。必須引用來源 [Source ID]。",
-        "CONTEXT": "你是一位【脈絡歷史學家】。請分析爭議背後的深層歷史成因、經濟結構或地緣政治因素。必須引用來源 [Source ID]。",
-        "FUTURIST": "你是一位【未來趨勢預測師】。請應用第一性原理與可能性圓錐，推演三種未來情境：基準(Baseline)、轉折(Plausible)、極端(Wild Card)。"
+        "CONTEXT": "你是一位【脈絡歷史學家】。請分析爭議背後的深層歷史成因、經濟結構或地緣政治因素。必須引用來源 [Source ID]。"
     }
     
     opinions = {}
@@ -316,7 +314,6 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     A觀點 (體制): {opinions.get('A_SIDE')}
     B觀點 (批判): {opinions.get('B_SIDE')}
     脈絡: {opinions.get('CONTEXT')}
-    未來推演: {opinions.get('FUTURIST')}
     
     【任務指令】：
     1. **引用壓縮**：若連續引用多個來源，請寫成 `[Source 1, 2, 3]` 的格式。
@@ -327,12 +324,12 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     
     【輸出格式】：
     ### [REPORT_TEXT]
-    (Markdown 報告內容，請包含「🔮 未來情境模擬」章節)
+    (Markdown 報告內容...)
     """
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：時間軸分析 (V23.0 修正日期抓取)
+# 3.4 核心邏輯：時間軸分析 (V23.1 強化日期抓取)
 def run_timeline_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位專業的調查記者與數據分析師。請針對「{query}」整理一份詳盡的【議題發展時間軸】。
@@ -345,7 +342,7 @@ def run_timeline_analysis(query, context_text, model_name, api_key):
     
     【日期提取鐵律 (Date Extraction Rules)】：
     1. 若 Context 中已有 [Date: YYYY-MM-DD]，優先使用。
-    2. 若 Date 為 '----'，你必須閱讀新聞標題或內文前段，推斷發生日期。例如看到 "昨天", "週三" 配合 Context 時間推算。
+    2. 若 Date 為 '----'，你必須閱讀新聞標題或內文前段 (前 50 字)，推斷發生日期。例如看到 "昨天", "週三" 配合 Context 時間推算。
     3. 若完全無法推斷，請填寫 '2025-??-??'。
     
     【輸出格式 (請保持格式整潔，每行一筆，使用 | 分隔)】：
@@ -380,14 +377,14 @@ def parse_gemini_data(text):
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "YYYY" in line:
             parts = line.split("|")
             try:
-                name = parts[1].strip()
                 date = parts[0].strip()
+                name = parts[1].strip()
                 title = parts[2].strip()
                 base_stance = 0
                 base_cred = 0
                 url = "#"
                 
-                # 6 欄位解析
+                # 6 欄位解析 (Date|Media|Title|Stance|Cred|URL)
                 if len(parts) >= 6:
                     base_stance = float(parts[3].strip())
                     base_cred = float(parts[4].strip())
@@ -422,13 +419,22 @@ def parse_gemini_data(text):
 
     return data
 
-# [V23.0] 渲染時間軸表格 (含可信度與立場)
+# [V23.1] 渲染時間軸 (取代舊光譜表)
 def render_timeline_enhanced(timeline_data):
     if not timeline_data: 
         st.warning("⚠️ 無法生成時間軸：可能是搜尋結果不足，或 AI 無法解析日期。")
         return
     
     st.markdown("### 📅 議題發展時間軸 (News Timeline)")
+    
+    # 圖例
+    st.markdown("""
+    <div style="background-color:#f0f2f6; padding:10px; border-radius:5px; font-size:0.9em; margin-bottom:15px;">
+        <b>💡 燈號說明：</b><br>
+        • <b>政治立場 (Stance)</b>：🟢 負分 (-10 ~ -1) 代表批判/泛綠；🔵 正分 (+1 ~ +10) 代表體制/泛藍；⚪ 0 代表中立。<br>
+        • <b>可信度 (Credibility)</b>：🟢 高 (7-10)；🟡 中 (4-6)；🔴 低 (0-3)。
+    </div>
+    """, unsafe_allow_html=True)
     
     md = "| 日期 | 媒體 | 新聞標題 (點擊閱讀) | 立場 | 可信度 |\n|:---:|:---|:---|:---:|:---:|\n"
     for item in timeline_data:
@@ -440,9 +446,9 @@ def render_timeline_enhanced(timeline_data):
         
         # 立場燈號
         s = item['stance']
-        if s < -2: s_txt = f"🟢 泛綠/批判 ({s})"
-        elif s > 2: s_txt = f"🔵 泛藍/體制 (+{s})"
-        else: s_txt = "⚪ 中立"
+        if s < -2: s_txt = f"🟢 {s}"
+        elif s > 2: s_txt = f"🔵 +{s}"
+        else: s_txt = "⚪ 0"
         
         t_text = item['title']
         if len(t_text) > 35: t_text = t_text[:35] + "..."
@@ -453,8 +459,9 @@ def render_timeline_enhanced(timeline_data):
     
     st.markdown(md)
 
-# 4. 下載功能
+# 4. 下載功能 [V23.1 Fix NameError]
 def convert_data_to_json(data):
+    import json # Fail-safe import
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def convert_data_to_md(data):
@@ -473,7 +480,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V23.0")
+    st.title("全域觀點解析 V23.1")
     analysis_mode = st.radio("選擇模式：", options=["📰 議題時序分析 (Timeline)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -509,32 +516,30 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    # [V23.0] 監測資料庫清單
-    with st.expander("📚 監測資料庫 (Monitoring DB)", expanded=False):
+    # [V23.1] 顯示監測資料庫
+    with st.expander("📚 監測資料庫清單 (DB List)", expanded=False):
         for key, domains in DB_MAP.items():
             label, color = get_category_meta(key)
             st.markdown(f"**{label}**")
             st.markdown(f"`{', '.join(domains[:5])}...`")
 
-    # [V23.0] 方法論說明
+    # [V23.1] 顯示方法論
     with st.expander("🧠 分析方法論 (Methodology)", expanded=False):
         st.markdown("""
-        **1. 議題時間軸 (Timeline Construction)**
-        * **來源**: 使用 Tavily API 搜尋並提取新聞發布時間。
-        * **排序**: 依照事件發生順序或報導時間，由舊至新排列，還原事件脈絡。
-        * **日期補救**: 若 metadata 缺失，AI 會閱讀內文前段 (如 '昨日', '週三') 進行推算。
+        **1. 議題時間軸 (Timeline)**
+        * **來源**: Tavily API 搜尋結果。
+        * **排序**: 依據新聞發布日期由舊至新。
+        * **日期補救**: 若 metadata 缺失，AI 閱讀內文推算。
 
-        **2. 政治立場判定 (Stance Classification)**
-        * **AI 語意分析**: 分析標題與內文的修辭強弱 (Sentiment Analysis)。
-        * **光譜校正**: 
-          - **負分 (-10 ~ -1)**: 批判現狀、泛綠觀點。
-          - **正分 (+1 ~ +10)**: 支持體制、泛藍觀點。
-          - **0 分**: 純事實報導或中立觀點。
+        **2. 政治立場判定 (Stance)**
+        * **語意分析**: 標題與內文修辭。
+        * **光譜定義**: 
+          - **-10 (極左/批判)** ~ **+10 (極右/體制)**。
+          - **0**: 中立/純事實。
         
-        **3. 可信度評估 (Credibility Assessment)**
-        * **權威度**: 考量媒體聲譽 (如中央社 vs 內容農場)。
-        * **完整性**: 檢視是否包含消息來源、數據佐證。
-        * **查核狀態**: 與 Cofacts 謠言資料庫比對。
+        **3. 可信度評估 (Credibility)**
+        * **權威度**: 媒體聲譽 (如中央社 vs 農場)。
+        * **查核**: 是否包含消息來源與數據佐證。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -562,7 +567,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V23.0)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V23.1)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -601,7 +606,7 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.result and "Timeline" in analysis_mode:
     data = st.session_state.result
     
-    # [V23.0] 主角是時間軸表格
+    # [V23.1] 核心：時間軸表格
     render_timeline_enhanced(data.get("timeline"))
 
     st.markdown("### 📝 媒體識讀報告")
