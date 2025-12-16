@@ -14,7 +14,7 @@ import time
 import requests
 import concurrent.futures
 import random
-import markdown # [V34.5] 新增：用於生成 HTML 報告
+import markdown
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -25,9 +25,8 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.5", page_icon="🖨️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.6", page_icon="📂", layout="wide")
 
-# CSS 樣式定義 (提取出來以便共用)
 CSS_STYLE = """
 <style>
     body { font-family: "Microsoft JhengHei", "Georgia", sans-serif; line-height: 1.6; color: #333; }
@@ -130,7 +129,7 @@ CSS_STYLE = """
 st.markdown(CSS_STYLE, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (Strict Domain Lists)
+# 2. 資料庫與共用常數
 # ==========================================
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
@@ -162,7 +161,6 @@ DB_MAP = {
     "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"]
 }
 
-# 雜訊黑名單
 NOISE_BLACKLIST = [
     "zhihu.com", "baidu.com", "pinterest.com", "instagram.com", 
     "facebook.com", "tiktok.com", "youtube.com", "dcard.tw", "ptt.cc"
@@ -479,9 +477,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V34.5 Fix] 建立完整 HTML 字串 (含 CSS 與內容)
 def create_full_html_report(data_result, scenario_result, sources, blind_mode):
-    # 1. 處理時間軸 HTML
     timeline_html = ""
     if data_result and data_result.get("timeline"):
         rows = ""
@@ -516,13 +512,10 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         <hr>
         """
 
-    # 2. 處理 Markdown 報告 -> HTML
     report_html_1 = ""
     if data_result:
         raw_md = data_result.get("report_text", "")
-        # 預先處理 citation 格式 (加強版)
         raw_md = format_citation_style(raw_md)
-        # 轉換 MD -> HTML
         html_content = markdown.markdown(raw_md, extensions=['tables'])
         report_html_1 = f'<div class="report-paper"><h3>📝 綜合戰略分析報告</h3>{html_content}</div>'
 
@@ -533,7 +526,6 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
         report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{html_content_2}</div>'
 
-    # 3. 處理參考文獻
     sources_html = ""
     if sources:
         s_rows = ""
@@ -544,7 +536,6 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
             s_rows += f"<li><b>[{i+1}]</b> {domain} - <a href='{url}' target='_blank'>{title}</a></li>"
         sources_html = f"<hr><h3>📚 引用文獻列表</h3><ul>{s_rows}</ul>"
 
-    # 4. 組合完整 HTML 檔案
     full_html = f"""
     <!DOCTYPE html>
     <html>
@@ -560,10 +551,6 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {report_html_1}
         {report_html_2}
         {sources_html}
-        <script>
-            // 自動開啟列印視窗 (可選)
-            // window.print();
-        </script>
     </body>
     </html>
     """
@@ -628,7 +615,7 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     st.markdown("### 📅 關鍵發展時序")
     st.markdown(full_html, unsafe_allow_html=True)
 
-# 4. 下載功能 (JSON/MD)
+# 4. 下載功能
 def convert_data_to_json(data):
     import json
     return json.dumps(data, indent=2, ensure_ascii=False)
@@ -649,7 +636,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.5")
+    st.title("全域觀點解析 V34.6")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -698,6 +685,25 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
+    # [V34.6] 檔案上傳模組
+    with st.expander("📂 匯入舊情報 (檔案/文字)", expanded=False):
+        uploaded_file = st.file_uploader("上傳 .md 或 .txt 檔案", type=["md", "txt"])
+        
+        default_text = ""
+        if uploaded_file is not None:
+            try:
+                default_text = uploaded_file.getvalue().decode("utf-8")
+                st.success(f"✅ 已讀取檔案: {uploaded_file.name}")
+            except Exception as e:
+                st.error(f"檔案讀取失敗: {e}")
+
+        past_report_input = st.text_area(
+            "或直接貼上/編輯報告內容：", 
+            value=default_text,
+            height=150,
+            help="若已上傳檔案，內容會自動填入下方，您可在此進行微調。"
+        )
+
     with st.expander("🧠 學術分析方法論 (Research Methodology)", expanded=True):
         st.markdown("""
         <div class="methodology-text">
@@ -737,13 +743,10 @@ with st.sidebar:
             label, color = get_category_meta(key)
             st.markdown(f"**{label}**")
             st.markdown(f"`{', '.join(domains[:3])}...`")
-
-    with st.expander("📂 匯入舊情報", expanded=False):
-        past_report_input = st.text_area("貼上舊報告 Markdown：", height=100)
         
     st.markdown("### 📥 報告匯出")
     if st.session_state.get('result') or st.session_state.get('scenario_result'):
-        # [V34.5] HTML 報告下載邏輯
+        # HTML 報告下載
         html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
         st.download_button("📥 下載列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
         
@@ -767,7 +770,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.5 列印優化版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.6 檔案支援版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -807,16 +810,13 @@ if search_btn and query and google_key and tavily_key:
 # 顯示區域
 if st.session_state.result:
     data = st.session_state.result
-    # 傳入 sources 供 ID 映射使用
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
-    # 2. 顯示第一階段：綜合戰略分析報告
     st.markdown("---")
     st.markdown("### 📝 綜合戰略分析報告")
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
-    # 資訊滾動按鈕
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
@@ -826,7 +826,6 @@ if st.session_state.result:
                 st.session_state.scenario_result = parse_gemini_data(raw_text) 
                 st.rerun()
 
-# 顯示第二階段：未來發展推演報告
 if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
