@@ -25,7 +25,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V36.6", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V36.8", page_icon="🛡️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -126,38 +126,16 @@ INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindi
 INTL_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp"]
 GRAY_WHITELIST = ["ptt.cc", "dcard.tw", "mobile01.com"]
 
-# [V36.6] 網域-名稱 對照表 (用於顯示真實媒體名稱)
 DOMAIN_NAME_MAP = {
-    "udn.com": "聯合報",
-    "chinatimes.com": "中國時報",
-    "tvbs.com.tw": "TVBS",
-    "cti.com.tw": "中天新聞",
-    "nownews.com": "NOWnews",
-    "ctee.com.tw": "工商時報",
-    "storm.mg": "風傳媒",
-    "ltn.com.tw": "自由時報",
-    "ftvnews.com.tw": "民視新聞",
-    "setn.com": "三立新聞",
-    "rti.org.tw": "央廣",
-    "newtalk.tw": "新頭殼",
-    "mirrormedia.mg": "鏡週刊",
-    "upmedia.mg": "上報",
-    "cna.com.tw": "中央社",
-    "pts.org.tw": "公視",
-    "twreporter.org": "報導者",
-    "theinitium.com": "端傳媒",
-    "thenewslens.com": "關鍵評論網",
-    "mindiworldnews.com": "敏迪選讀",
-    "vocus.cc": "方格子",
-    "ptt.cc": "PTT",
-    "dcard.tw": "Dcard",
-    "bbc.com": "BBC",
-    "cnn.com": "CNN",
-    "reuters.com": "路透社",
-    "apnews.com": "美聯社",
-    "bloomberg.com": "彭博",
-    "wsj.com": "華爾街日報",
-    "nytimes.com": "紐約時報"
+    "udn.com": "聯合報", "chinatimes.com": "中國時報", "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞",
+    "nownews.com": "NOWnews", "ctee.com.tw": "工商時報", "storm.mg": "風傳媒",
+    "ltn.com.tw": "自由時報", "ftvnews.com.tw": "民視新聞", "setn.com": "三立新聞", "rti.org.tw": "央廣",
+    "newtalk.tw": "新頭殼", "mirrormedia.mg": "鏡週刊", "upmedia.mg": "上報",
+    "cna.com.tw": "中央社", "pts.org.tw": "公視", "twreporter.org": "報導者",
+    "theinitium.com": "端傳媒", "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
+    "vocus.cc": "方格子", "ptt.cc": "PTT", "dcard.tw": "Dcard",
+    "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", "apnews.com": "美聯社",
+    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報"
 }
 
 DB_MAP = {
@@ -507,8 +485,6 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         rows = ""
         for item in data_result["timeline"]:
             s_id = item.get('source_id', 0)
-            
-            # [V36.6 Fix] 嚴格過濾：無效來源直接跳過
             if s_id == 0 or s_id > len(sources): continue
             
             real_url = "#"
@@ -530,7 +506,6 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
             label, _ = get_category_meta(cat)
             domain = get_domain_name(real_url)
             
-            # [V36.6 Fix] 顯示真實媒體名稱
             media_name = DOMAIN_NAME_MAP.get(domain, domain)
             emoji = "⚪"
             if "中國" in label: emoji = "🔴"
@@ -551,7 +526,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         timeline_html = f"""
         <h3>📅 關鍵發展時序</h3>
         <table class="custom-table" border="1" cellspacing="0" cellpadding="5" style="width:100%; border-collapse:collapse;">
-            <thead><tr><th width="120">日期</th><th width="140">媒體</th><th>新聞標題</th></tr></thead>
+            <thead><tr><th width="120">日期</th><th width="180">媒體來源 (Code Verified)</th><th>新聞標題 (點擊閱讀)</th></tr></thead>
             <tbody>{rows}</tbody>
         </table>
         <hr>
@@ -591,7 +566,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode):
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V36.6)</h1>
+        <h1>全域觀點分析報告 (V36.8)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -609,7 +584,6 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     for item in timeline_data:
         s_id = item.get('source_id', 0)
         
-        # [V36.6 Fix] 嚴格過濾：無效來源直接跳過 (UI版)
         if s_id == 0 or s_id > len(sources): continue
         
         real_url = "#"
@@ -630,7 +604,6 @@ def render_html_timeline(timeline_data, sources, blind_mode):
         label, _ = get_category_meta(cat)
         domain = get_domain_name(real_url)
         
-        # [V36.6 Fix] 顯示真實媒體名稱
         media_name = DOMAIN_NAME_MAP.get(domain, domain)
         
         emoji = "⚪"
@@ -681,7 +654,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V36.6)
+# 全域觀點分析報告 (V36.8)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -695,7 +668,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V36.6")
+    st.title("全域觀點解析 V36.8")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -708,18 +681,11 @@ with st.sidebar:
     enable_outpost = st.toggle("📡 前哨站模式 (納入 PTT/Dcard)", value=False)
     blind_mode = st.toggle("🙈 盲測模式", value=False)
     
+    # [V36.8 Fix] 移除密碼鎖，API Key 改為純手動輸入 (No Default, No Memory)
     with st.expander("🔑 API 設定", expanded=True):
-        if "GOOGLE_API_KEY" in st.secrets:
-            st.success("✅ Gemini Key Ready")
-            google_key = st.secrets["GOOGLE_API_KEY"]
-        else:
-            google_key = st.text_input("Gemini Key", type="password")
-
-        if "TAVILY_API_KEY" in st.secrets:
-            st.success("✅ Tavily Ready")
-            tavily_key = st.secrets["TAVILY_API_KEY"]
-        else:
-            tavily_key = st.text_input("Tavily Key", type="password")
+        st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
+        google_key = st.text_input("Gemini Key", type="password")
+        tavily_key = st.text_input("Tavily Key", type="password")
             
         model_name = st.selectbox(
             "模型 (Gemini 2.5 Series)", 
@@ -854,7 +820,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V36.6 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V36.8 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
