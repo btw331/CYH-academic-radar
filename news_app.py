@@ -23,71 +23,57 @@ import streamlit.components.v1 as components
 from tavily import TavilyClient
 
 # ==========================================
-# 1. 基礎設定與 CSS樣式
+# 1. 基礎設定與 CSS樣式 (融合舊版美學)
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V18.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V19.0", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
     .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
     
+    /* 舊版指標卡片樣式 - 回歸！ */
+    .metric-container {
+        text-align: center; padding: 10px; background-color: #ffffff;
+        border-radius: 8px; border: 1px solid #f0f0f0;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05); transition: transform 0.2s;
+        margin-bottom: 10px;
+    }
+    .metric-container:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .metric-score { font-size: 1.8em; font-weight: 700; margin: 0; line-height: 1.2; color: #1565c0; }
+    .metric-label { font-size: 0.9em; font-weight: 500; margin-top: 5px; color: #666; }
+
+    /* 報告紙張風格 */
     .report-paper {
-        background-color: #fdfbf7; 
-        color: #2c3e50; 
-        padding: 30px; 
-        border-radius: 4px; 
-        margin-bottom: 15px; 
-        border: 1px solid #e0e0e0;
+        background-color: #fdfbf7; color: #2c3e50; padding: 30px; 
+        border-radius: 4px; margin-bottom: 15px; border: 1px solid #e0e0e0;
         box-shadow: 0 2px 8px rgba(0,0,0,0.05);
         font-family: "Georgia", "Cambria", "Times New Roman", serif;
-        line-height: 1.8;
-        font-size: 1.05rem;
+        line-height: 1.8; font-size: 1.05rem;
     }
     
     .citation {
-        font-size: 0.85em; 
-        color: #757575; 
-        background-color: #f0f0f0;
-        padding: 2px 6px; 
-        border-radius: 4px; 
-        margin: 0 2px;
-        font-family: sans-serif; 
-        border: 1px solid #e0e0e0;
-        font-weight: 500;
+        font-size: 0.85em; color: #757575; background-color: #f0f0f0;
+        padding: 2px 6px; border-radius: 4px; margin: 0 2px;
+        font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
     }
 
-    .perspective-box {
-        padding: 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.95em;
-        border-left-width: 4px; border-left-style: solid; background-color: #fff;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .box-green { border-left-color: #2e7d32; }
-    .box-blue { border-left-color: #1565c0; }
-    .box-neutral { border-left-color: #616161; }
-    
-    .mermaid-box {
-        background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-top: 15px;
-    }
-    
     .table-header-green { color: #2e7d32; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #2e7d32; margin-bottom: 10px; padding-bottom: 5px; }
     .table-header-blue { color: #1565c0; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #1565c0; margin-bottom: 10px; padding-bottom: 5px; }
-    .table-header-neutral { color: #616161; font-weight: bold; font-size: 1.1em; border-bottom: 2px solid #616161; margin-bottom: 10px; padding-bottom: 5px; }
     
-    .legend-box {
-        background-color: #e3f2fd; border-radius: 8px; padding: 10px 15px; font-size: 0.9em; margin-bottom: 15px; border: 1px solid #bbdefb; color: #0d47a1;
-    }
+    .mermaid-box { background-color: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid #ddd; margin-top: 15px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數
+# 2. 資料庫擴充 (整合舊版 DB_MAP)
 # ==========================================
-TAIWAN_DOMAINS = [
+# 擴充後的台灣白名單 (含網媒)
+TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
     "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
     "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
     "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw",
-    "news.yahoo.com.tw"
+    "news.yahoo.com.tw", "twreporter.org", "theinitium.com", "mindiworldnews.com", "vocus.cc"
 ]
 
 CAMP_KEYWORDS = {
@@ -145,7 +131,7 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V18.2] 搜尋核心：支援複選區域 (List) + 智慧白名單切換
+# V18.2 搜尋核心 + V19 白名單擴充
 def get_search_context(query, api_key_tavily, days_back, selected_regions, max_results, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
@@ -157,33 +143,29 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             "max_results": max_results
         }
 
-        # --- 構建查詢字串 ---
         suffixes = []
         is_strict_taiwan = False
         
-        # 1. 關鍵字策略
-        # 遍歷所有被勾選的區域，加入對應關鍵字
-        for r in selected_regions:
-            if "台灣" in r: suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
-            if "亞洲" in r: suffixes.append("Asia News")
-            if "歐洲" in r: suffixes.append("Europe News")
-            if "美洲" in r: suffixes.append("US Americas News")
+        # 區域判斷邏輯
+        if len(selected_regions) == 1 and "台灣" in selected_regions[0]:
+            is_strict_taiwan = True
+            suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
+        else:
+            for r in selected_regions:
+                if "台灣" in r: suffixes.append("台灣 新聞")
+                if "亞洲" in r: suffixes.append("Asia News")
+                if "歐洲" in r: suffixes.append("Europe News")
+                if "美洲" in r: suffixes.append("US Americas News")
         
-        if not suffixes: suffixes.append("News") # 防呆
-        
-        # 組合: "議題 + (台灣新聞 OR 亞洲新聞 ...)"
+        if not suffixes: suffixes.append("News")
         search_q = f"{query} {' '.join(suffixes)}"
         if context_report: search_q += " analysis"
         
         search_params["query"] = search_q
 
-        # --- 2. 網域控制邏輯 ---
-        # 如果「只」勾選了台灣 -> 啟用嚴格白名單
-        if len(selected_regions) == 1 and "台灣" in selected_regions[0]:
-            is_strict_taiwan = True
-            search_params["include_domains"] = TAIWAN_DOMAINS
+        if is_strict_taiwan:
+            search_params["include_domains"] = TAIWAN_WHITELIST
         else:
-            # 如果是混選 (台灣+美國) 或 純國際 -> 啟用黑名單 (排除垃圾，保留廣度)
             search_params["exclude_domains"] = [
                 "daum.net", "naver.com", "tistory.com",
                 "espn.com", "bleacherreport.com", "cbssports.com", 
@@ -192,7 +174,6 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         
         actual_query = search_params["query"]
         
-        # 執行搜尋
         response = tavily.search(**search_params)
         results = response.get('results', [])
         context_text = ""
@@ -205,17 +186,10 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
-            
-            # [V18.2] 日期補救機制
-            pub_date = res.get('published_date')
-            if not pub_date:
-                # 嘗試標記為 Recent，讓 AI 從內容找
-                pub_date = "Recent"
-            else:
-                pub_date = pub_date[:10]
-            
+            pub_date = res.get('published_date', '')
+            if not pub_date: pub_date = "Recent"
+            else: pub_date = pub_date[:10]
             content = res.get('content', '')[:800]
-            # 將 Date 明確放入 context，指示 AI 優先使用
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
         return context_text, results, actual_query, is_strict_taiwan
@@ -264,12 +238,13 @@ def render_mermaid(code):
     """
     components.html(html_code, height=600, scrolling=True)
 
-# 3.3 核心邏輯：數位戰情室
+# 3.3 核心邏輯：數位戰情室 (融合舊版未來學架構)
 def run_council_of_rivals(query, context_text, model_name, api_key):
     prompts = {
         "A_SIDE": "你是一位【體制內/現狀分析師】。請找出支持現狀、政策合理性或官方解釋的證據。必須引用來源 [Source ID]。",
         "B_SIDE": "你是一位【改革/批判派分析師】。請找出質疑現狀、結構性問題或反對意見的證據。必須引用來源 [Source ID]。",
-        "CONTEXT": "你是一位【脈絡歷史學家】。請分析爭議背後的深層歷史成因、經濟結構或地緣政治因素。必須引用來源 [Source ID]。"
+        "CONTEXT": "你是一位【脈絡歷史學家】。請分析爭議背後的深層歷史成因、經濟結構或地緣政治因素。必須引用來源 [Source ID]。",
+        "FUTURIST": "你是一位【未來趨勢預測師】。請應用第一性原理與可能性圓錐，推演三種未來情境：基準(Baseline)、轉折(Plausible)、極端(Wild Card)。"
     }
     
     opinions = {}
@@ -290,22 +265,20 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     A觀點 (體制): {opinions.get('A_SIDE')}
     B觀點 (批判): {opinions.get('B_SIDE')}
     脈絡: {opinions.get('CONTEXT')}
+    未來推演: {opinions.get('FUTURIST')}
     
     【任務指令】：
-    1. **引用壓縮**：若連續引用多個來源，請寫成 `[Source 1, 2, 3]` 的格式。
-    2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示「變數 A 如何導致 變數 B」的因果鏈。
-       - 嚴格規定：節點名稱請使用 **純文字**，不要包含括號、問號或其他符號。
-       - 代碼請包在 ```mermaid ... ``` 區塊中。
-    3. **未來情境**：推導 3 種可能的發展劇本。
+    1. **整合分析**：請融合上述觀點，產出一份結構完整的報告。
+    2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示因果鏈。
     
     【輸出格式】：
     ### [REPORT_TEXT]
-    (Markdown 報告內容...)
+    (Markdown 報告內容，請包含「🔮 未來情境模擬」章節)
     """
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜
+# 3.4 核心邏輯：輿情光譜 (V18.2 版本)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
@@ -319,7 +292,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     
     【輸出格式 (請保持格式整潔，每行一筆，使用 | 分隔)】：
     ### [DATA_TIMELINE]
-    (YYYY-MM-DD|媒體|事件標題) -> 請務必從 Context 中抓取時間
+    (YYYY-MM-DD|媒體|事件標題)
     
     ### [DATA_SPECTRUM]
     (重要：必須包含 6 個欄位，日期請務必從 Context 中的 [Date: ...] 提取，若無則填 Recent)
@@ -345,13 +318,11 @@ def parse_gemini_data(text):
         line = line.strip()
         if not line: continue
         
-        # Timeline Parsing
         if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line):
             parts = line.split("|")
             if len(parts) == 3: 
                 data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum Parsing
         if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "YYYY" in line:
             parts = line.split("|")
             try:
@@ -362,7 +333,6 @@ def parse_gemini_data(text):
                 base_cred = 0
                 url = "#"
                 
-                # 6 欄位解析
                 if len(parts) >= 6:
                     date = parts[1].strip()
                     title = parts[2].strip()
@@ -405,17 +375,19 @@ def parse_gemini_data(text):
 
     return data
 
-def render_spectrum_split(spectrum_data):
+# [V19.0] 渲染表格 (支援盲測模式)
+def render_spectrum_split(spectrum_data, blind_mode):
     if not spectrum_data: return
     
-    st.markdown("""
-    <div class="legend-box">
-        <b>📊 燈號與數值說明：</b><br>
-        • <b>政治立場 (Stance)</b>：🟢 負分 (-10 ~ -1) 代表批判/泛綠；🔵 正分 (+1 ~ +10) 代表體制/泛藍；⚪ 0 代表中立。<br>
-        • <b>可信度 (Credibility)</b>：🟢 高 (7-10)；🟡 中 (4-6)；🔴 低 (0-3)。
-    </div>
-    """, unsafe_allow_html=True)
+    # 復刻舊版卡片風格的指標顯示 (Mockup)
+    c1, c2, c3 = st.columns(3)
+    avg_cred = sum(i['credibility'] for i in spectrum_data) / len(spectrum_data) if spectrum_data else 0
+    polarization = len([i for i in spectrum_data if abs(i['stance']) > 5])
     
+    with c1: st.markdown(f'<div class="metric-container"><p class="metric-score" style="color:#2e7d32">{len(spectrum_data)}</p><p class="metric-label">分析篇數</p></div>', unsafe_allow_html=True)
+    with c2: st.markdown(f'<div class="metric-container"><p class="metric-score" style="color:#1565c0">{avg_cred:.1f}</p><p class="metric-label">平均可信度</p></div>', unsafe_allow_html=True)
+    with c3: st.markdown(f'<div class="metric-container"><p class="metric-score" style="color:#d32f2f">{polarization}</p><p class="metric-label">高對立文章</p></div>', unsafe_allow_html=True)
+
     green_list = []
     blue_list = []
     neutral_list = []
@@ -448,8 +420,11 @@ def render_spectrum_split(spectrum_data):
             t_url = i.get('url', '#')
             t_date = i.get('date', 'Recent')
             
+            # [V19.0] 盲測模式處理
+            display_source = "*****" if blind_mode else i['source']
+            
             title_link = f"[{t_text}]({t_url})"
-            md += f"| {t_date} | {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
+            md += f"| {t_date} | {display_source} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
 
     c1, c2 = st.columns(2)
@@ -465,7 +440,6 @@ def render_spectrum_split(spectrum_data):
         st.markdown('<div class="table-header-neutral">⚪ 中立 / 其他觀點 (Neutral/Other)</div>', unsafe_allow_html=True)
         st.markdown(make_md_table(neutral_list))
 
-# [V18.1 Feature] 渲染時間軸
 def render_timeline_markdown(timeline_data):
     if not timeline_data: return
     md = "| 日期 | 媒體 | 事件/標題 |\n|:---:|:---|:---|\n"
@@ -493,9 +467,12 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V18.2")
+    st.title("全域觀點解析 V19.0")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
+    
+    # [V19.0] 恢復盲測模式
+    blind_mode = st.toggle("🙈 盲測模式 (隱藏媒體名稱)", value=False)
     
     with st.expander("🔑 API 設定", expanded=True):
         if "GOOGLE_API_KEY" in st.secrets:
@@ -519,7 +496,6 @@ with st.sidebar:
             index=2
         )
         
-        # [V18.2] 恢復 Multi-Select
         max_results = st.slider("搜尋篇數上限", 10, 50, 20)
         selected_regions = st.multiselect(
             "搜尋視角 (Region) - 可複選",
@@ -527,15 +503,14 @@ with st.sidebar:
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
-    with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
+    with st.expander("🧠 系統邏輯說明", expanded=False):
         st.markdown("""
-        **1. 搜尋優化 (Search Strategy)**
-        * **台灣模式**: 若只選台灣，啟用嚴格白名單 (只搜聯合、自由、中時...)。
-        * **混選模式**: 若選台灣+國際，啟用黑名單 (排除垃圾農場)，保留廣度。
+        **1. 搜尋優化**
+        * **台灣模式**: 啟用擴充版白名單 (含數位網媒)。
+        * **盲測模式**: 遮蔽來源，專注內容。
         
-        **2. 政治光譜校正 (Calibration)**
-        * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
-        * **🔵 泛藍/體制區**：中時、聯合、TVBS... (強制正分)
+        **2. 未來推演 (Scenario)**
+        * 引入舊版「第一性原理」與「可能性圓錐」架構。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -563,20 +538,19 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V18.2)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V19.0)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
         
-        # [V18.2] 傳入 list 類型的 selected_regions
         context_text, sources, actual_query, is_strict_tw = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         st.session_state.sources = sources
         
         if is_strict_tw:
-             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Strict Whitelist Mode)")
+             st.info(f"🔍 已啟用擴充版台灣媒體白名單 (Enhanced Whitelist)")
         else:
-             st.info(f"🔍 混選模式：啟用垃圾過濾 (Smart Blacklist) - 關鍵字: {actual_query}")
+             st.info(f"🔍 混選模式：啟用垃圾過濾 (Smart Blacklist)")
         
         st.write("🛡️ 2. 查詢 Cofacts 謠言資料庫 (API)...")
         cofacts_txt = search_cofacts(query)
@@ -590,7 +564,7 @@ if search_btn and query and google_key and tavily_key:
             raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
             st.session_state.spectrum_result = parse_gemini_data(raw_report)
         else:
-            st.write("⚔️ 4. 召開虛擬戰情會議 (多代理人辯論)...")
+            st.write("⚔️ 4. 召開虛擬戰情會議 (加入未來學推演)...")
             opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
             st.session_state.wargame_opinions = opinions
             st.session_state.wargame_result = parse_gemini_data(raw_report)
@@ -602,11 +576,11 @@ if search_btn and query and google_key and tavily_key:
 if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
+    # [V19.0] 傳入盲測狀態
     if data.get("spectrum"):
         st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
-        render_spectrum_split(data["spectrum"])
+        render_spectrum_split(data["spectrum"], blind_mode)
     
-    # [V18.2] 時間軸顯示
     if data.get("timeline"):
         st.markdown("### 📅 議題發展時間軸 (News Timeline)")
         render_timeline_markdown(data["timeline"])
@@ -667,6 +641,9 @@ if st.session_state.sources:
     md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
     for i, s in enumerate(st.session_state.sources):
         domain = get_domain_name(s.get('url'))
+        # 配合盲測模式隱藏來源
+        if blind_mode: domain = "*****"
+        
         title = s.get('title', 'No Title')
         if len(title) > 60: title = title[:60] + "..."
         url = s.get('url')
