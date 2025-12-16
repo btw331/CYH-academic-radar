@@ -15,12 +15,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
-from tavily import TavilyClient # [V22.0] 改用原生 Client 以支援進階參數
+from tavily import TavilyClient
 
 # ==========================================
-# 1. 基礎設定與 CSS樣式 (保留舊版美學)
+# 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點搜尋 V22.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點搜尋 V22.1", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -49,13 +49,6 @@ st.markdown("""
     }
     
     /* 來源連結樣式 */
-    .source-block-container {
-        padding: 10px;
-        border-radius: 6px;
-        margin-bottom: 10px;
-        color: white;
-    }
-    
     .source-link { 
         color: #1565c0 !important; 
         text-decoration: none; 
@@ -68,15 +61,32 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (結合 V19 白名單)
+# 2. 資料庫與共用常數 (新增 INDIE)
 # ==========================================
-# [V22.0] 台灣媒體嚴格白名單
+# [V22.0] 台灣主流媒體
 TAIWAN_WHITELIST = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
-    "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
-    "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
-    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw",
-    "news.yahoo.com.tw", "twreporter.org", "theinitium.com", "mindiworldnews.com", "vocus.cc"
+    "setn.com", "ettoday.net", "tvbs.com.tw", "ctee.com.tw", 
+    "businessweekly.com.tw", "news.yahoo.com.tw", "mirrormedia.mg"
+]
+
+# [V22.1] 獨立/自媒體/深度媒體白名單
+INDIE_WHITELIST = [
+    "twreporter.org",       # 報導者
+    "theinitium.com",       # 端傳媒
+    "thenewslens.com",      # 關鍵評論網
+    "storm.mg",             # 風傳媒 (深度區)
+    "upmedia.mg",           # 上報
+    "mindiworldnews.com",   # 敏迪選讀
+    "vocus.cc",             # 方格子 (自媒體)
+    "matters.town",         # Matters (Web3 自媒體)
+    "plainlaw.me",          # 法律白話文
+    "whogovernstw.org",     # 菜市場政治學
+    "rightplus.org",        # 多多益善
+    "biosmonthly.com",      # BIOS monthly
+    "storystudio.tw",       # 故事 StoryStudio
+    "womany.net",           # 女人迷
+    "dq.yam.com"            # 地球圖輯隊
 ]
 
 # 舊版分類對照表 (用於分類標籤)
@@ -152,14 +162,14 @@ def is_chinese(text):
     return bool(re.search(r'[\u4e00-\u9fff]', text))
 
 # ==========================================
-# 3. 雙核融合分析引擎 (更新為 V22.0 邏輯)
+# 3. 雙核融合分析引擎 (V22.1 邏輯)
 # ==========================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
 def call_gemini_with_retry(chain, input_data):
     return chain.invoke(input_data)
 
-# [V22.0] 新增搜尋邏輯：複選區域 + 自訂篇數 + 不限時間
+# [V22.1] 搜尋邏輯升級：支援白名單混合模式
 def get_search_results(query, api_key_tavily, days_back, selected_regions, max_results):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
@@ -171,30 +181,47 @@ def get_search_results(query, api_key_tavily, days_back, selected_regions, max_r
             "max_results": max_results
         }
 
-        # 構建查詢字串與網域控制
         suffixes = []
-        is_strict_taiwan = False
+        target_domains = [] # 收集白名單網域
         
-        # 若只選台灣，啟用嚴格白名單
-        if len(selected_regions) == 1 and "台灣" in selected_regions[0]:
-            is_strict_taiwan = True
-            suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
-        else:
-            for r in selected_regions:
-                if "台灣" in r: suffixes.append("台灣 新聞")
-                if "亞洲" in r: suffixes.append("Asia News")
-                if "歐洲" in r: suffixes.append("Europe News")
-                if "美洲" in r: suffixes.append("US Americas News")
+        # 1. 處理區域選擇
+        has_taiwan = False
+        has_indie = False
+        has_intl = False
+        
+        for r in selected_regions:
+            if "台灣" in r: 
+                has_taiwan = True
+                suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
+                target_domains.extend(TAIWAN_WHITELIST)
+            
+            if "獨立" in r:
+                has_indie = True
+                # 獨立媒體通常也是中文，不需要特別加英文後綴，除非想搜 global indie
+                suffixes.append("評論 深度報導") 
+                target_domains.extend(INDIE_WHITELIST)
+                
+            if "亞洲" in r: 
+                has_intl = True
+                suffixes.append("Asia News")
+            if "歐洲" in r: 
+                has_intl = True
+                suffixes.append("Europe News")
+            if "美洲" in r: 
+                has_intl = True
+                suffixes.append("US Americas News")
         
         if not suffixes: suffixes.append("News")
         search_q = f"{query} {' '.join(suffixes)}"
-        
         search_params["query"] = search_q
 
-        if is_strict_taiwan:
-            search_params["include_domains"] = TAIWAN_WHITELIST
+        # 2. 決定是否啟用白名單 (include_domains)
+        # 邏輯：如果只選了「台灣」或「獨立媒體」（沒有選國際區域），則啟用嚴格白名單
+        if (has_taiwan or has_indie) and not has_intl:
+            search_params["include_domains"] = list(set(target_domains)) # 去重
         else:
-            # 國際/混選模式：排除垃圾農場與購物網
+            # 如果混選了國際區域，不能用 include_domains (會把國際新聞濾掉)
+            # 改用 exclude_domains 排除垃圾
             search_params["exclude_domains"] = [
                 "daum.net", "naver.com", "tistory.com",
                 "espn.com", "bleacherreport.com", "cbssports.com", 
@@ -208,7 +235,6 @@ def get_search_results(query, api_key_tavily, days_back, selected_regions, max_r
         context_text = ""
         for i, res in enumerate(results):
             pub_date = res.get('published_date', 'Recent')[:10]
-            # 傳給 AI 的格式
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {res.get('title')}] {str(res.get('content'))[:2000]} (URL: {res.get('url')})\n"
             
         return context_text, results
@@ -219,7 +245,7 @@ def get_search_results(query, api_key_tavily, days_back, selected_regions, max_r
 def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, days_back, selected_regions, max_results, mode="FUSION", context_report=None):
     os.environ["GOOGLE_API_KEY"] = api_key_google
     
-    # [V22.0] 呼叫新的搜尋邏輯
+    # [V22.1] 呼叫新的搜尋邏輯
     context_text, results = get_search_results(query, api_key_tavily, days_back, selected_regions, max_results)
     
     if context_report and len(context_report) > 50:
@@ -229,24 +255,20 @@ def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, days_
         full_context = context_text
         task_instruction = f"請針對議題「{query}」進行【全域深度解析】，整合事實查核與觀點分析。"
 
-    # 2. 思考階段 (保留舊版優秀的 Prompt)
     if mode == "V205":
         system_prompt = f"""
         你是一位資深的趨勢預測分析師。{task_instruction}
         
         【分析核心 (Foresight Framework)】：
-        1. **第一性原理 (First Principles)**：剖析議題背後的底層驅動力 (如：人口結構、經濟誘因、地緣政治)。
-        2. **可能性圓錐 (Cone of Plausibility)**：推演三種未來發展路徑。
-            - **基準情境 (Baseline)**: 若現狀持續，最可能的結果。
-            - **轉折情境 (Plausible)**: 關鍵變數改變後的合理發展。
-            - **極端情境 (Wild Card)**: 低機率但高衝擊的黑天鵝事件。
+        1. **第一性原理 (First Principles)**：剖析議題背後的底層驅動力。
+        2. **可能性圓錐 (Cone of Plausibility)**：推演三種未來發展路徑 (基準、轉折、極端)。
 
-        【評分定義 (趨勢版)】：
-        1. Attack -> 影響顯著性 (Significance)
-        2. Division -> 發展不確定性 (Uncertainty)
-        3. Impact -> 時間緊迫度 (Urgency)
-        4. Resilience -> 系統複雜度 (Complexity)
-        *Threat -> 綜合影響力 (Impact Index)
+        【評分定義】：
+        1. Attack -> 影響顯著性
+        2. Division -> 發展不確定性
+        3. Impact -> 時間緊迫度
+        4. Resilience -> 系統複雜度
+        *Threat -> 綜合影響力
 
         【輸出格式】：
         ### [DATA_SCORES]
@@ -264,21 +286,21 @@ def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, days_
 
         ### [REPORT_TEXT]
         (Markdown 報告)
-        # 🎯 第一性原理拆解 (底層邏輯)
-        # 🔮 未來情境模擬 (可能性圓錐)
-        # 💡 綜合建議與觀察
+        # 🎯 第一性原理拆解
+        # 🔮 未來情境模擬
+        # 💡 綜合建議
         """
     else:
         system_prompt = f"""
         你是一位集「深度調查記者」與「媒體識讀專家」於一身的情報分析師。
-        請針對議題「{query}」進行【全域深度解析】，整合事實查核與觀點分析。
+        請針對議題「{query}」進行【全域深度解析】。
         
         【評分指標 (0-100)】：
-        1. Attack (傳播熱度): 討論密度。
-        2. Division (觀點分歧): 陣營落差。
-        3. Impact (影響潛力): 政策影響。
-        4. Resilience (資訊透明): 查核完整度。
-        *Threat (爭議指數): 綜合評估。
+        1. Attack (傳播熱度)
+        2. Division (觀點分歧)
+        3. Impact (影響潛力)
+        4. Resilience (資訊透明)
+        *Threat (爭議指數)
 
         【輸出格式 (嚴格遵守)】：
         ### [DATA_SCORES]
@@ -300,7 +322,7 @@ def run_fusion_analysis(query, api_key_google, api_key_tavily, model_name, days_
         請包含以下章節：
         1. **📊 全域現況摘要**
         2. **🔍 爭議點事實查核矩陣 (Fact-Check)**
-        3. **⚖️ 媒體觀點光譜對照**
+        3. **⚖️ 媒體觀點光譜對照 (包含獨立/自媒體觀點)**
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
         5. **🤔 關鍵反思**
         """
@@ -385,7 +407,7 @@ def generate_download_content(query, data, sources):
 # 4. 介面 (UI)
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點搜尋 V22.0")
+    st.title("全域觀點搜尋 V22.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -432,35 +454,27 @@ with st.sidebar:
         # [V22.0] 搜尋篇數 (自訂)
         max_results = st.slider("搜尋篇數上限", 20, 100, 20)
         
-        # [V22.0] 區域複選 (Multi-Select)
+        # [V22.1] 區域複選 (含獨立媒體)
         selected_regions = st.multiselect(
             "搜尋視角 (Region) - 可複選",
-            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)"],
+            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
             default=["🇹🇼 台灣 (Taiwan)"]
         )
 
     with st.expander("📖 評分指標定義 (含公式)", expanded=False):
         if "未來" in analysis_mode:
             st.markdown("""
-- **1. 影響顯著性 (Significance)**
-  - 公式：議題權重(0.6) + 影響層級(0.4)
-- **2. 發展不確定性 (Uncertainty)**
-  - 公式：未知變數 / 總變數
-- **3. 時間緊迫度 (Urgency)**
-  - 公式：1 / (剩餘反應時間)
-- **4. 系統複雜度 (Complexity)**
-  - 公式：涉入利害關係人數量 * 耦合度
+- **1. 影響顯著性 (Significance)**: 議題權重 + 影響層級
+- **2. 發展不確定性 (Uncertainty)**: 未知變數 / 總變數
+- **3. 時間緊迫度 (Urgency)**: 1 / (剩餘反應時間)
+- **4. 系統複雜度 (Complexity)**: 利害關係人數量 * 耦合度
             """)
         else:
             st.markdown("""
-- **1. 傳播熱度 (Attack)**
-  - 公式：(媒體報導量 * 0.6) + (社群聲量 * 0.4)
-- **2. 觀點分歧 (Division)**
-  - 公式：(陣營對立度 * 0.7) + (模糊度 * 0.3)
-- **3. 影響潛力 (Impact)**
-  - 公式：(受眾規模 * 0.5) + (時間 * 0.5)
-- **4. 資訊透明 (Resilience)**
-  - 公式：(官方資料 * 0.8) + (第三方查核 * 0.2)
+- **1. 傳播熱度 (Attack)**: 媒體報導量 + 社群聲量
+- **2. 觀點分歧 (Division)**: 陣營對立度 + 模糊度
+- **3. 影響潛力 (Impact)**: 受眾規模 + 時間
+- **4. 資訊透明 (Resilience)**: 官方資料 + 第三方查核
             """)
 
 # 主畫面
@@ -481,7 +495,7 @@ if search_btn and query:
         
         report_context = past_report_input if past_report_input.strip() else None
         
-        # [V22.0] 傳遞新參數
+        # [V22.1] 傳遞新參數
         raw_text, sources = run_fusion_analysis(
             query, google_key, tavily_key, selected_model, 
             days_back=search_days, 
@@ -591,7 +605,7 @@ if st.session_state.result:
             for i, s in enumerate(sources):
                 domain = get_domain_name(s.get('url'))
                 display_domain = "******" if blind_mode else domain
-                title = s.get('title', 'No Title') # 原生 Client 有 title
+                title = s.get('title', 'No Title') 
                 if not title: title = s.get('content', '')[:30] + "..."
                 
                 df_data.append({"編號": i+1, "媒體/網域": display_domain, "標題摘要": title, "原始連結": s.get('url')})
