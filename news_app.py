@@ -82,12 +82,12 @@ st.markdown("""
 # ==========================================
 # 2. 資料庫與共用常數
 # ==========================================
-# [V17.3] 台灣媒體白名單 (確保只搜這些網站)
 TAIWAN_DOMAINS = [
     "udn.com", "ltn.com.tw", "chinatimes.com", "cna.com.tw", 
     "storm.mg", "setn.com", "ettoday.net", "tvbs.com.tw", 
     "mirrormedia.mg", "thenewslens.com", "upmedia.mg", 
-    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw"
+    "rwnews.tw", "news.pts.org.tw", "ctee.com.tw", "businessweekly.com.tw",
+    "news.yahoo.com.tw"
 ]
 
 CAMP_KEYWORDS = {
@@ -145,50 +145,56 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V17.3] 搜尋核心：白名單機制
-def get_search_context(query, api_key_tavily, days_back, region_mode, context_report=None):
+# [V17.3] 搜尋核心：支援複選區域 + 智慧白名單切換
+def get_search_context(query, api_key_tavily, days_back, selected_regions, context_report=None):
     try:
         tavily = TavilyClient(api_key=api_key_tavily)
         
         search_params = {
-            "query": query,
             "search_depth": "advanced",
             "topic": "general",
             "days": days_back,
             "max_results": 10
         }
 
-        # 1. 區域策略
-        if "台灣" in region_mode:
-            # 台灣模式：強制鎖定網域 (Whitelist)
-            search_params["query"] = f"{query}" # 關鍵字保持純淨
-            search_params["include_domains"] = TAIWAN_DOMAINS # 強制只搜這些
+        # --- 構建查詢字串 ---
+        suffixes = []
+        is_tw_only = False
         
-        elif "亞洲" in region_mode:
-            search_params["query"] = f"{query} Asia News"
-        elif "歐洲" in region_mode:
-            search_params["query"] = f"{query} Europe News"
-        elif "美洲" in region_mode:
-            search_params["query"] = f"{query} US Americas News"
+        # 判斷是否「只」選了台灣 -> 啟用白名單模式
+        if len(selected_regions) == 1 and "台灣" in selected_regions[0]:
+            is_tw_only = True
+            suffixes.append("台灣 新聞" if is_chinese(query) else "Taiwan News")
         else:
-            # 預設模式：加上關鍵字，使用排除名單
-            if is_chinese(query):
-                search_params["query"] = f"{query} 台灣 新聞"
-            else:
-                search_params["query"] = f"{query} news"
-            
-            search_params["exclude_domains"] = [
-                "daum.net", "naver.com", "espn.com", "pinterest.com", "amazon.com"
-            ]
-
-        if context_report: search_params["query"] += " analysis"
+            # 混選模式：組合關鍵字
+            for r in selected_regions:
+                if "台灣" in r: suffixes.append("台灣 新聞")
+                if "亞洲" in r: suffixes.append("Asia News")
+                if "歐洲" in r: suffixes.append("Europe News")
+                if "美洲" in r: suffixes.append("US Americas News")
         
-        # 保存實際搜尋的字串供 Debug
+        # 組合最終 Query
+        if not suffixes: suffixes.append("News") # 防呆
+        search_q = f"{query} {' '.join(suffixes)}"
+        if context_report: search_q += " analysis"
+        
+        search_params["query"] = search_q
+
+        # --- 網域控制 ---
+        if is_tw_only:
+            search_params["include_domains"] = TAIWAN_DOMAINS
+        else:
+            # 國際/混選模式：使用黑名單過濾垃圾
+            search_params["exclude_domains"] = [
+                "daum.net", "naver.com", "tistory.com",
+                "espn.com", "bleacherreport.com", "cbssports.com", 
+                "pinterest.com", "amazon.com", "tripadvisor.com"
+            ]
+        
         actual_query = search_params["query"]
         
-        # 2. 執行搜尋
+        # 執行搜尋
         response = tavily.search(**search_params)
-        
         results = response.get('results', [])
         context_text = ""
         
@@ -200,13 +206,16 @@ def get_search_context(query, api_key_tavily, days_back, region_mode, context_re
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
+            # [V17.3] 抓取發布日期
+            pub_date = res.get('published_date', '未知日期')[:10] 
             content = res.get('content', '')[:800]
-            context_text += f"Source {i+1}: [Title: {title}] {content} (URL: {url})\n"
+            # 將日期放入 Context 供 AI 讀取
+            context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
             
-        return context_text, results, actual_query
+        return context_text, results, actual_query, is_tw_only
         
     except Exception as e:
-        return f"Error: {str(e)}", [], "Error"
+        return f"Error: {str(e)}", [], "Error", False
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
 def call_gemini(system_prompt, user_text, model_name, api_key):
@@ -290,7 +299,7 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 核心邏輯：輿情光譜
+# 3.4 核心邏輯：輿情光譜 (新增：請求 AI 提取日期)
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
     你是一位媒體識讀專家。請針對「{query}」進行媒體框架分析。
@@ -307,8 +316,8 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     YYYY-MM-DD|媒體|標題
     
     ### [DATA_SPECTRUM]
-    (重要：必須包含 5 個欄位，標題不可省略)
-    來源名稱|新聞標題|立場(-10~10)|可信度(0~10)|網址
+    (重要：必須包含 6 個欄位，日期請從 Context 中 [Date: ...] 提取)
+    來源名稱|日期(YYYY-MM-DD)|新聞標題|立場(-10~10)|可信度(0~10)|網址
     
     ### [REPORT_TEXT]
     (Markdown 報告，請使用 `[Source 1, 3]` 格式引用)
@@ -316,7 +325,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器
+# 3.5 資料解析器 (支援日期欄位)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -335,21 +344,32 @@ def parse_gemini_data(text):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0].strip(), "media": parts[1].strip(), "event": parts[2].strip()})
             
-        # Spectrum
-        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
+        # Spectrum: [V17.3] 彈性解析 6 欄位 (Name|Date|Title|Stance|Cred|URL)
+        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "YYYY" in line:
             parts = line.split("|")
             try:
+                # 預設值
                 name = parts[0].strip()
-                title = "點擊閱讀報導" 
+                date = "N/A"
+                title = "點擊閱讀報導"
                 base_stance = 0
                 base_cred = 0
                 url = "#"
                 
-                if len(parts) >= 5:
+                # Case A: 完整 6 欄
+                if len(parts) >= 6:
+                    date = parts[1].strip()
+                    title = parts[2].strip()
+                    base_stance = float(parts[3].strip())
+                    base_cred = float(parts[4].strip())
+                    url = parts[5].strip()
+                # Case B: 5 欄 (可能缺日期)
+                elif len(parts) == 5:
                     title = parts[1].strip()
                     base_stance = float(parts[2].strip())
                     base_cred = float(parts[3].strip())
                     url = parts[4].strip()
+                # Case C: 4 欄 (舊版)
                 else:
                     base_stance = float(parts[1].strip())
                     base_cred = float(parts[2].strip())
@@ -365,6 +385,7 @@ def parse_gemini_data(text):
                 
                 data["spectrum"].append({
                     "source": name,
+                    "date": date,
                     "title": title,
                     "stance": int(final_stance),
                     "credibility": int(base_cred), 
@@ -380,6 +401,7 @@ def parse_gemini_data(text):
 
     return data
 
+# [V17.3] 渲染表格 (含日期)
 def render_spectrum_split(spectrum_data):
     if not spectrum_data: return
     
@@ -406,7 +428,8 @@ def render_spectrum_split(spectrum_data):
     
     def make_md_table(items):
         if not items: return "_無相關資料_"
-        md = "| 媒體 | 新聞標題 (點擊閱讀) | 立場 | 可信度 |\n|:---|:---|:---:|:---:|\n"
+        # [V17.3] 新增日期欄位
+        md = "| 日期 | 媒體 | 新聞標題 (點擊閱讀) | 立場 | 可信度 |\n|:---:|:---|:---|:---:|:---:|\n"
         for i in items:
             s = i['stance']
             if s < 0: s_txt = f"🟢 {s}"
@@ -421,9 +444,10 @@ def render_spectrum_split(spectrum_data):
             t_text = i.get('title', '點擊閱讀報導')
             if len(t_text) > 25: t_text = t_text[:25] + "..."
             t_url = i.get('url', '#')
+            t_date = i.get('date', 'N/A')
             
             title_link = f"[{t_text}]({t_url})"
-            md += f"| {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
+            md += f"| {t_date} | {i['source']} | {title_link} | {s_txt} | {c_txt} |\n"
         return md
 
     c1, c2 = st.columns(2)
@@ -478,6 +502,7 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
         
+        # [V17.3] 搜尋時間範圍
         search_days = st.selectbox(
             "搜尋時間範圍 (Time Range)",
             options=[3, 7, 14, 30, 90, 1825],
@@ -485,23 +510,22 @@ with st.sidebar:
             index=2
         )
         
-        region_mode = st.selectbox(
-            "搜尋視角 (Region)",
-            ["🇹🇼 台灣限定 (Taiwan Only)", "🌏 亞洲視角 (Asia)", "🌍 歐洲視角 (Europe)", "🌎 美洲視角 (Americas)"]
+        # [V17.3] 區域複選 (Multi-Select)
+        selected_regions = st.multiselect(
+            "搜尋視角 (Region) - 可複選",
+            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)"],
+            default=["🇹🇼 台灣 (Taiwan)"]
         )
 
     with st.expander("🧠 系統邏輯說明 (Transparency)", expanded=False):
         st.markdown("""
         **1. 搜尋優化 (Search Strategy)**
-        * **台灣模式**: 啟用「白名單機制」，僅搜尋聯合、自由、中時、中央社等主流台媒，徹底排除國外雜訊。
-        * **國際模式**: 自動添加區域關鍵字。
+        * **台灣模式 (白名單)**: 若只選台灣，僅搜尋聯合、自由、中時等主流台媒。
+        * **國際/混選模式**: 自動添加區域關鍵字，並啟用網域黑名單。
         
         **2. 政治光譜校正 (Calibration)**
         * **🟢 泛綠/批判區**：自由、三立、民視... (強制負分)
         * **🔵 泛藍/體制區**：中時、聯合、TVBS... (強制正分)
-        
-        **3. 深度報告 (Report)**
-        * **框架分析**: 偵測衝突、歸責與經濟框架。
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -532,15 +556,14 @@ if search_btn and query and google_key and tavily_key:
     with st.status("🚀 啟動全域掃描引擎 (V17.3)...", expanded=True) as status:
         
         days_label = "不限時間" if search_days == 1825 else f"近 {search_days} 天"
-        st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {region_mode} / 時間: {days_label})...")
+        regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
+        st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
         
-        # [V17.3] 傳遞白名單邏輯
-        context_text, sources, actual_query = get_search_context(query, tavily_key, search_days, region_mode, past_report_input)
+        context_text, sources, actual_query, is_tw_only = get_search_context(query, tavily_key, search_days, selected_regions, past_report_input)
         st.session_state.sources = sources
         
-        # 顯示實際搜尋關鍵字，讓使用者安心
-        if "include_domains" in actual_query or "台灣" in region_mode:
-             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Whitelist Active)")
+        if is_tw_only:
+             st.info(f"🔍 已啟用台灣媒體白名單鎖定 (Whitelist Mode)")
         else:
              st.info(f"🔍 實際搜尋關鍵字: {actual_query}")
         
