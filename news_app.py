@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.0", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.1", page_icon="🔗", layout="wide")
 
 st.markdown("""
 <style>
@@ -49,7 +49,7 @@ st.markdown("""
         font-family: sans-serif; border: 1px solid #e0e0e0; font-weight: 500;
     }
 
-    /* 關鍵時序卷軸表格 (HTML Style) */
+    /* 關鍵時序卷軸表格 */
     .scrollable-table-container {
         height: 600px; 
         overflow-y: auto; 
@@ -131,7 +131,6 @@ INTL_WHITELIST = [
     "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp", "rfi.fr"
 ]
 
-# 分類對照表 (用於前端顯示 Emoji)
 DB_MAP = {
     "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
     "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp.org", "libertytimes"],
@@ -189,6 +188,22 @@ def format_citation_style(text):
     text = re.sub(pattern_compress, compress_match, text)
     return text
 
+# [V34.1] 網址日期提取器 (URL Date Extractor)
+def extract_date_from_url(url):
+    if not url: return None
+    # 常見日期格式：/2023/12/15/, /2023-12-15/, /231215/
+    patterns = [
+        r'/(\d{4})[-/](\d{2})[-/](\d{2})/',
+        r'/(\d{4})(\d{2})(\d{2})/',
+        r'-(\d{4})(\d{2})(\d{2})'
+    ]
+    for p in patterns:
+        match = re.search(p, url)
+        if match:
+            y, m, d = match.groups()
+            return f"{y}-{m}-{d}"
+    return None
+
 def is_chinese(text):
     return bool(re.search(r'[\u4e00-\u9fff]', text))
 
@@ -224,23 +239,20 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# [V34.0] 三軌平行搜尋核心 (Tri-Track Search)
+# 三軌平行搜尋 (Tri-Track Search)
 def execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode):
-    # 如果用戶要的篇數不多，或者沒開嚴格模式，就用單次搜尋
     if search_params['max_results'] <= 20 and not is_strict_mode:
         tavily = TavilyClient(api_key=api_key_tavily)
         return tavily.search(query=query, **search_params).get('results', [])
 
-    # 三軌定義
     queries = [
-        f"{query} 新聞 事件 時間軸",      # Track 1: Fact & Timeline
-        f"{query} 評論 觀點 爭議 分析",   # Track 2: Opinion & Controversy
-        f"{query} 懶人包 重點 影響"       # Track 3: Deep Dive & Summary
+        f"{query} 新聞 事件 時間軸", 
+        f"{query} 評論 觀點 爭議 分析", 
+        f"{query} 懶人包 重點 影響"
     ]
     
-    # 每個軌道最大搜尋數 (確保總數足夠)
     sub_params = search_params.copy()
-    sub_params['max_results'] = 20  # API 單次物理極限
+    sub_params['max_results'] = 20 
     
     all_results = []
     seen_urls = set()
@@ -251,7 +263,6 @@ def execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mod
             return t.search(query=q, **sub_params).get('results', [])
         except: return []
 
-    # 平行執行 3 個軌道
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         futures = [executor.submit(fetch, q) for q in queries]
         for future in concurrent.futures.as_completed(futures):
@@ -295,24 +306,30 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             target_domains = list(set(target_domains))
             search_params["include_domains"] = target_domains
 
-        # [V34.0] 執行三軌搜尋
         results = execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode)
         
-        # 排序：優先顯示有日期的
-        results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
-        
-        # 截斷至用戶要求的上限 (例如 100)
+        # 截斷至用戶要求的上限
         results = results[:max_results]
         
         context_text = ""
         for i, res in enumerate(results):
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
+            
+            # [V34.1 Fix] 日期智慧填補 (API -> URL -> Fallback)
             pub_date = res.get('published_date')
             if not pub_date:
-                pub_date = "近期" 
+                # 嘗試從 URL 提取日期
+                url_date = extract_date_from_url(url)
+                if url_date:
+                    pub_date = url_date
+                else:
+                    pub_date = "Missing" # 標記為遺失，交給 AI 讀內文推算
             else:
                 pub_date = pub_date[:10]
+            
+            # 將處理過的日期寫回 results，方便後續使用
+            res['final_date'] = pub_date
             
             content = res.get('content', '')[:3000]
             context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
@@ -330,7 +347,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 深度戰略分析
+# 深度戰略分析 (Source ID Mapping)
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -338,12 +355,11 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         system_prompt = f"""
         你是一位極度嚴謹的社會科學研究員。
         
-        【⚠️ 時間錨點】：今天是：{today_str}。請根據此日期推算新聞中的相對時間。
-        【⚠️ 最高指令】：
-        1. **語言**：所有輸出必須使用繁體中文 (Traditional Chinese)。
-        2. **一致性**：嚴格基於提供的事實資料分析。
-        3. **證據鎖定**：關鍵論述必須標註 [Source X]。
-        4. **樣本檢定**：請自我檢核來源是否過於集中，若有請在開頭標註「⚠️ 樣本偏差警告」。
+        【⚠️ 時間錨點】：今天是：{today_str}。
+        
+        【⚠️ 數據結構指令 (重要)】：
+        在產生 [DATA_TIMELINE] 時，**不需要** 輸出完整的網址 (URL)。
+        請輸出 **來源編號 (Source ID)**，格式為 `Source X` 的數字 `X`。
         
         【分析方法論】：
         1. **資訊檢索**：閱讀大量文本，識別資訊飽和度。
@@ -352,9 +368,9 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
-        (格式：YYYY-MM-DD|媒體|標題|網址) 
-        -> 網址請務必對應 Context 中的 Source Link。
-        -> **日期規則**：若無法確定，請填寫「近期」。**嚴禁填寫 '2025-XX-XX'**。
+        (格式：YYYY-MM-DD|媒體|標題|Source_ID)
+        -> Source_ID 請填寫整數 (例如 1, 5, 20)。
+        -> 日期規則：若標示 [Date: Missing]，請嘗試從內文推算；若無法推算，請填「近期」。
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
@@ -369,15 +385,10 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
     elif mode == "DEEP_SCENARIO":
         system_prompt = f"""
         你是一位專精於未來學 (Futures Studies) 的戰略顧問。
-        
         【⚠️ 時間錨點】：今天是 {today_str}。
-        【⚠️ 最高指令】：
-        1. 你現在接收到的是一份**「現況情報摘要」**。
-        2. 請**不要**重複摘要這份情報。
-        3. 請直接應用 **CLA 層次分析法** 向下挖掘，並推演未來。
-        4. 所有內容必須使用繁體中文。
+        【⚠️ 最高指令】：使用繁體中文。
         
-        【分析方法論 (Methodology)】：
+        【分析方法論】：
         1. **CLA 層次分析**：表象 -> 系統 -> 世界觀 -> 神話。
         2. **可能性圓錐**：推演三種情境。
 
@@ -401,6 +412,7 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
 
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
+# [V34.1 Fix] 解析器：將 Source_ID 還原為真實 URL
 def parse_gemini_data(text):
     data = {"timeline": [], "report_text": ""}
     
@@ -416,21 +428,22 @@ def parse_gemini_data(text):
                 date = parts[0].strip()
                 name = parts[1].strip()
                 title = parts[2].strip()
-                url = "#"
+                source_id_str = "0"
                 
-                if len(parts) >= 6: url = parts[5].strip()
-                elif len(parts) >= 4: url = parts[3].strip()
+                if len(parts) >= 4: 
+                    # 嘗試抓取 Source ID
+                    raw_id = parts[3].strip()
+                    # 提取數字
+                    nums = re.findall(r'\d+', raw_id)
+                    if nums: source_id_str = nums[0]
                 
-                url = url.rstrip(")").rstrip("]").strip()
-                
-                if "XX" in date or "xx" in date:
-                    date = "近期"
+                if "XX" in date or "xx" in date: date = "近期"
                 
                 data["timeline"].append({
                     "date": date,
                     "media": name,
                     "title": title,
-                    "url": url
+                    "source_id": int(source_id_str) # 存 ID 而不是 URL
                 })
             except: pass
 
@@ -447,8 +460,8 @@ def parse_gemini_data(text):
 
     return data
 
-# [V33.8] 渲染 HTML 表格 (含超連結)
-def render_html_timeline(timeline_data, blind_mode):
+# [V34.1 Fix] 渲染表格：ID -> URL 映射
+def render_html_timeline(timeline_data, sources, blind_mode):
     if not timeline_data:
         return
 
@@ -457,9 +470,20 @@ def render_html_timeline(timeline_data, blind_mode):
         date = item.get('date', '近期')
         media = "*****" if blind_mode else item.get('media', 'Unknown')
         title = item.get('title', 'No Title')
-        url = item.get('url', '#')
         
-        cat = classify_source(url)
+        # [V34.1] 核心：透過 source_id 找回正確 URL
+        s_id = item.get('source_id', 0)
+        real_url = "#"
+        if 0 < s_id <= len(sources):
+            real_url = sources[s_id-1].get('url', '#')
+            
+            # 二次補救：若 AI 在表格中沒填日期，但我們後端有抓到，就在這裡補上去
+            if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
+                final_d = sources[s_id-1]['final_date']
+                if final_d and final_d != "Missing":
+                    date = final_d
+        
+        cat = classify_source(real_url)
         label, _ = get_category_meta(cat)
         emoji = "⚪"
         if "中國" in label: emoji = "🔴"
@@ -470,14 +494,12 @@ def render_html_timeline(timeline_data, blind_mode):
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
         
-        # 標題超連結
-        if url and url != "#":
-            title_html = f'<a href="{url}" target="_blank">{title}</a>'
+        if real_url and real_url != "#":
+            title_html = f'<a href="{real_url}" target="_blank">{title}</a>'
         else:
             title_html = title
 
         media_display = f"{emoji} {media}"
-        # 使用 CSS 控制不換行與欄寬
         row_html = f"<tr><td style='white-space:nowrap;'>{date}</td><td style='white-space:nowrap;'>{media_display}</td><td>{title_html}</td></tr>"
         table_rows += row_html
 
@@ -522,7 +544,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.0")
+    st.title("全域觀點解析 V34.1")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -577,8 +599,9 @@ with st.sidebar:
         <div class="methodology-header">1. 資訊檢索與樣本檢定 (Information Retrieval & Sampling)</div>
         本系統採用 <b>開源情報 (OSINT)</b> 標準進行資料探勘。
         <ul>
-            <li><b>三軌平行搜尋 (Tri-Track Search)</b>：同時針對「事實/時序」、「觀點/爭議」、「深度/懶人包」三條軌道進行搜尋，確保資訊完整性。</li>
-            <li><b>網域圍籬 (Domain Fencing)</b>：嚴格執行白名單機制，確保資訊來源僅限於監測資料庫內的權威媒體。</li>
+            <li><b>三軌平行搜尋</b>：同時搜尋事實、評論與深度分析，確保觀點多元。</li>
+            <li><b>網域圍籬</b>：嚴格執行白名單機制，確保資訊來源可靠。</li>
+            <li><b>智慧日期提取</b>：結合 API 元數據、URL 規則與 AI 內文推斷，最大化還原事件時間。</li>
         </ul>
 
         <div class="methodology-header">2. 框架分析與立場判定 (Framing & Stance)</div>
@@ -635,13 +658,13 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.0 三軌搜尋版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.1 連結修復版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         
         st.write(f"📡 1. 連線 Tavily 搜尋 (視角: {regions_label} / 時間: {days_label})...")
-        st.write(f"   ↳ 啟動三軌搜尋：1.事實/時序 2.觀點/爭議 3.分析/總結")
+        st.write(f"   ↳ 目標樣本數: {max_results} 篇 (三軌搜尋 + 網域圍籬)")
         
         context_text, sources, actual_query, is_strict_tw, domain_count = get_search_context(query, tavily_key, search_days, selected_regions, max_results, past_report_input)
         
@@ -676,9 +699,8 @@ if search_btn and query and google_key and tavily_key:
 # 顯示區域
 if st.session_state.result:
     data = st.session_state.result
-    
-    # 1. 顯示卷軸表格 (V33.4 HTML 修復版)
-    render_html_timeline(data.get("timeline"), blind_mode)
+    # [V34.1] 傳入 sources 供 ID 映射使用
+    render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
 
     # 2. 顯示第一階段：綜合戰略分析報告
     st.markdown("---")
@@ -686,17 +708,17 @@ if st.session_state.result:
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
-    # [V33.4] 資訊滾動按鈕 (保留原畫面，不洗掉 result)
+    # [V33.4] 資訊滾動按鈕
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
                 current_report = data.get("report_text", "")
                 raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="DEEP_SCENARIO")
-                st.session_state.scenario_result = parse_gemini_data(raw_text) # 存入第二儲存區
+                st.session_state.scenario_result = parse_gemini_data(raw_text) 
                 st.rerun()
 
-# [V33.4] 顯示第二階段：未來發展推演報告 (接續顯示)
+# [V33.4] 顯示第二階段：未來發展推演報告
 if st.session_state.scenario_result:
     st.markdown("---")
     st.markdown("### 🔮 未來發展推演報告")
