@@ -1,5 +1,5 @@
 # ==========================================
-# 0. Priority: Warnings & Environment
+# 0. 優先執行：警告屏蔽與套件設定
 # ==========================================
 import warnings
 import os
@@ -24,9 +24,9 @@ import plotly.express as px
 import streamlit.components.v1 as components
 
 # ==========================================
-# 1. Config & CSS
+# 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="Global View V15.2", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V15.3", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -61,7 +61,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. Constants & Helpers
+# 2. 資料庫與共用常數
 # ==========================================
 NAME_KEYWORDS = { "CHINA": ["新華", "人民", "環球"], "GREEN": ["自由", "三立", "民視"], "BLUE": ["聯合", "中時", "TVBS"] }
 
@@ -76,9 +76,10 @@ def classify_media_name(name):
     return "OTHER"
 
 # ==========================================
-# 3. Core Modules
+# 3. 核心功能模組
 # ==========================================
 
+# 3.1 基礎工具：搜尋與 Cofacts
 def search_cofacts(query):
     url = "https://cofacts-api.g0v.tw/graphql"
     graphql_query = """
@@ -95,14 +96,16 @@ def search_cofacts(query):
             articles = data.get('data', {}).get('ListArticles', {}).get('edges', [])
             result_text = ""
             if articles:
-                result_text += "【Cofacts Fact-Check】\n"
+                result_text += "【Cofacts 真的假的 - 查核資料庫】\n"
                 for i, art in enumerate(articles):
                     node = art.get('node', {})
                     rumor = node.get('text', '')[:50]
                     replies = node.get('articleReplies', [])
                     if replies:
                         r_type = replies[0].get('reply', {}).get('type')
-                        result_text += f"- Rumor: {rumor}... (Type: {r_type})\n"
+                        type_map = {"RUMOR": "❌ 含有不實資訊", "NOT_ARTICLE": "⭕ 查無不實/個人意見", "OPINION": "💬 純屬意見"}
+                        display_type = type_map.get(r_type, r_type)
+                        result_text += f"- 網傳謠言: {rumor}... (查核判定: {display_type})\n"
             return result_text
     except: return ""
     return ""
@@ -111,7 +114,8 @@ def get_search_context(query, api_key_tavily, context_report=None):
     os.environ["TAVILY_API_KEY"] = api_key_tavily
     search = TavilySearchResults(max_results=15)
     
-    search_q = f"{query} 2025 news analysis"
+    search_q = f"{query} 2025 最新發展"
+    if context_report: search_q += " analysis"
     
     try:
         results = search.invoke(search_q)
@@ -121,9 +125,9 @@ def get_search_context(query, api_key_tavily, context_report=None):
         if cofacts_txt: context_text += f"{cofacts_txt}\n{'-'*20}\n"
         
         if context_report:
-            context_text += f"【History】\n{context_report[:1000]}...\n\n"
+            context_text += f"【歷史背景】\n{context_report[:1000]}...\n\n"
             
-        context_text += "【Latest News】(Use [Source X])\n"
+        context_text += "【最新網路情報】(請嚴格使用 [Source ID] 引用)\n"
         for i, res in enumerate(results):
             context_text += f"Source {i+1}: {res.get('url')} | {str(res.get('content'))[:1000]}\n"
             
@@ -139,14 +143,13 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# [V15.2 Fix] Stronger Mermaid Sanitizer
+# 3.2 Mermaid 清洗與渲染
 def sanitize_mermaid_code(code):
     """
-    Aggressively fixes Mermaid syntax errors.
-    1. Removes markdown tags.
-    2. Replaces () inside node names with safe characters to prevent syntax errors.
+    修復 Mermaid 語法錯誤：
+    1. 移除 markdown 標記
+    2. 將節點名稱中的括號 () 替換為安全字符，避免語法崩潰
     """
-    # 1. Remove Markdown block
     code = re.sub(r'```mermaid', '', code)
     code = re.sub(r'```', '', code)
     code = code.strip()
@@ -154,48 +157,32 @@ def sanitize_mermaid_code(code):
     lines = code.split('\n')
     clean_lines = []
     
-    # Ensure header exists
     if not any(l.strip().startswith('graph') for l in lines):
         clean_lines.append("graph TD")
         
     for line in lines:
-        # Skip empty lines
         if not line.strip(): continue
         
-        # [Fix] Node Label Cleaning
-        # Pattern: finds content inside [] or () or {}
-        # We want to keep the brackets but sanitize the content inside
-        
-        # If line defines a node like: A[Text with (brackets)]
-        # We need to ensure internal () are removed or escaped
-        
-        # Simple approach: Replace ( and ) with space if they are inside the label
-        # Ideally, we just tell Mermaid to be loose, but cleaning helps
-        
-        # Check for A[Label] pattern
+        # 處理 A[Label] 格式，防止 Label 內有 ()
         if '[' in line and ']' in line:
             parts = line.split('[', 1)
             node_id = parts[0]
             rest = parts[1].rsplit(']', 1)
             label = rest[0]
             edge = rest[1] if len(rest) > 1 else ""
-            
-            # Clean label: remove characters that break mermaid
             safe_label = label.replace('(', ' ').replace(')', ' ').replace('"', "'")
             clean_lines.append(f'{node_id}["{safe_label}"]{edge}')
             
+        # 處理 A(Label) 格式 -> 轉為 A["Label"]
         elif '(' in line and ')' in line and '>"' not in line:
-             # Handle A(Label) style -> convert to A["Label"]
             parts = line.split('(', 1)
             node_id = parts[0]
             rest = parts[1].rsplit(')', 1)
             label = rest[0]
             edge = rest[1] if len(rest) > 1 else ""
-            
             safe_label = label.replace('(', ' ').replace(')', ' ').replace('"', "'")
             clean_lines.append(f'{node_id}["{safe_label}"]{edge}')
         else:
-            # Leave simple lines (like subgraph or styling) alone, but remove raw ( )
             clean_lines.append(line)
             
     return "\n".join(clean_lines)
@@ -213,12 +200,12 @@ def render_mermaid(code):
     """
     components.html(html_code, height=600, scrolling=True)
 
-# 3.3 Core: Council of Rivals (War Game)
+# 3.3 核心邏輯：數位戰情室 (Council of Rivals)
 def run_council_of_rivals(query, context_text, model_name, api_key):
     prompts = {
-        "A_SIDE": "You are a [Status Quo/Establishment Analyst]. Analyze evidence supporting the current policy or official stance. Cite sources with [Source X].",
-        "B_SIDE": "You are a [Reform/Critical Analyst]. Analyze evidence questioning the status quo or supporting alternative views. Cite sources with [Source X].",
-        "CONTEXT": "You are a [Context Historian]. Analyze deep historical, economic, or geopolitical causes. Cite sources with [Source X]."
+        "A_SIDE": "你是一位【體制內/現狀分析師】。請找出支持現狀、政策合理性或官方解釋的證據。必須引用來源 [Source ID]。",
+        "B_SIDE": "你是一位【改革/批判派分析師】。請找出質疑現狀、結構性問題或反對意見的證據。必須引用來源 [Source ID]。",
+        "CONTEXT": "你是一位【脈絡歷史學家】。請分析爭議背後的深層歷史成因、經濟結構或地緣政治因素。必須引用來源 [Source ID]。"
     }
     
     opinions = {}
@@ -230,58 +217,60 @@ def run_council_of_rivals(query, context_text, model_name, api_key):
         for future in concurrent.futures.as_completed(future_to_role):
             role = future_to_role[future]
             try: opinions[role] = future.result()
-            except Exception as e: opinions[role] = f"Error: {e}"
+            except Exception as e: opinions[role] = f"分析失敗: {e}"
 
     editor_prompt = f"""
-    You are an Editor-in-Chief. Compile a deep analysis report on "{query}".
+    你是一位堅持「平衡報導」的總編輯。針對「{query}」，請產出一份深度全解讀。
     
-    Inputs:
-    A_View: {opinions.get('A_SIDE')}
-    B_View: {opinions.get('B_SIDE')}
-    Context: {opinions.get('CONTEXT')}
+    【輸入素材】：
+    A觀點 (體制): {opinions.get('A_SIDE')}
+    B觀點 (批判): {opinions.get('B_SIDE')}
+    脈絡: {opinions.get('CONTEXT')}
     
-    Tasks:
-    1. **Citations**: STRICTLY use `[Source X]` for every claim.
-    2. **Mermaid Diagram**: Generate a Mermaid `graph TD` showing causal loops (Variable A -> Variable B). 
-       - KEY REQUIREMENT: Use `[]` for labels. Do NOT use `()` inside labels. 
-       - Example: `A["Policy X"] --> B["Public Anger"]`.
-       - Wrap code in ```mermaid ... ```.
-    3. **Future Scenarios**: Deduce 3 possible outcomes.
+    【任務指令】：
+    1. **嚴格引用**：報告中的每一個論點，都必須標註來源編號，格式為 `[Source X]`。
+    2. **Mermaid 製圖**：請生成 Mermaid `graph TD` 代碼，展示「變數 A 如何導致 變數 B」的系統動力因果鏈。
+       - 關鍵：節點名稱請使用方括號 `[]`，例如 `A["政策X"] --> B["民怨上升"]`。不要在名稱中使用圓括號。
+       - 代碼請包在 ```mermaid ... ``` 區塊中。
+    3. **未來情境**：推導 3 種可能的發展劇本。
     
-    Output Format:
+    【輸出格式】：
     ### [REPORT_TEXT]
-    (Markdown report...)
+    (Markdown 報告內容...)
     """
     
     final_report = call_gemini(editor_prompt, context_text, model_name, api_key)
     return opinions, final_report
 
-# 3.4 Core: Spectrum Analysis
+# 3.4 核心邏輯：輿情光譜
 def run_spectrum_analysis(query, context_text, model_name, api_key):
     system_prompt = f"""
-    Media Literacy Expert. Analyze "{query}".
+    你是一位媒體識讀專家。請針對「{query}」進行框架分析 (Framing Analysis)。
     
-    Task:
-    1. Identify 'Stance' (-10 Anti/Critical <-> 0 Neutral <-> 10 Pro/Support) and 'Credibility' (0-10) for sources.
-    2. Be DIVERSE in scoring. Don't clump everyone in the middle.
+    【任務】：
+    1. 識別每個來源的「敘事立場」與「可信度」。
+    2. **重要**：請給出具體座標，以便繪製光譜圖。
+       - 立場 (X軸): -10(強烈反對/批判/A方) <-> 0(中立/事實描述) <-> 10(強烈支持/護航/B方)
+       - 可信度 (Y軸): 0(內容農場/謠言) <-> 10(權威機構/數據詳實)
     
-    Output:
+    【輸出格式】：
     ### [DATA_TIMELINE]
-    YYYY-MM-DD|Media|Title
+    YYYY-MM-DD|媒體|標題
     
     ### [DATA_SPECTRUM]
-    Source Name|Stance(-10 to 10)|Credibility(0 to 10)|URL
+    來源名稱|立場(-10~10)|可信度(0~10)|網址
     
     ### [REPORT_TEXT]
-    (Markdown report with [Source X] citations)
+    (Markdown 報告，需包含 [Source X] 引用)
+    請包含：全域現況摘要、媒體框架分析、識讀建議。
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 Parser
+# 3.5 資料解析器
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
-    # Extract Mermaid
+    # 提取 Mermaid
     mermaid_match = re.search(r"```mermaid\n(.*?)\n```", text, re.DOTALL)
     if mermaid_match:
         data["mermaid"] = mermaid_match.group(1)
@@ -293,13 +282,13 @@ def parse_gemini_data(text):
             parts = line.split("|")
             data["timeline"].append({"date": parts[0], "media": parts[1], "event": parts[2]})
             
-        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "Date" in line:
+        if "|" in line and len(line.split("|")) >= 4 and not line.startswith("###") and not "日期" in line:
             parts = line.split("|")
             try:
-                # [V15.2 Fix] Parse spectrum with jitter
+                # Jitter 機制：加入隨機擾動防止重疊
                 base_stance = float(parts[1])
                 base_cred = float(parts[2])
-                jitter_x = random.uniform(-0.8, 0.8) # More jitter
+                jitter_x = random.uniform(-0.8, 0.8) 
                 jitter_y = random.uniform(-0.5, 0.5)
                 data["spectrum"].append({
                     "source": parts[0].strip(), 
@@ -316,7 +305,7 @@ def parse_gemini_data(text):
 
     return data
 
-# [V15.2 Fix] Improved Chart Scaling
+# 優化版光譜圖
 def render_spectrum_chart(spectrum_data):
     if not spectrum_data: return None
     df = pd.DataFrame(spectrum_data)
@@ -324,38 +313,38 @@ def render_spectrum_chart(spectrum_data):
     fig = px.scatter(
         df, x="stance", y="credibility", hover_name="source", text="source", size=[25]*len(df),
         color="stance", color_continuous_scale=["#2e7d32", "#eeeeee", "#1565c0"],
-        range_x=[-15, 15], # Widen X to push extremes out
-        range_y=[-2, 13],  # Widen Y to prevent overlapping text
+        range_x=[-15, 15], # 拉大 X 軸範圍
+        range_y=[-2, 13],  # 拉大 Y 軸範圍
         opacity=0.9,
-        labels={"stance": "Political Spectrum", "credibility": "Credibility"}
+        labels={"stance": "觀點光譜", "credibility": "資訊可信度"}
     )
-    # Background Quadrants
+    # 背景象限
     fig.add_shape(type="rect", x0=-15, y0=6, x1=0, y1=13, fillcolor="rgba(46, 125, 50, 0.05)", layer="below", line_width=0)
     fig.add_shape(type="rect", x0=0, y0=6, x1=15, y1=13, fillcolor="rgba(21, 101, 192, 0.05)", layer="below", line_width=0)
     
     fig.update_layout(
-        xaxis_title="◀ Critical/Reform (Green) ------- Neutral ------- Establishment/Pro (Blue) ▶",
-        yaxis_title="Information Quality (Low -> High)",
+        xaxis_title="◀ 批判/改革 (綠) ------- 中立 ------- 體制/支持 (藍) ▶",
+        yaxis_title="資訊品質 (低 -> 高)",
         showlegend=False,
-        height=650, # Taller chart
+        height=600,
         font=dict(size=14)
     )
     fig.update_traces(textposition='top center', textfont_size=13)
     return fig
 
-# 4. Generate Download Data
+# 4. 下載功能
 def convert_data_to_json(data):
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def convert_data_to_md(data):
     return f"""
-# Global View Analysis Report
-Date: {datetime.now()}
+# 全域觀點分析報告
+產生時間: {datetime.now()}
 
-## 1. Analysis Content
+## 1. 深度分析
 {data.get('report_text')}
 
-## 2. Timeline
+## 2. 時間軸
 {pd.DataFrame(data.get('timeline')).to_markdown(index=False)}
     """
 
@@ -363,11 +352,11 @@ Date: {datetime.now()}
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("Global View V15.2")
-    analysis_mode = st.radio("Mode:", options=["🛡️ Public Opinion (Spectrum)", "🔮 Future War Game"], index=0)
+    st.title("全域觀點解析 V15.3")
+    analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來戰棋 (War Game)"], index=0)
     st.markdown("---")
     
-    with st.expander("🔑 API Settings", expanded=True):
+    with st.expander("🔑 API 設定", expanded=True):
         if "GOOGLE_API_KEY" in st.secrets:
             st.success("✅ Gemini Key Ready")
             google_key = st.secrets["GOOGLE_API_KEY"]
@@ -380,22 +369,22 @@ with st.sidebar:
         else:
             tavily_key = st.text_input("Tavily Key", type="password")
             
-        model_name = st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
+        model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-pro"], index=0)
 
-    with st.expander("📂 Import Old Report", expanded=False):
-        past_report_input = st.text_area("Paste Markdown:", height=100)
+    with st.expander("📂 匯入舊情報", expanded=False):
+        past_report_input = st.text_area("貼上舊報告 Markdown：", height=100)
         
-    # [V15.2 Fix] Download Buttons in Sidebar
-    st.markdown("### 📥 Export")
+    # 下載按鈕
+    st.markdown("### 📥 報告匯出")
     if st.session_state.get('spectrum_result') or st.session_state.get('wargame_result'):
         active_data = st.session_state.get('wargame_result') if "War" in analysis_mode else st.session_state.get('spectrum_result')
         if active_data:
-            st.download_button("Download JSON", convert_data_to_json(active_data), "report.json", "application/json")
-            st.download_button("Download Markdown", convert_data_to_md(active_data), "report.md", "text/markdown")
+            st.download_button("下載 JSON", convert_data_to_json(active_data), "report.json", "application/json")
+            st.download_button("下載 Markdown", convert_data_to_md(active_data), "report.md", "text/markdown")
 
 st.title(f"{analysis_mode.split(' ')[1]}")
-query = st.text_input("Enter Topic", placeholder="e.g., TSMC US Factory Debate")
-search_btn = st.button("🚀 Start Analysis", type="primary")
+query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
+search_btn = st.button("🚀 啟動分析引擎", type="primary")
 
 if 'spectrum_result' not in st.session_state: st.session_state.spectrum_result = None
 if 'wargame_result' not in st.session_state: st.session_state.wargame_result = None
@@ -403,13 +392,13 @@ if 'wargame_opinions' not in st.session_state: st.session_state.wargame_opinions
 if 'sources' not in st.session_state: st.session_state.sources = None
 if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
-# Logic
+# 邏輯執行
 if search_btn and query and google_key and tavily_key:
     st.session_state.spectrum_result = None
     st.session_state.wargame_result = None
     st.session_state.wargame_opinions = None
     
-    with st.spinner("📡 Gathering Intelligence (Tavily + Cofacts)..."):
+    with st.spinner("📡 正在進行全網情報蒐集 (Tavily + Cofacts)..."):
         context_text, sources, cofacts_txt = get_search_context(query, tavily_key, past_report_input)
         st.session_state.sources = sources
         st.session_state.full_context = context_text
@@ -418,79 +407,77 @@ if search_btn and query and google_key and tavily_key:
             raw_report = run_spectrum_analysis(query, context_text, model_name, google_key)
             st.session_state.spectrum_result = parse_gemini_data(raw_report)
         else:
-            with st.status("⚔️ Convening Council of Rivals...", expanded=True) as status:
-                st.write("1. Agents Debating...")
+            with st.status("⚔️ 召開多視角戰情會議...", expanded=True) as status:
+                st.write("1. 正在傳喚不同觀點分析師...")
                 opinions, raw_report = run_council_of_rivals(query, context_text, model_name, google_key)
                 st.session_state.wargame_opinions = opinions
                 st.session_state.wargame_result = parse_gemini_data(raw_report)
-                status.update(label="✅ Analysis Complete", state="complete", expanded=False)
+                status.update(label="✅ 分析完成", state="complete", expanded=False)
     st.rerun()
 
-# Render: Spectrum
+# 顯示：輿情光譜
 if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
     if data.get("spectrum"):
-        st.markdown("### 🗺️ Public Opinion Map (Spectrum)")
+        st.markdown("### 🗺️ 輿論陣地光譜 (Spectrum Map)")
         fig = render_spectrum_chart(data["spectrum"])
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### 📝 Media Literacy Report")
+    st.markdown("### 📝 媒體識讀報告")
     st.markdown(f'<div class="report-paper">{data.get("report_text")}</div>', unsafe_allow_html=True)
     
     st.markdown("---")
-    st.info("Need deeper strategic foresight? Click below.")
-    if st.button("🚀 Launch Future War Game (Using this Data)", type="primary"):
+    st.info("覺得議題需要更深度推演？請點擊下方按鈕。")
+    if st.button("🚀 基於此情報啟動未來戰棋 (War Game)", type="primary"):
         if st.session_state.full_context:
-            with st.status("⚔️ Convening War Room...", expanded=True) as status:
-                st.write("1. Activating Agents...")
+            with st.status("⚔️ 啟動數位戰情室...", expanded=True) as status:
+                st.write("1. 啟動虛擬幕僚群...")
                 opinions, raw_report = run_council_of_rivals(query, st.session_state.full_context, model_name, google_key)
                 st.session_state.wargame_opinions = opinions
                 st.session_state.wargame_result = parse_gemini_data(raw_report)
-                status.update(label="✅ Done", state="complete", expanded=False)
+                status.update(label="✅ 推演完成", state="complete", expanded=False)
                 st.rerun()
 
-# Render: War Game
+# 顯示：未來戰棋
 if st.session_state.wargame_result:
     st.divider()
-    st.markdown(f"<h2 style='text-align: center;'>⚔️ Future Development Deduction: {query}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='text-align: center;'>⚔️ 未來發展推演：{query}</h2>", unsafe_allow_html=True)
     
     ops = st.session_state.wargame_opinions
     if ops:
         c_a, c_b, c_ctx = st.columns(3)
         with c_a:
-            st.markdown(f'<div class="perspective-box box-blue"><b>🔵 Status Quo (A)</b><br>{ops.get("A_SIDE")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("Full Text"): st.markdown(ops.get("A_SIDE"))
+            st.markdown(f'<div class="perspective-box box-blue"><b>🔵 體制/現狀視角</b><br>{ops.get("A_SIDE")[:150]}...</div>', unsafe_allow_html=True)
+            with st.popover("查看完整論述"): st.markdown(ops.get("A_SIDE"))
         with c_b:
-            st.markdown(f'<div class="perspective-box box-green"><b>🟢 Reform/Critical (B)</b><br>{ops.get("B_SIDE")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("Full Text"): st.markdown(ops.get("B_SIDE"))
+            st.markdown(f'<div class="perspective-box box-green"><b>🟢 批判/改革視角</b><br>{ops.get("B_SIDE")[:150]}...</div>', unsafe_allow_html=True)
+            with st.popover("查看完整論述"): st.markdown(ops.get("B_SIDE"))
         with c_ctx:
-            st.markdown(f'<div class="perspective-box box-neutral"><b>📜 Context</b><br>{ops.get("CONTEXT")[:150]}...</div>', unsafe_allow_html=True)
-            with st.popover("Full Text"): st.markdown(ops.get("CONTEXT"))
+            st.markdown(f'<div class="perspective-box box-neutral"><b>📜 深層脈絡分析</b><br>{ops.get("CONTEXT")[:150]}...</div>', unsafe_allow_html=True)
+            with st.popover("查看完整論述"): st.markdown(ops.get("CONTEXT"))
 
     data_wg = st.session_state.wargame_result
     
-    # [V15.2 Fix] Mermaid Diagram Display
     if data_wg.get("mermaid"):
-        st.markdown("### 🕸️ System Dynamics (Causal Loop)")
+        st.markdown("### 🕸️ 系統因果迴路圖 (System Dynamics)")
         st.markdown('<div class="mermaid-box">', unsafe_allow_html=True)
         render_mermaid(data_wg["mermaid"])
         st.markdown('</div>', unsafe_allow_html=True)
     else:
-        # Fallback if AI fails to generate valid mermaid
-        st.warning("⚠️ System Dynamics diagram could not be generated from AI response.")
+        st.warning("⚠️ 系統未能生成有效的因果圖代碼。")
 
-    st.markdown("### 📝 Editor-in-Chief's Deep Analysis")
+    st.markdown("### 📝 總編輯深度決策報告")
     st.markdown(f'<div class="report-paper">{data_wg.get("report_text")}</div>', unsafe_allow_html=True)
 
-# Sources Table
+# 文獻列表
 if st.session_state.sources:
     st.markdown("---")
-    st.markdown("### 📚 Reference List")
-    md_table = "| ID | Domain | Title | Link |\n|:---:|:---|:---|:---|\n"
+    st.markdown("### 📚 引用文獻列表")
+    md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
     for i, s in enumerate(st.session_state.sources):
         domain = get_domain_name(s.get('url'))
         title = s.get('content', '')[:60].replace("\n", " ").replace("|", " ") + "..."
         url = s.get('url')
-        md_table += f"| **{i+1}** | `{domain}` | {title} | [Link]({url}) |\n"
+        md_table += f"| **{i+1}** | `{domain}` | {title} | [點擊]({url}) |\n"
     st.markdown(md_table)
