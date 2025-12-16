@@ -12,7 +12,6 @@ import pandas as pd
 import time
 import requests
 import json
-import random
 import concurrent.futures
 from urllib.parse import urlparse
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,13 +19,12 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.prompts import ChatPromptTemplate
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
-import plotly.express as px
 import streamlit.components.v1 as components
 
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V15.8", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V15.9", page_icon="⚖️", layout="wide")
 
 st.markdown("""
 <style>
@@ -46,25 +44,41 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    /* [V15.8] 引用標記樣式優化 (小字、灰體) */
+    /* 引用標記樣式 */
     .citation {
-        font-size: 0.75em;
-        color: #9e9e9e;
-        background-color: #f5f5f5;
-        padding: 1px 4px;
-        border-radius: 4px;
-        margin-left: 2px;
-        margin-right: 2px;
-        vertical-align: super;
-        font-family: sans-serif;
-        border: 1px solid #eeeeee;
+        font-size: 0.75em; color: #9e9e9e; background-color: #f5f5f5;
+        padding: 1px 4px; border-radius: 4px; vertical-align: super;
+        font-family: sans-serif; border: 1px solid #eeeeee;
     }
+
+    /* 光譜表格樣式 */
+    .spectrum-table {
+        width: 100%; border-collapse: collapse; margin: 10px 0; font-family: sans-serif;
+    }
+    .spectrum-table th {
+        background-color: #f0f2f6; color: #31333F; padding: 10px; text-align: left; border-bottom: 2px solid #ddd;
+    }
+    .spectrum-table td {
+        padding: 10px; border-bottom: 1px solid #eee; vertical-align: middle;
+    }
+    
+    /* 立場標籤 */
+    .badge {
+        padding: 4px 8px; border-radius: 12px; font-size: 0.85em; font-weight: bold; white-space: nowrap;
+    }
+    .badge-green { background-color: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+    .badge-blue { background-color: #e3f2fd; color: #1565c0; border: 1px solid #bbdefb; }
+    .badge-neutral { background-color: #f5f5f5; color: #616161; border: 1px solid #e0e0e0; }
+    
+    /* 可信度標籤 */
+    .cred-high { color: #2e7d32; font-weight: bold; }
+    .cred-mid { color: #f9a825; font-weight: bold; }
+    .cred-low { color: #c62828; font-weight: bold; }
 
     /* 觀點對照盒 */
     .perspective-box {
         padding: 15px; border-radius: 8px; margin-bottom: 10px; font-size: 0.95em;
-        border-left-width: 4px; border-left-style: solid;
-        background-color: #fff;
+        border-left-width: 4px; border-left-style: solid; background-color: #fff;
         box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     .box-green { border-left-color: #2e7d32; }
@@ -78,10 +92,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 資料庫與共用常數 (用於硬邏輯校正)
+# 2. 資料庫與共用常數 (硬邏輯校正用)
 # ==========================================
 CAMP_KEYWORDS = {
-    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨"],
+    "GREEN": ["自由", "三立", "民視", "新頭殼", "鏡週刊", "放言", "賴清德", "民進黨", "青鳥"],
     "BLUE": ["聯合", "中時", "中國時報", "TVBS", "中天", "風傳媒", "國民黨", "藍營"],
     "RED": ["新華", "人民日報", "環球", "央視", "中評", "国台办"]
 }
@@ -90,15 +104,9 @@ def get_domain_name(url):
     try: return urlparse(url).netloc.replace("www.", "")
     except: return ""
 
-# [V15.8] 引用樣式處理器
 def format_citation_style(text):
-    """
-    將 [Source 1], [Source 1, 2] 等文字替換為帶有 .citation class 的 HTML span
-    """
     if not text: return ""
-    # Regex 匹配 [Source ...] 格式
     pattern = r'(\[Source[^\]]*\])'
-    # 替換為 HTML
     styled_text = re.sub(pattern, r'<span class="citation">\1</span>', text)
     return styled_text
 
@@ -276,7 +284,7 @@ def run_spectrum_analysis(query, context_text, model_name, api_key):
     """
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 3.5 資料解析器
+# 3.5 資料解析器 (含硬邏輯校正，移除 Jitter)
 def parse_gemini_data(text):
     data = {"timeline": [], "spectrum": [], "mermaid": "", "report_text": ""}
     
@@ -302,7 +310,7 @@ def parse_gemini_data(text):
                 base_cred = float(parts[2].strip())
                 url = parts[3].strip()
                 
-                # [V15.8 硬邏輯校正]
+                # [V15.9] 硬邏輯校正 (強制歸類)
                 final_stance = base_stance
                 if any(k in name for k in CAMP_KEYWORDS["GREEN"]):
                     if final_stance > 0: final_stance = final_stance * -1
@@ -311,17 +319,12 @@ def parse_gemini_data(text):
                     if final_stance < 0: final_stance = final_stance * -1
                     if final_stance == 0: final_stance = 5
                 
-                # Jitter
-                jitter_x = random.uniform(-1.5, 1.5)
-                jitter_y = random.uniform(-0.5, 0.5)
-                
-                final_stance = max(-13, min(13, final_stance + jitter_x))
-                final_cred = max(0, min(10, base_cred + jitter_y))
+                # 不使用 Jitter，保持數值乾淨
                 
                 data["spectrum"].append({
                     "source": name, 
-                    "stance": final_stance, 
-                    "credibility": final_cred, 
+                    "stance": int(final_stance), # 取整數
+                    "credibility": int(base_cred), 
                     "url": url
                 })
             except: pass
@@ -334,28 +337,43 @@ def parse_gemini_data(text):
 
     return data
 
-def render_spectrum_chart(spectrum_data):
-    if not spectrum_data: return None
-    df = pd.DataFrame(spectrum_data)
+# [V15.9] 新增：光譜列表渲染 (HTML Table)
+def render_spectrum_table(spectrum_data):
+    if not spectrum_data: return
     
-    fig = px.scatter(
-        df, x="stance", y="credibility", hover_name="source", text="source", size=[25]*len(df),
-        color="stance", color_continuous_scale=["#2e7d32", "#eeeeee", "#1565c0"],
-        range_x=[-15, 15], range_y=[-2, 13], opacity=0.9,
-        labels={"stance": "政治光譜", "credibility": "可信度"}
-    )
-    fig.add_shape(type="rect", x0=-15, y0=0, x1=0, y1=13, fillcolor="rgba(46, 125, 50, 0.05)", layer="below", line_width=0)
-    fig.add_shape(type="rect", x0=0, y0=0, x1=15, y1=13, fillcolor="rgba(21, 101, 192, 0.05)", layer="below", line_width=0)
+    html = '<table class="spectrum-table">'
+    html += '<thead><tr><th>媒體來源</th><th>政治光譜 (立場)</th><th>可信度</th><th>連結</th></tr></thead><tbody>'
     
-    fig.update_layout(
-        xaxis_title="◀ 泛綠 / 批判 / 改革 ------- 中立 ------- 泛藍 / 體制 / 統派 ▶",
-        yaxis_title="資訊品質 (低 -> 高)",
-        showlegend=False,
-        height=650,
-        font=dict(size=14)
-    )
-    fig.update_traces(textposition='top center', textfont_size=13)
-    return fig
+    for item in spectrum_data:
+        s = item['stance']
+        c = item['credibility']
+        
+        # 立場 Badge
+        if s < 0:
+            badge_class = "badge-green"
+            label = f"🟢 泛綠/批判 ({s})"
+        elif s > 0:
+            badge_class = "badge-blue"
+            label = f"🔵 泛藍/體制 (+{s})"
+        else:
+            badge_class = "badge-neutral"
+            label = "⚪ 中立 (0)"
+            
+        # 可信度燈號
+        if c >= 7: cred_html = f'<span class="cred-high">🟢 高 ({c})</span>'
+        elif c >= 4: cred_html = f'<span class="cred-mid">🟡 中 ({c})</span>'
+        else: cred_html = f'<span class="cred-low">🔴 低 ({c})</span>'
+        
+        html += f"""
+        <tr>
+            <td><strong>{item['source']}</strong></td>
+            <td><span class="badge {badge_class}">{label}</span></td>
+            <td>{cred_html}</td>
+            <td><a href="{item['url']}" target="_blank">🔗</a></td>
+        </tr>
+        """
+    html += '</tbody></table>'
+    st.markdown(html, unsafe_allow_html=True)
 
 # 4. 下載功能
 def convert_data_to_json(data):
@@ -377,7 +395,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V15.8")
+    st.title("全域觀點解析 V15.9")
     analysis_mode = st.radio("選擇模式：", options=["🛡️ 輿情光譜 (Spectrum)", "🔮 未來發展推演 (Scenario)"], index=0)
     st.markdown("---")
     
@@ -396,23 +414,17 @@ with st.sidebar:
             
         model_name = st.selectbox("模型", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], index=0)
 
-    # [V15.8] 新增透明化側邊欄
-    with st.expander("🧠 AI 推論邏輯與公式 (透明化)", expanded=False):
+    with st.expander("🧠 系統邏輯透明化", expanded=False):
         st.markdown("""
-        ### 1. 輿情光譜 (Spectrum Logic)
-        * **X軸 (立場)**: 
-            * 範圍：-10 (泛綠/批判) ~ +10 (泛藍/體制)。
-            * **強制校正**: 為避免 AI 幻覺，若偵測到特定媒體關鍵字（如自由、三立 vs 中時、聯合），系統會強制修正其正負號。
-            * **抖動 (Jitter)**: 加入 ±1.5 的隨機數值，避免立場相近的媒體點重疊。
-        * **Y軸 (可信度)**: 
-            * 基於來源權威性、內容農場特徵、Cofacts 查核紀錄綜合評分。
+        **1. 光譜判讀 (Spectrum)**:
+        * **泛綠/批判**: 自由、三立、民視 (強制負分)
+        * **泛藍/體制**: 中時、聯合、TVBS (強制正分)
+        * **中立**: 外媒、官方公報
         
-        ### 2. 未來推演 (War Game Logic)
-        * **多代理人架構**:
-            * 🦅 **鷹派**: 專注分析衝突升級與風險。
-            * 🕊️ **鴿派**: 專注分析經濟理性與避險。
-            * 📜 **歷史學家**: 尋找過去 50 年的相似案例 (Historical Analogy)。
-        * **系統動力圖**: 使用 Mermaid.js 繪製變數間的正負回饋迴路。
+        **2. 數位戰情室 (Scenario)**:
+        * **鷹派 (Hawk)**: 衝突風險分析
+        * **鴿派 (Dove)**: 經濟理性分析
+        * **歷史學家**: 歷史案例借鏡
         """)
 
     with st.expander("📂 匯入舊情報", expanded=False):
@@ -435,6 +447,7 @@ if 'wargame_opinions' not in st.session_state: st.session_state.wargame_opinions
 if 'sources' not in st.session_state: st.session_state.sources = None
 if 'full_context' not in st.session_state: st.session_state.full_context = ""
 
+# 邏輯執行
 if search_btn and query and google_key and tavily_key:
     st.session_state.spectrum_result = None
     st.session_state.wargame_result = None
@@ -462,12 +475,11 @@ if st.session_state.spectrum_result and "Spectrum" in analysis_mode:
     data = st.session_state.spectrum_result
     
     if data.get("spectrum"):
-        st.markdown("### 🗺️ 輿論陣地光譜 (Spectrum Map)")
-        fig = render_spectrum_chart(data["spectrum"])
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("### 📊 輿論陣地分析表 (Spectrum Table)")
+        st.caption("AI 自動識別政治立場與資訊可信度，並針對特定媒體進行邏輯校正。")
+        render_spectrum_table(data["spectrum"])
 
     st.markdown("### 📝 媒體識讀報告")
-    # [V15.8] 應用引用樣式
     formatted_text = format_citation_style(data.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_text}</div>', unsafe_allow_html=True)
     
@@ -494,7 +506,6 @@ if st.session_state.wargame_result:
         with c_a:
             st.markdown(f'<div class="perspective-box box-blue"><b>🔵 體制/現狀視角</b><br>{ops.get("A_SIDE")[:150]}...</div>', unsafe_allow_html=True)
             with st.popover("查看完整論述"): 
-                # [V15.8] 應用引用樣式
                 st.markdown(format_citation_style(ops.get("A_SIDE")), unsafe_allow_html=True)
         with c_b:
             st.markdown(f'<div class="perspective-box box-green"><b>🟢 批判/改革視角</b><br>{ops.get("B_SIDE")[:150]}...</div>', unsafe_allow_html=True)
@@ -516,7 +527,6 @@ if st.session_state.wargame_result:
         st.warning("⚠️ 系統未能生成有效的因果圖代碼。")
 
     st.markdown("### 📝 總編輯深度決策報告")
-    # [V15.8] 應用引用樣式
     formatted_report = format_citation_style(data_wg.get("report_text", ""))
     st.markdown(f'<div class="report-paper">{formatted_report}</div>', unsafe_allow_html=True)
 
