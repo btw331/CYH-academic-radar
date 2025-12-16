@@ -24,7 +24,7 @@ from tavily import TavilyClient
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V34.2", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V34.3", page_icon="⚡", layout="wide")
 
 st.markdown("""
 <style>
@@ -43,18 +43,19 @@ st.markdown("""
         font-size: 1.05rem;
     }
     
-    /* [V34.2] 引用樣式優化：灰底小字，降低干擾 */
+    /* [V34.3] 引用樣式優化：灰底小字，降低干擾 */
     .citation {
         font-size: 0.75em;          /* 字體縮小 */
         color: #777777;             /* 灰色文字 */
         background-color: #f4f4f4;  /* 淡灰背景 */
-        padding: 2px 5px;           /* 內距縮小 */
+        padding: 2px 6px;           /* 內距 */
         border-radius: 4px;         /* 圓角 */
-        margin: 0 2px;
+        margin: 0 4px;              /* 左右留白 */
         font-family: sans-serif; 
         border: 1px solid #e0e0e0;  /* 極淡邊框 */
         font-weight: 400;           /* 不加粗 */
         vertical-align: 1px;        /* 微調垂直對齊 */
+        display: inline-block;      /* 確保整塊顯示 */
     }
 
     /* 關鍵時序卷軸表格 (HTML Style) */
@@ -187,20 +188,31 @@ def get_category_meta(cat):
     }
     return meta.get(cat, ("📄 其他來源", "#9e9e9e"))
 
+# [V34.3 Fix] 萬能引用格式化函式
 def format_citation_style(text):
     if not text: return ""
-    def compress_match(match):
+    
+    def replacement(match):
+        # 提取括號內的所有數字
         nums = re.findall(r'\d+', match.group(0))
+        if not nums: return match.group(0)
+        # 去重並排序
         unique_nums = sorted(list(set(nums)), key=int)
-        return f'<span class="citation">Source {",".join(unique_nums)}</span>'
-    pattern_compress = r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)'
-    text = re.sub(pattern_compress, compress_match, text)
+        # 返回 HTML 格式
+        return f'<span class="citation">Source {", ".join(unique_nums)}</span>'
+
+    # 1. 捕捉連續單一引用: [Source 1][Source 2]
+    text = re.sub(r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)', replacement, text)
+    
+    # 2. 捕捉合併引用 (含全形/半形括號): (Source 1, 2), （Source 1, 2）, [Source 1, 2]
+    # 正則解釋: [\[\(（] 匹配任意左括號, \s*Source\s+ 匹配 Source 字樣, [\d,，、\s]+ 匹配數字與分隔符
+    text = re.sub(r'([\[\(（]\s*Source\s+[\d,，、\s]+[\]\)）])', replacement, text)
+    
     return text
 
-# [V34.1] 網址日期提取器 (URL Date Extractor)
+# 網址日期提取器
 def extract_date_from_url(url):
     if not url: return None
-    # 常見日期格式：/2023/12/15/, /2023-12-15/, /231215/
     patterns = [
         r'/(\d{4})[-/](\d{2})[-/](\d{2})/',
         r'/(\d{4})(\d{2})(\d{2})/',
@@ -248,7 +260,7 @@ def search_cofacts(query):
     except: return ""
     return ""
 
-# 三軌平行搜尋 (Tri-Track Search)
+# 三軌平行搜尋
 def execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode):
     if search_params['max_results'] <= 20 and not is_strict_mode:
         tavily = TavilyClient(api_key=api_key_tavily)
@@ -294,7 +306,6 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             "exclude_domains": NOISE_BLACKLIST
         }
 
-        # 動態組建白名單
         target_domains = []
         is_strict_mode = False
         
@@ -316,8 +327,6 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             search_params["include_domains"] = target_domains
 
         results = execute_tri_track_search(query, api_key_tavily, search_params, is_strict_mode)
-        
-        # 截斷至用戶要求的上限
         results = results[:max_results]
         
         context_text = ""
@@ -325,19 +334,16 @@ def get_search_context(query, api_key_tavily, days_back, selected_regions, max_r
             title = res.get('title', 'No Title')
             url = res.get('url', '#')
             
-            # [V34.1 Fix] 日期智慧填補 (API -> URL -> Fallback)
             pub_date = res.get('published_date')
             if not pub_date:
-                # 嘗試從 URL 提取日期
                 url_date = extract_date_from_url(url)
                 if url_date:
                     pub_date = url_date
                 else:
-                    pub_date = "Missing" # 標記為遺失，交給 AI 讀內文推算
+                    pub_date = "Missing"
             else:
                 pub_date = pub_date[:10]
             
-            # 將處理過的日期寫回 results，方便後續使用
             res['final_date'] = pub_date
             
             content = res.get('content', '')[:3000]
@@ -356,7 +362,7 @@ def call_gemini(system_prompt, user_text, model_name, api_key):
     chain = prompt | llm
     return chain.invoke({"input": user_text}).content
 
-# 深度戰略分析 (Source ID Mapping)
+# 深度戰略分析
 def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSION"):
     today_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -421,7 +427,6 @@ def run_strategic_analysis(query, context_text, model_name, api_key, mode="FUSIO
 
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
-# 解析器：將 Source_ID 還原為真實 URL
 def parse_gemini_data(text):
     data = {"timeline": [], "report_text": ""}
     
@@ -440,9 +445,7 @@ def parse_gemini_data(text):
                 source_id_str = "0"
                 
                 if len(parts) >= 4: 
-                    # 嘗試抓取 Source ID
                     raw_id = parts[3].strip()
-                    # 提取數字
                     nums = re.findall(r'\d+', raw_id)
                     if nums: source_id_str = nums[0]
                 
@@ -452,7 +455,7 @@ def parse_gemini_data(text):
                     "date": date,
                     "media": name,
                     "title": title,
-                    "source_id": int(source_id_str) # 存 ID 而不是 URL
+                    "source_id": int(source_id_str)
                 })
             except: pass
 
@@ -469,7 +472,6 @@ def parse_gemini_data(text):
 
     return data
 
-# 渲染表格：ID -> URL 映射
 def render_html_timeline(timeline_data, sources, blind_mode):
     if not timeline_data:
         return
@@ -480,13 +482,10 @@ def render_html_timeline(timeline_data, sources, blind_mode):
         media = "*****" if blind_mode else item.get('media', 'Unknown')
         title = item.get('title', 'No Title')
         
-        # 核心：透過 source_id 找回正確 URL
         s_id = item.get('source_id', 0)
         real_url = "#"
         if 0 < s_id <= len(sources):
             real_url = sources[s_id-1].get('url', '#')
-            
-            # 二次補救：若 AI 在表格中沒填日期，但我們後端有抓到，就在這裡補上去
             if (date == "近期" or "Missing" in date) and 'final_date' in sources[s_id-1]:
                 final_d = sources[s_id-1]['final_date']
                 if final_d and final_d != "Missing":
@@ -553,7 +552,7 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V34.2")
+    st.title("全域觀點解析 V34.3")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -667,7 +666,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動全域掃描引擎 (V34.2 連結修復版)...", expanded=True) as status:
+    with st.status("🚀 啟動全域掃描引擎 (V34.3 樣式修復版)...", expanded=True) as status:
         
         days_label = f"近 {search_days} 天"
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -690,15 +689,8 @@ if search_btn and query and google_key and tavily_key:
         
         st.write("🧠 3. AI 進行深度戰略分析 (學術框架應用 + 樣本檢定)...")
         
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-        
-        # 若是未來模式且有舊情報，則直接使用舊情報；否則用新搜尋結果
-        if mode_code == "DEEP_SCENARIO" and past_report_input:
-             analysis_context = past_report_input
-        else:
-             analysis_context = context_text
-
-        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
+        # 預設執行 FUSION 模式
+        raw_report = run_strategic_analysis(query, context_text, model_name, google_key, mode="FUSION")
         st.session_state.result = parse_gemini_data(raw_report)
             
         status.update(label="✅ 分析完成", state="complete", expanded=False)
