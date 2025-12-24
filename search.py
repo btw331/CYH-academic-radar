@@ -53,7 +53,7 @@ with st.sidebar:
     # 3. 搜尋參數
     st.subheader("🌍 搜尋設定")
     search_depth = st.radio("搜尋深度", ["basic", "advanced"], index=1)
-    max_results = st.slider("參考資料數量", 3, 10, 5)
+    max_results = st.slider("參考資料數量", 10, 30, 50)
 
 # --- 核心功能函數 ---
 
@@ -154,3 +154,4 @@ if search_btn and query:
 # --- 頁尾 ---
 st.markdown("---")
 st.caption("Designed for Advanced Research | Powered by Gemini 2.5 Series & Tavily")
+
