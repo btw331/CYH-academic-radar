@@ -27,7 +27,7 @@ os.environ["on_bad_lines"] = "skip"
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="全域觀點解析 V37.3", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="全域觀點解析 V38.0", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -519,44 +519,128 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
     return call_gemini(system_prompt, context_text, model_name, api_key)
 
 def parse_gemini_data(text: str) -> Dict[str, Any]:
+    """
+    解析 Gemini AI 返回的文本，提取時間軸和報告內容
+    
+    Args:
+        text: AI 返回的原始文本
+        
+    Returns:
+        包含 timeline 和 report_text 的字典
+    """
     data = {"timeline": [], "report_text": ""}
-    if not text: return data
+    if not text or not text.strip():
+        return data
 
-    lines = text.split('\n')
-    for line in lines:
-        line = line.strip()
-        if "|" in line and len(line.split("|")) >= 3 and (line[0].isdigit() or "20" in line or "Future" in line or "近期" in line):
-            parts = line.split("|")
-            try:
-                date = parts[0].strip()
-                name = parts[1].strip()
-                title = parts[2].strip()
-                source_id_str = "0"
-                if len(parts) >= 4: 
-                    raw_id = parts[3].strip()
-                    nums = re.findall(r'\d+', raw_id)
-                    if nums: source_id_str = nums[0]
-                if "XX" in date or "xx" in date: date = "近期"
-                
-                data["timeline"].append({
-                    "date": date,
-                    "media": name,
-                    "title": title,
-                    "source_id": int(source_id_str)
-                })
-            except: pass
+    # 先提取時間軸數據（從 [DATA_TIMELINE] 區塊）
+    timeline_section = ""
+    if "### [DATA_TIMELINE]" in text:
+        parts = text.split("### [DATA_TIMELINE]")
+        if len(parts) > 1:
+            timeline_section = parts[1].split("### [REPORT_TEXT]")[0] if "### [REPORT_TEXT]" in parts[1] else parts[1]
+    elif "[DATA_TIMELINE]" in text:
+        parts = text.split("[DATA_TIMELINE]")
+        if len(parts) > 1:
+            timeline_section = parts[1].split("[REPORT_TEXT]")[0] if "[REPORT_TEXT]" in parts[1] else parts[1]
+    
+    # 解析時間軸
+    if timeline_section:
+        lines = timeline_section.split('\n')
+        for line in lines:
+            line = line.strip()
+            # 檢查是否為時間軸行（包含 | 分隔符且至少有 3 個部分）
+            if "|" in line and len(line.split("|")) >= 3:
+                parts = line.split("|")
+                try:
+                    date = parts[0].strip()
+                    name = parts[1].strip()
+                    title = parts[2].strip()
+                    source_id_str = "0"
+                    if len(parts) >= 4: 
+                        raw_id = parts[3].strip()
+                        nums = re.findall(r'\d+', raw_id)
+                        if nums: source_id_str = nums[0]
+                    if "XX" in date or "xx" in date: 
+                        date = "近期"
+                    
+                    # 驗證日期格式（YYYY-MM-DD 或 "近期"）
+                    if re.match(r'^\d{4}-\d{2}-\d{2}$', date) or date == "近期":
+                        data["timeline"].append({
+                            "date": date,
+                            "media": name,
+                            "title": title,
+                            "source_id": int(source_id_str)
+                        })
+                except Exception as e:
+                    # 靜默跳過無效行
+                    continue
 
+    # 提取報告文本（優先順序：REPORT_TEXT 標記 > 摘要標記 > 全部文本）
+    report_text = ""
+    
+    # 方法 1: 查找 [REPORT_TEXT] 標記
     if "### [REPORT_TEXT]" in text:
-        data["report_text"] = text.split("### [REPORT_TEXT]")[1].strip()
+        parts = text.split("### [REPORT_TEXT]")
+        if len(parts) > 1:
+            report_text = parts[1].strip()
     elif "### REPORT_TEXT" in text:
-        data["report_text"] = text.split("### REPORT_TEXT")[1].strip()
-    else:
-        match = re.search(r"(#+\s*.*摘要|1\.\s*.*摘要|#+\s*.*CLA)", text)
-        if match:
-            data["report_text"] = text[match.start():]
+        parts = text.split("### REPORT_TEXT")
+        if len(parts) > 1:
+            report_text = parts[1].strip()
+    elif "[REPORT_TEXT]" in text:
+        parts = text.split("[REPORT_TEXT]")
+        if len(parts) > 1:
+            report_text = parts[1].strip()
+    
+    # 方法 2: 如果沒有 REPORT_TEXT 標記，查找摘要或分析部分
+    if not report_text:
+        # 查找包含「摘要」、「分析」、「CLA」等關鍵字的標題
+        patterns = [
+            r"(#+\s*.*?摘要.*?\n.*?)(?=#+\s*|$)",
+            r"(#+\s*.*?分析.*?\n.*?)(?=#+\s*|$)",
+            r"(1\.\s*.*?摘要.*?\n.*?)(?=\d+\.\s*|$)",
+            r"(#+\s*.*?CLA.*?\n.*?)(?=#+\s*|$)",
+            r"(📊\s*.*?全域現況.*?\n.*?)(?=#+\s*|$)",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if match:
+                report_text = match.group(1).strip()
+                break
+    
+    # 方法 3: 如果還是沒有，移除時間軸部分後，使用剩餘文本
+    if not report_text:
+        # 移除 [DATA_TIMELINE] 區塊
+        if "### [DATA_TIMELINE]" in text:
+            parts = text.split("### [DATA_TIMELINE]")
+            if len(parts) > 1:
+                remaining = parts[1].split("### [REPORT_TEXT]")[-1] if "### [REPORT_TEXT]" in parts[1] else ""
+                if remaining.strip():
+                    report_text = remaining.strip()
         else:
-            data["report_text"] = text
-
+            # 如果沒有明確的標記，使用整個文本（但排除時間軸行）
+            lines = text.split('\n')
+            report_lines = []
+            for line in lines:
+                # 跳過時間軸行（包含 | 且格式為日期|媒體|標題）
+                if "|" in line and len(line.split("|")) >= 3:
+                    # 檢查是否為時間軸格式
+                    parts = line.split("|")
+                    if len(parts) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts[0].strip()) or "近期" in parts[0]):
+                        continue
+                report_lines.append(line)
+            report_text = '\n'.join(report_lines).strip()
+    
+    # 清理報告文本：移除多餘的標記和空行
+    if report_text:
+        # 移除開頭的標記行
+        report_text = re.sub(r'^###?\s*\[?REPORT_TEXT\]?\s*\n*', '', report_text, flags=re.MULTILINE)
+        # 移除開頭的空行
+        report_text = report_text.lstrip('\n').strip()
+    
+    data["report_text"] = report_text if report_text else text  # 如果還是空的，使用原始文本
+    
     return data
 
 def create_full_html_report(data_result, scenario_result, sources, blind_mode) -> str:
@@ -611,7 +695,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode) -
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V37.3)</h1>
+        <h1>全域觀點分析報告 (V38.0)</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -656,7 +740,7 @@ def export_full_state():
 
 def convert_data_to_md(data):
     return f"""
-# 全域觀點分析報告 (V37.3)
+# 全域觀點分析報告 (V38.0)
 产生時間: {datetime.now()}
 
 ## 1. 平衡報導分析
@@ -670,7 +754,8 @@ def convert_data_to_md(data):
 # 5. UI
 # ==========================================
 with st.sidebar:
-    st.title("全域觀點解析 V37.3")
+    st.title("全域觀點解析 V38.0")
+    st.caption("✨ 新增：Tavily 搜尋 UI + 學術方法論詳解")
     
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -684,22 +769,32 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", type="password")
-        tavily_key = st.text_input("Tavily Key", type="password")
+        google_key = st.text_input("Gemini Key", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
+        tavily_key = st.text_input("Tavily Key", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
+        
+        # 顯示 Tavily 搜尋狀態
+        if tavily_key:
+            st.success("✅ Tavily 搜尋已啟用")
+        else:
+            st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
             
         model_name = st.selectbox(
             "模型 (Gemini 2.5 Series)", 
             ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"], 
-            index=0
+            index=0,
+            help="選擇用於分析的 Gemini 模型版本"
         )
         
-        search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1)
-        max_results = st.slider("搜尋篇數上限", 10, 100, 30)
+        st.markdown("---")
+        st.markdown("#### 🔍 Tavily 搜尋設定")
+        search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
+        max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
         
         selected_regions = st.multiselect(
             "搜尋視角 (Region) - 可複選",
             ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
-            default=["🇹🇼 台灣 (Taiwan)"]
+            default=["🇹🇼 台灣 (Taiwan)"],
+            help="選擇要搜尋的區域，可多選"
         )
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
@@ -730,9 +825,16 @@ with st.sidebar:
             else:
                 st.toast("✅ 文字已匯入")
 
+    # ==================== 學術方法論詳解 ====================
+    st.markdown("---")
     st.markdown("### 🧠 情報分析方法論詳解")
+    st.caption("📚 點擊下方區塊查看詳細的學術理論與方法說明")
+    st.markdown("")  # 添加空行增加可讀性
     
-    with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)"):
+    # 強制顯示：確保這些區塊一定會顯示
+    # 這些 expander 區塊包含完整的學術方法論說明
+    
+    with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)", expanded=False):
         st.markdown("""
         **核心機制：混和權重搜尋**
         - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
@@ -817,7 +919,7 @@ if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
-    with st.status("🚀 啟動 V37.3 平衡報導分析引擎...", expanded=True) as status:
+    with st.status("🚀 啟動 V38.0 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
         dynamic_keywords = generate_dynamic_keywords(query, google_key)
@@ -826,6 +928,12 @@ if search_btn and query and google_key and tavily_key:
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
         st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方) + 熱度補完 (動態三軌)")
+        
+        # 驗證 Tavily Key
+        if not tavily_key:
+            st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
+            status.update(label="❌ 搜尋失敗", state="error", expanded=False)
+            st.stop()
         
         context_text, sources, actual_query, is_strict_tw = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords
@@ -847,7 +955,43 @@ if search_btn and query and google_key and tavily_key:
         analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
 
         raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
-        st.session_state.result = parse_gemini_data(raw_report)
+        
+        # 解析報告數據
+        parsed_data = parse_gemini_data(raw_report)
+        
+        # 驗證解析結果
+        if not parsed_data.get("report_text") or not parsed_data.get("report_text").strip():
+            st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
+            # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
+            if raw_report:
+                # 移除 [DATA_TIMELINE] 區塊
+                if "### [DATA_TIMELINE]" in raw_report:
+                    parts = raw_report.split("### [DATA_TIMELINE]")
+                    if len(parts) > 1:
+                        remaining = parts[1]
+                        if "### [REPORT_TEXT]" in remaining:
+                            parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
+                        else:
+                            # 移除時間軸行
+                            lines = remaining.split('\n')
+                            report_lines = []
+                            for line in lines:
+                                if "|" in line and len(line.split("|")) >= 3:
+                                    parts_line = line.split("|")
+                                    if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
+                                        continue
+                                report_lines.append(line)
+                            parsed_data["report_text"] = '\n'.join(report_lines).strip()
+                else:
+                    # 如果完全沒有標記，使用整個文本
+                    parsed_data["report_text"] = raw_report.strip()
+        
+        st.session_state.result = parsed_data
+        
+        # 顯示解析統計
+        timeline_count = len(parsed_data.get("timeline", []))
+        report_length = len(parsed_data.get("report_text", ""))
+        st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
             
         status.update(label="✅ 分析完成", state="complete", expanded=False)
         
@@ -859,9 +1003,36 @@ if st.session_state.result:
 
     st.markdown("---")
     st.markdown("### 📝 平衡報導分析")
-    formatted_text = format_citation_style(data.get("report_text", ""))
-    html_content = markdown.markdown(formatted_text, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+    
+    report_text = data.get("report_text", "")
+    
+    # 檢查報告內容是否為空
+    if not report_text or not report_text.strip():
+        st.warning("⚠️ 報告內容為空。可能的原因：")
+        st.info("""
+        1. AI 返回的格式不符合預期
+        2. 解析過程中出現錯誤
+        3. 請檢查終端機/控制台的錯誤訊息
+        
+        **建議：**
+        - 嘗試重新執行分析
+        - 檢查 API 金鑰是否正確
+        - 查看原始返回數據（可在調試模式下）
+        """)
+        
+        # 顯示調試信息
+        with st.expander("🔍 調試信息", expanded=False):
+            st.write("**原始數據結構：**")
+            st.json({
+                "has_timeline": len(data.get("timeline", [])) > 0,
+                "timeline_count": len(data.get("timeline", [])),
+                "report_text_length": len(report_text),
+                "report_text_preview": report_text[:500] if report_text else "（空）"
+            })
+    else:
+        formatted_text = format_citation_style(report_text)
+        html_content = markdown.markdown(formatted_text, extensions=['tables'])
+        st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
