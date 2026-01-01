@@ -1,1065 +1,1029 @@
-# ==========================================
-# 0. 優先執行：警告屏蔽與套件設定
-# ==========================================
-import warnings
-import os
-import json
-import re
-import pandas as pd
-import time
-import requests
-import concurrent.futures
-import random
-import markdown
-from urllib.parse import urlparse
-from typing import List, Dict, Any, Tuple, Optional
-from datetime import datetime, timedelta
-
-import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import ChatPromptTemplate
-from tenacity import retry, stop_after_attempt, wait_exponential
-from tavily import TavilyClient
-
-warnings.filterwarnings("ignore")
-os.environ["on_bad_lines"] = "skip"
-
-# ==========================================
-# 1. 基礎設定與 CSS樣式
-# ==========================================
-st.set_page_config(page_title="全域觀點解析 V37.3", page_icon="⚖️", layout="wide")
-
-CSS_STYLE = """
-<style>
-    body { font-family: "Microsoft JhengHei", "Georgia", sans-serif; line-height: 1.6; color: #333; }
-    .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
-    
-    .report-paper {
-        background-color: #fdfbf7; 
-        color: #2c3e50; 
-        padding: 40px; 
-        border-radius: 4px; 
-        margin-bottom: 15px; 
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        font-family: "Microsoft JhengHei", "Georgia", serif;
-        line-height: 1.8;
-        font-size: 1.05rem;
-    }
-    
-    .citation {
-        font-size: 0.75em;          
-        color: #777777;             
-        background-color: #f4f4f4;  
-        padding: 2px 6px;           
-        border-radius: 4px;         
-        margin: 0 4px;              
-        font-family: sans-serif; 
-        border: 1px solid #e0e0e0;  
-        font-weight: 400;           
-        vertical-align: 1px;        
-        display: inline-block;      
-    }
-
-    .scrollable-table-container {
-        height: 600px; 
-        overflow-y: auto; 
-        border: 1px solid #e0e0e0;
-        border-radius: 8px;
-        background-color: white;
-        margin-bottom: 20px;
-    }
-    .custom-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-family: "Microsoft JhengHei", sans-serif;
-        font-size: 0.95em;
-    }
-    .custom-table th {
-        position: sticky;
-        top: 0;
-        background-color: #f1f3f4;
-        color: #333;
-        font-weight: bold;
-        padding: 12px 15px;
-        text-align: left;
-        border-bottom: 2px solid #ddd;
-        z-index: 2;
-    }
-    .custom-table td {
-        padding: 10px 15px;
-        border-bottom: 1px solid #f0f0f0;
-        vertical-align: middle;
-        color: #333;
-    }
-    .custom-table tr:hover {
-        background-color: #f8f9fa;
-    }
-    .custom-table a {
-        color: #1a73e8;
-        text-decoration: none;
-        font-weight: 500;
-        font-size: 1.05em;
-    }
-    .custom-table a:hover {
-        text-decoration: underline;
-        color: #1557b0;
-    }
-    
-    @media print {
-        .scrollable-table-container { height: auto; overflow: visible; }
-        body { font-size: 12pt; }
-        a { text-decoration: none; color: #000; }
-        .report-paper { box-shadow: none; border: none; padding: 0; }
-    }
-</style>
 """
-st.markdown(CSS_STYLE, unsafe_allow_html=True)
+學術雷達 V13.0 (Future Proof) - 優化版
+功能完整的學術論文分析與搜尋系統
+"""
+import streamlit as st
+import google.generativeai as genai
+import requests
+import pandas as pd
+import re
+import json
+from urllib.parse import unquote
+import time
+from typing import Optional, Dict, List, Any, Tuple
+from functools import wraps
+import logging
+
+# 設定日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ==========================================
-# 2. 資料庫與共用常數 (Config)
+# 0. 基礎設定與 CSS
 # ==========================================
-BLUE_WHITELIST = ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "storm.mg"]
-GREEN_WHITELIST = ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "upmedia.mg"]
-OFFICIAL_WHITELIST = ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "gov.tw"]
-FULL_TAIWAN_WHITELIST = BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw"]
+st.set_page_config(page_title="學術雷達 V13.0 (Future Proof)", page_icon="🧬", layout="wide")
 
-INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me"]
-INTL_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp"]
-
-DOMAIN_NAME_MAP = {
-    "udn.com": "聯合報", "chinatimes.com": "中國時報", "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞",
-    "nownews.com": "NOWnews", "ctee.com.tw": "工商時報", "storm.mg": "風傳媒",
-    "ltn.com.tw": "自由時報", "ftvnews.com.tw": "民視新聞", "setn.com": "三立新聞", "rti.org.tw": "央廣",
-    "newtalk.tw": "新頭殼", "mirrormedia.mg": "鏡週刊", "upmedia.mg": "上報",
-    "cna.com.tw": "中央社", "pts.org.tw": "公視", "twreporter.org": "報導者",
-    "theinitium.com": "端傳媒", "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
-    "vocus.cc": "方格子", "ptt.cc": "PTT", "dcard.tw": "Dcard",
-    "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", "apnews.com": "美聯社",
-    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報",
-    "mobile01.com": "Mobile01", "yahoo.com": "Yahoo新聞", "ettoday.net": "ETtoday",
-    "businessweekly.com.tw": "商業周刊", "mygopen.com": "MyGoPen"
-}
-
-DB_MAP = {
-    "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
-    "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia"],
-    "BLUE": ["udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt", "storm"],
-    "OFFICIAL": ["cna.com", "pts.org", "mnd.gov", "mac.gov", "tfc-taiwan", "gov.tw"],
-    "INDIE": ["twreporter", "theinitium", "thenewslens", "mindiworld", "vocus", "matters", "plainlaw"],
-    "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi"],
-    "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"],
-    "SOCIAL": ["ptt.cc", "dcard", "mobile01", "facebook", "youtube"]
-}
-
-NOISE_BLACKLIST = ["zhihu.com", "baidu.com", "pinterest.com", "instagram.com", "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"]
-
-# ==========================================
-# 3. 輔助函式 (Helper Functions)
-# ==========================================
-
-def get_domain_name(url: str) -> str:
-    try: return urlparse(url).netloc.replace("www.", "")
-    except: return ""
-
-def classify_source(url: str) -> str:
-    if not url or url == "#": return "OTHER"
-    try:
-        domain = urlparse(url).netloc.lower()
-        clean_domain = domain.replace("www.", "")
-    except: return "OTHER"
-    for cat, keywords in DB_MAP.items():
-        for kw in keywords:
-            if kw in domain: return cat
-    return "OTHER"
-
-def get_category_meta(cat: str) -> Tuple[str, str]:
-    meta = {
-        "CHINA": ("🇨🇳 中國官媒", "#d32f2f"),
-        "FARM": ("⛔ 內容農場", "#ef6c00"),
-        "BLUE": ("🔵 泛藍觀點", "#1565c0"),
-        "GREEN": ("🟢 泛綠觀點", "#2e7d32"),
-        "OFFICIAL": ("⚪ 官方/中立", "#546e7a"),
-        "INDIE": ("🕵️ 獨立/深度", "#fbc02d"),
-        "INTL": ("🌏 國際媒體", "#f57c00"),
-        "VIDEO": ("🟣 影音社群", "#7b1fa2"),
-        "SOCIAL": ("⚠️ 社群聲量", "#607d8b"),
-        "OTHER": ("📄 其他來源", "#9e9e9e")
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Roboto+Mono&display=swap');
+    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; color: #333; }
+    
+    .report-container {
+        background-color: #fdfbf7; 
+        border: 2px solid #5d4037; 
+        border-radius: 12px;
+        padding: 30px; 
+        margin-bottom: 25px; 
+        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        line-height: 1.7;
     }
-    return meta.get(cat, ("📄 其他來源", "#9e9e9e"))
-
-def format_citation_style(text: str) -> str:
-    if not text: return ""
-    def replacement(match):
-        nums = re.findall(r'\d+', match.group(0))
-        if not nums: return match.group(0)
-        unique_nums = sorted(list(set(nums)), key=int)
-        return f'<span class="citation">Source {", ".join(unique_nums)}</span>'
-    text = re.sub(r'(\[Source \d+\](?:[,;]?\s*\[Source \d+\])*)', replacement, text)
-    text = re.sub(r'([\[\(（]\s*Source\s+[\d,，、\s]+[\]\)）])', replacement, text)
-    return text
-
-def extract_date_from_url(url: str) -> Optional[str]:
-    if not url: return None
-    patterns = [r'/(\d{4})[-/](\d{2})[-/](\d{2})/', r'/(\d{4})(\d{2})(\d{2})/', r'-(\d{4})(\d{2})(\d{2})']
-    for p in patterns:
-        match = re.search(p, url)
-        if match: return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
-    return None
-
-# [V37.3 New] 核心渲染邏輯抽取 (DRY Fix)
-def process_timeline_rows(timeline_data: List[Dict], sources: List[Dict], blind_mode: bool) -> str:
-    """
-    處理時間軸數據，執行嚴格清洗、排序與格式化。
-    回傳：已排序的 HTML 表格行 (tr/td) 字串。
-    """
-    if not timeline_data: return ""
     
-    valid_rows = []
+    .pi-box {
+        background-color: #e3f2fd; border: 2px solid #1565c0; border-radius: 12px;
+        padding: 25px; margin-top: 20px; margin-bottom: 25px;
+    }
     
-    for item in timeline_data:
-        s_id = item.get('source_id', 0)
-        # 1. 嚴格過濾：無效來源直接丟棄
-        if s_id == 0 or s_id > len(sources): continue
-        
-        source_data = sources[s_id-1]
-        real_url = source_data.get('url', '#')
-        if real_url == "#": continue 
-        
-        # 2. 日期瀑布流
-        meta_date = source_data.get('published_date')
-        url_date = extract_date_from_url(real_url)
-        llm_date = item.get('date')
-        
-        real_date = "1970-01-01" 
-        display_date = "------"
-        
-        if meta_date and meta_date != "Missing": 
-            real_date = meta_date
-            display_date = meta_date
-        elif url_date: 
-            real_date = url_date
-            display_date = url_date
-        elif llm_date and re.match(r'\d{4}-\d{2}-\d{2}', llm_date) and "XX" not in llm_date:
-            real_date = llm_date
-            display_date = llm_date
-        
-        # 3. 媒體名稱模糊匹配
-        cat = classify_source(real_url)
-        label, _ = get_category_meta(cat)
-        domain = get_domain_name(real_url)
-        
-        media_name = domain
-        # Fuzzy match domain name
-        for k, v in DOMAIN_NAME_MAP.items():
-            if k in domain: media_name = v
-        
-        emoji = "⚪"
-        if "中國" in label: emoji = "🔴"
-        elif "泛藍" in label: emoji = "🔵"
-        elif "泛綠" in label: emoji = "🟢"
-        elif "官方" in label: emoji = "⚪"
-        elif "獨立" in label: emoji = "🕵️"
-        elif "國際" in label: emoji = "🌏"
-        elif "農場" in label: emoji = "⛔"
-        elif "社群" in label: emoji = "⚠️"
-        
-        display_media = f"{emoji} {media_name}"
-        if blind_mode: display_media = "*****"
-        
-        title = item.get('title', 'No Title')
-        title_html = f'<a href="{real_url}" target="_blank">{title}</a>'
-        
-        valid_rows.append({
-            "sort_date": real_date,
-            "html": f"<tr><td style='white-space:nowrap;'>{display_date}</td><td style='white-space:nowrap;'>{display_media}</td><td>{title_html}</td></tr>"
-        })
+    .source-badge {
+        display: inline-block; padding: 4px 12px; border-radius: 20px;
+        font-size: 0.85em; font-weight: 700; margin-bottom: 15px;
+        background-color: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;
+    }
+    
+    .bib-container { background-color: #fff8e1; padding: 20px; border-radius: 10px; border: 1px solid #ffe082; margin-top: 20px; }
+    
+    .auth-tag-first { color: #d32f2f; font-weight: bold; }
+    .auth-tag-last { color: #1976d2; font-weight: bold; }
+    
+    .search-card {
+        background-color: #ffffff; padding: 20px; border-radius: 10px;
+        border: 1px solid #e0e0e0; margin-bottom: 15px;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.05); transition: transform 0.2s;
+    }
+    .search-card:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+    .sc-title { font-size: 1.1em; font-weight: bold; color: #1a237e; margin-bottom: 8px; }
 
-    # 4. 強制按日期排序 (最新的在上面)
-    valid_rows.sort(key=lambda x: x['sort_date'], reverse=True)
-    
-    return "".join([r['html'] for r in valid_rows])
+    .chat-box { background-color: #f1f8e9; padding: 15px; border-radius: 10px; border: 1px solid #c5e1a5; margin-top: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
-# 4. 業務邏輯 (Business Logic)
+# 1. 常數定義
 # ==========================================
+HEADERS = {"User-Agent": "AcademicRadar/12.9"}
+API_TIMEOUT = 10
+MAX_RETRIES = 3
+RETRY_DELAY = 1
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
-def generate_dynamic_keywords(query: str, api_key: str) -> List[str]:
-    try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
-        prompt = f"""
-        請針對議題「{query}」，生成 3 組最具情報價值的搜尋關鍵字，分別對應以下三個維度：
-        1. [事實軌]：針對事件發展、時間軸、新聞報導。
-        2. [觀點軌]：針對爭議、正反評論、社論。
-        3. [深度軌]：針對懶人包、影響分析、法規細節。
-        
-        請直接輸出 3 個字串，用逗號分隔，不要標號。
-        範例："{query} 事件進度, {query} 正反爭議, {query} 懶人包重點"
-        """
-        resp = llm.invoke(prompt).content
-        keywords = [k.strip() for k in resp.split(',') if k.strip()]
-        return keywords[:3] if len(keywords) >= 3 else [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
-    except:
-        return [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"] 
+LIGHT_FIELDS = "paperId,title,year,citationCount,venue,authors.name,references.paperId,references.citationCount,references.year,citations.paperId,citations.citationCount,citations.year"
+RICH_FIELDS = "paperId,title,year,citationCount,venue,authors.name,authors.authorId,abstract,tldr"
+BROAD_FIELDS = "paperId,title,year,citationCount,venue,authors.name,abstract,tldr"
+AUTHOR_FIELDS = "authorId,name,citationCount,hIndex,paperCount,papers.title,papers.year,papers.citationCount,papers.venue"
 
-def search_cofacts(query: str) -> str:
-    url = "https://cofacts-api.g0v.tw/graphql"
-    graphql_query = """query ListArticles($text: String!) { ListArticles(filter: {q: $text}, orderBy: [{_score: DESC}], first: 3) { edges { node { text articleReplies(status: NORMAL) { reply { text type } } } } } }"""
-    try:
-        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=3)
-        if response.status_code == 200:
-            data = response.json()
-            articles = data.get('data', {}).get('ListArticles', {}).get('edges', [])
-            result_text = ""
-            if articles:
-                result_text += "【Cofacts 查核資料庫】\n"
-                for i, art in enumerate(articles):
-                    node = art.get('node', {})
-                    rumor = node.get('text', '')[:50]
-                    replies = node.get('articleReplies', [])
-                    if replies:
-                        r_type = replies[0].get('reply', {}).get('type')
-                        result_text += f"- 謠言: {rumor}... (判定: {r_type})\n"
-            return result_text
-    except: return ""
-    return ""
+# ==========================================
+# 2. 工具函數
+# ==========================================
+def retry_on_failure(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
+    """API 調用重試裝飾器"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (requests.RequestException, requests.Timeout, requests.ConnectionError) as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        logger.warning(f"API 調用失敗 (嘗試 {attempt + 1}/{max_retries}): {str(e)}")
+                        time.sleep(delay * (attempt + 1))  # 指數退避
+                    else:
+                        logger.error(f"API 調用最終失敗: {str(e)}")
+                except Exception as e:
+                    logger.error(f"未預期的錯誤: {str(e)}")
+                    raise
+            raise last_exception
+        return wrapper
+    return decorator
 
-def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, is_strict_mode: bool, dynamic_keywords: List[str], selected_regions: List[str]) -> List[Dict]:
-    tavily = TavilyClient(api_key=api_key_tavily)
-    seen_urls = set()
-    tasks = []
-    
-    # 1. 通用熱度搜尋 (Tri-Track)
-    general_domains = []
-    if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
-    if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
-    if "亞洲" in str(selected_regions): general_domains.extend(INTL_WHITELIST)
-    
-    general_params = search_params.copy()
-    general_params['max_results'] = 10 
-    if is_strict_mode and general_domains:
-        general_params['include_domains'] = list(set(general_domains))
-    
-    tasks.append({"name": "General_Main", "query": query, "params": general_params})
-    tasks.append({"name": "General_Fact", "query": dynamic_keywords[0], "params": general_params})
-    tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
-    tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
-    
-    # 2. 分眾保底搜尋 (Hybrid Weighted - Standard Guard)
-    if "台灣" in str(selected_regions):
-        blue_params = search_params.copy()
-        blue_params['max_results'] = 5 
-        blue_params['include_domains'] = BLUE_WHITELIST
-        tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
-        
-        green_params = search_params.copy()
-        green_params['max_results'] = 5 
-        green_params['include_domains'] = GREEN_WHITELIST
-        tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
-        
-        official_params = search_params.copy()
-        official_params['max_results'] = 5
-        official_params['include_domains'] = OFFICIAL_WHITELIST
-        tasks.append({"name": "Official_Guard", "query": f"{query} 聲明 新聞稿", "params": official_params})
+def validate_input(query: str, min_length: int = 1) -> bool:
+    """驗證輸入"""
+    if not query or not isinstance(query, str):
+        return False
+    return len(query.strip()) >= min_length
 
-    def fetch(task):
-        try:
-            return tavily.search(query=task['query'], **task['params']).get('results', [])
-        except: return []
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(fetch, t): t['name'] for t in tasks}
-        results_map = {}
-        for future in concurrent.futures.as_completed(futures):
-            t_name = futures[future]
-            results_map[t_name] = future.result()
-            
-    final_list = []
-    
-    # A. 優先加入保底
-    guards = ["Blue_Guard", "Green_Guard", "Official_Guard"]
-    for guard_name in guards:
-        if guard_name in results_map:
-            for item in results_map[guard_name]:
-                if item['url'] not in seen_urls:
-                    seen_urls.add(item['url'])
-                    final_list.append(item)
-    
-    # B. 再加入通用 (Tri-Track)
-    general_keys = ["General_Fact", "General_Opn", "General_Deep", "General_Main"]
-    max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
-    
-    for i in range(max_len):
-        for key in general_keys:
-            if key in results_map and i < len(results_map[key]):
-                item = results_map[key][i]
-                if item['url'] not in seen_urls:
-                    seen_urls.add(item['url'])
-                    final_list.append(item)
-                
-    return final_list
-
-def get_search_context(query: str, api_key_tavily: str, days_back: int, selected_regions: List[str], max_results: int, dynamic_keywords: List[str]):
-    try:
-        active_blacklist = NOISE_BLACKLIST
-
-        search_params = {
-            "search_depth": "advanced",
-            "topic": "general",
-            "days": days_back,
-            "exclude_domains": active_blacklist
-        }
-
-        is_strict_mode = bool(selected_regions)
-        results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions)
-        
-        results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
-        results = results[:max_results]
-        
-        context_text = ""
-        for i, res in enumerate(results):
-            title = res.get('title', 'No Title')
-            url = res.get('url', '#')
-            
-            pub_date = res.get('published_date')
-            if not pub_date:
-                url_date = extract_date_from_url(url)
-                pub_date = url_date if url_date else "Missing"
-            else:
-                pub_date = pub_date[:10]
-            
-            res['final_date'] = pub_date
-            content = res.get('content', '')[:3000]
-            context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
-            
-        return context_text, results, query, is_strict_mode
-        
-    except Exception as e:
-        return f"Error: {str(e)}", [], "Error", False
-
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
-def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str) -> str:
-    os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
-    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-    chain = prompt | llm
-    return chain.invoke({"input": user_text}).content
-
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION") -> str:
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    
-    tone_instruction = """
-    【⚠️ 語氣風格指令】：
-    1. **極度審慎**：嚴禁臆測。若證據不足，請直接標示「目前資訊不足」。
-    2. **去軍事化**：嚴禁使用軍事隱喻。
-    3. **中性專業**：使用社會科學術語。
+# ==========================================
+# 3. 核心搜尋引擎
+# ==========================================
+@st.cache_data(ttl=3600, show_spinner=False)
+@retry_on_failure()
+def search_broad_papers(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     """
-
-    if mode == "FUSION":
-        system_prompt = f"""
-        你是一位極度嚴謹的情報分析師。
-        
-        【⚠️ 時間錨點】：今天是 {today_str}。
-        {tone_instruction}
-        
-        【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
-        
-        【分析方法論】：
-        1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
-        2. **證據強度分級**：評估證據力（強/弱）。
-        3. **聲量權重校正**：識別複讀機，挖掘長尾觀點。
-        
-        【輸出格式 (嚴格遵守)】：
-        ### [DATA_TIMELINE]
-        (格式：YYYY-MM-DD|媒體|標題|Source_ID)
-        *請注意：只能列出 Context 中實際存在的 Source，嚴禁捏造 Source ID。若無 Source ID 則不列出。*
-        
-        ### [REPORT_TEXT]
-        (Markdown 報告 - 繁體中文)
-        1. **📊 全域現況摘要 (Situational Analysis)**
-           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響)。
-        2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
-           - *包含：邏輯謬誤偵測、證據強度評估*
-        3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
-           - *請應用聲量權重校正，指出話語權是否失衡*
-        4. **🧠 深度識讀與利益分析 (Cui Bono)**
-        5. **🤔 結構性反思 (Structural Reflection)**
-        """
-        
-    elif mode == "DEEP_SCENARIO":
-        system_prompt = f"""
-        你是一位專精於未來學 (Futures Studies) 的戰略顧問。
-        
-        【⚠️ 時間錨點】：今天是 {today_str}。
-        {tone_instruction}
-        
-        【分析任務】：
-        1. **早期預警指標**：列出監測訊號。
-        2. **驗屍分析**：反推失敗變數。
-
-        【輸出格式】：
-        ### [DATA_TIMELINE]
-        (留空)
-        
-        ### [REPORT_TEXT]
-        (Markdown 報告 - 繁體中文)
-        1. **🎯 CLA 深度解構 (Causal Layered Analysis)**
-           - Litany / System / Worldview / Myth
-        2. **🔮 未來趨勢路徑模擬 (Scenario Planning)**
-           - **基準路徑 (Baseline)** + 🚩 預警指標
-           - **轉折路徑 (Alternative)** + 🚩 預警指標
-           - **極端路徑 (Wild Card)** + 🚩 預警指標
-        3. **💀 驗屍分析 (Pre-mortem Analysis)**
-        4. **💡 綜合發展與因應建議**
-        """
-    else:
-        system_prompt = f"請針對 {query} 進行分析。"
-
-    return call_gemini(system_prompt, context_text, model_name, api_key)
-
-def parse_gemini_data(text: str) -> Dict[str, Any]:
-    """
-    解析 Gemini AI 返回的文本，提取時間軸和報告內容
+    廣度搜尋論文
     
     Args:
-        text: AI 返回的原始文本
+        query: 搜尋關鍵字
+        limit: 返回結果數量限制
         
     Returns:
-        包含 timeline 和 report_text 的字典
+        論文列表
     """
-    data = {"timeline": [], "report_text": ""}
-    if not text or not text.strip():
-        return data
+    if not validate_input(query):
+        return []
+    
+    try:
+        response = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={"query": query, "limit": limit, "fields": BROAD_FIELDS},
+            headers=HEADERS,
+            timeout=API_TIMEOUT
+        )
+        response.raise_for_status()
+        return response.json().get('data', [])
+    except requests.HTTPError as e:
+        logger.error(f"HTTP 錯誤: {e.response.status_code} - {e.response.text}")
+        return []
+    except requests.RequestException as e:
+        logger.error(f"請求錯誤: {str(e)}")
+        return []
 
-    # 先提取時間軸數據（從 [DATA_TIMELINE] 區塊）
-    timeline_section = ""
-    if "### [DATA_TIMELINE]" in text:
-        parts = text.split("### [DATA_TIMELINE]")
-        if len(parts) > 1:
-            timeline_section = parts[1].split("### [REPORT_TEXT]")[0] if "### [REPORT_TEXT]" in parts[1] else parts[1]
-    elif "[DATA_TIMELINE]" in text:
-        parts = text.split("[DATA_TIMELINE]")
-        if len(parts) > 1:
-            timeline_section = parts[1].split("[REPORT_TEXT]")[0] if "[REPORT_TEXT]" in parts[1] else parts[1]
+@st.cache_data(ttl=3600, show_spinner=False)
+@retry_on_failure()
+def fetch_network_skeleton(user_input: str) -> Optional[Dict[str, Any]]:
+    """
+    獲取論文引用網絡骨架
     
-    # 解析時間軸
-    if timeline_section:
-        lines = timeline_section.split('\n')
-        for line in lines:
-            line = line.strip()
-            # 檢查是否為時間軸行（包含 | 分隔符且至少有 3 個部分）
-            if "|" in line and len(line.split("|")) >= 3:
-                parts = line.split("|")
-                try:
-                    date = parts[0].strip()
-                    name = parts[1].strip()
-                    title = parts[2].strip()
-                    source_id_str = "0"
-                    if len(parts) >= 4: 
-                        raw_id = parts[3].strip()
-                        nums = re.findall(r'\d+', raw_id)
-                        if nums: source_id_str = nums[0]
-                    if "XX" in date or "xx" in date: 
-                        date = "近期"
-                    
-                    # 驗證日期格式（YYYY-MM-DD 或 "近期"）
-                    if re.match(r'^\d{4}-\d{2}-\d{2}$', date) or date == "近期":
-                        data["timeline"].append({
-                            "date": date,
-                            "media": name,
-                            "title": title,
-                            "source_id": int(source_id_str)
-                        })
-                except Exception as e:
-                    # 靜默跳過無效行
-                    continue
-
-    # 提取報告文本（優先順序：REPORT_TEXT 標記 > 摘要標記 > 全部文本）
-    report_text = ""
-    
-    # 方法 1: 查找 [REPORT_TEXT] 標記
-    if "### [REPORT_TEXT]" in text:
-        parts = text.split("### [REPORT_TEXT]")
-        if len(parts) > 1:
-            report_text = parts[1].strip()
-    elif "### REPORT_TEXT" in text:
-        parts = text.split("### REPORT_TEXT")
-        if len(parts) > 1:
-            report_text = parts[1].strip()
-    elif "[REPORT_TEXT]" in text:
-        parts = text.split("[REPORT_TEXT]")
-        if len(parts) > 1:
-            report_text = parts[1].strip()
-    
-    # 方法 2: 如果沒有 REPORT_TEXT 標記，查找摘要或分析部分
-    if not report_text:
-        # 查找包含「摘要」、「分析」、「CLA」等關鍵字的標題
-        patterns = [
-            r"(#+\s*.*?摘要.*?\n.*?)(?=#+\s*|$)",
-            r"(#+\s*.*?分析.*?\n.*?)(?=#+\s*|$)",
-            r"(1\.\s*.*?摘要.*?\n.*?)(?=\d+\.\s*|$)",
-            r"(#+\s*.*?CLA.*?\n.*?)(?=#+\s*|$)",
-            r"(📊\s*.*?全域現況.*?\n.*?)(?=#+\s*|$)",
-        ]
+    Args:
+        user_input: DOI、arXiv ID 或論文標題
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-            if match:
-                report_text = match.group(1).strip()
-                break
-    
-    # 方法 3: 如果還是沒有，移除時間軸部分後，使用剩餘文本
-    if not report_text:
-        # 移除 [DATA_TIMELINE] 區塊
-        if "### [DATA_TIMELINE]" in text:
-            parts = text.split("### [DATA_TIMELINE]")
-            if len(parts) > 1:
-                remaining = parts[1].split("### [REPORT_TEXT]")[-1] if "### [REPORT_TEXT]" in parts[1] else ""
-                if remaining.strip():
-                    report_text = remaining.strip()
-        else:
-            # 如果沒有明確的標記，使用整個文本（但排除時間軸行）
-            lines = text.split('\n')
-            report_lines = []
-            for line in lines:
-                # 跳過時間軸行（包含 | 且格式為日期|媒體|標題）
-                if "|" in line and len(line.split("|")) >= 3:
-                    # 檢查是否為時間軸格式
-                    parts = line.split("|")
-                    if len(parts) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts[0].strip()) or "近期" in parts[0]):
-                        continue
-                report_lines.append(line)
-            report_text = '\n'.join(report_lines).strip()
-    
-    # 清理報告文本：移除多餘的標記和空行
-    if report_text:
-        # 移除開頭的標記行
-        report_text = re.sub(r'^###?\s*\[?REPORT_TEXT\]?\s*\n*', '', report_text, flags=re.MULTILINE)
-        # 移除開頭的空行
-        report_text = report_text.lstrip('\n').strip()
-    
-    data["report_text"] = report_text if report_text else text  # 如果還是空的，使用原始文本
-    
-    return data
-
-def create_full_html_report(data_result, scenario_result, sources, blind_mode) -> str:
-    # [V37.3] 使用重構後的邏輯
-    table_rows = process_timeline_rows(data_result.get("timeline", []), sources, blind_mode)
-    
-    timeline_html = ""
-    if table_rows:
-        timeline_html = f"""
-        <h3>📅 關鍵發展時序</h3>
-        <table class="custom-table" border="1" cellspacing="0" cellpadding="5" style="width:100%; border-collapse:collapse;">
-            <thead><tr><th width="120">日期</th><th width="180">媒體來源 (Code Verified)</th><th>新聞標題 (點擊閱讀)</th></tr></thead>
-            <tbody>{table_rows}</tbody>
-        </table>
-        <hr>
-        """
-
-    report_html_1 = ""
-    if data_result:
-        raw_md = data_result.get("report_text", "")
-        html_content = markdown.markdown(raw_md, extensions=['tables'])
-        final_html = format_citation_style(html_content)
-        report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{final_html}</div>'
-
-    report_html_2 = ""
-    if scenario_result:
-        raw_md_2 = scenario_result.get("report_text", "")
-        html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
-        final_html_2 = format_citation_style(html_content_2)
-        report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{final_html_2}</div>'
-
-    sources_html = ""
-    if sources:
-        s_rows = ""
-        for i, s in enumerate(sources):
-            domain = get_domain_name(s.get('url'))
-            media_name = domain
-            for k, v in DOMAIN_NAME_MAP.items():
-                if k in domain: media_name = v
-                
-            title = s.get('title', 'No Title')
-            url = s.get('url')
-            s_rows += f"<li><b>[{i+1}]</b> {media_name} - <a href='{url}' target='_blank'>{title}</a></li>"
-        sources_html = f"<hr><h3>📚 引用文獻列表</h3><ul>{s_rows}</ul>"
-
-    full_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>全域觀點分析報告</title>
-        {CSS_STYLE}
-    </head>
-    <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>全域觀點分析報告 (V37.3)</h1>
-        <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
-        {timeline_html}
-        {report_html_1}
-        {report_html_2}
-        {sources_html}
-    </body>
-    </html>
+    Returns:
+        包含 hero、all_ancestors、all_descendants 的字典，失敗返回 None
     """
-    return full_html
-
-def render_html_timeline(timeline_data, sources, blind_mode):
-    # [V37.3] 直接呼叫重構後的邏輯
-    table_rows = process_timeline_rows(timeline_data, sources, blind_mode)
-    if not table_rows: return
-
-    full_html = f"""
-    <div class="scrollable-table-container">
-    <table class="custom-table">
-    <thead>
-    <tr>
-    <th style="width:120px;">日期</th>
-    <th style="width:180px;">媒體</th>
-    <th>新聞標題</th>
-    </tr>
-    </thead>
-    <tbody>
-    {table_rows}
-    </tbody>
-    </table>
-    </div>
-    """
-    st.markdown("### 📅 關鍵發展時序")
-    st.markdown(full_html, unsafe_allow_html=True)
-
-def export_full_state():
-    data = {
-        "result": st.session_state.result,
-        "scenario_result": st.session_state.scenario_result,
-        "sources": st.session_state.sources
-    }
-    return json.dumps(data, indent=2, ensure_ascii=False)
-
-def convert_data_to_md(data):
-    return f"""
-# 全域觀點分析報告 (V37.3)
-产生時間: {datetime.now()}
-
-## 1. 平衡報導分析
-{data.get('report_text')}
-
-## 2. 時間軸
-{pd.DataFrame(data.get('timeline')).to_markdown(index=False)}
-    """
-
-# ==========================================
-# 5. UI
-# ==========================================
-with st.sidebar:
-    st.title("全域觀點解析 V37.3")
+    if not validate_input(user_input):
+        return None
     
-    analysis_mode = st.radio(
-        "選擇分析引擎：",
-        options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
-        index=0
+    clean_input = unquote(user_input).strip().replace('"', '')
+    lookup_id = None
+    
+    # 識別 DOI 或 arXiv ID
+    doi_match = re.search(r'(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)', clean_input)
+    arxiv_match = re.search(r'(\d{4}\.\d{4,5})', clean_input)
+    
+    if doi_match:
+        lookup_id = f"DOI:{doi_match.group(1)}"
+    elif arxiv_match:
+        lookup_id = f"arXiv:{arxiv_match.group(1)}"
+    
+    def fetch_paper(paper_id: str) -> Optional[Dict[str, Any]]:
+        """獲取單篇論文資料"""
+        try:
+            response = requests.get(
+                f"https://api.semanticscholar.org/graph/v1/paper/{paper_id}",
+                params={"fields": LIGHT_FIELDS},
+                headers=HEADERS,
+                timeout=API_TIMEOUT
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.HTTPError as e:
+            logger.error(f"獲取論文失敗 {paper_id}: {e.response.status_code}")
+            return None
+        except requests.RequestException as e:
+            logger.error(f"請求錯誤: {str(e)}")
+            return None
+    
+    # 嘗試直接查找
+    hero = fetch_paper(lookup_id) if lookup_id else None
+    
+    # 如果直接查找失敗，使用搜尋
+    if not hero:
+        try:
+            response = requests.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params={"query": clean_input, "limit": 1, "fields": "paperId"},
+                headers=HEADERS,
+                timeout=API_TIMEOUT
+            )
+            response.raise_for_status()
+            data = response.json().get('data')
+            if data and len(data) > 0:
+                hero = fetch_paper(data[0]['paperId'])
+        except requests.RequestException as e:
+            logger.error(f"搜尋論文失敗: {str(e)}")
+    
+    if not hero or not hero.get('paperId'):
+        return None
+    
+    # 排序引用和參考文獻
+    refs = sorted(
+        [r for r in (hero.get('references') or []) if r.get('paperId')],
+        key=lambda x: (x.get('citationCount') or 0),
+        reverse=True
     )
-    st.markdown("---")
+    cites = sorted(
+        [c for c in (hero.get('citations') or []) if c.get('paperId')],
+        key=lambda x: (x.get('year') or 0),
+        reverse=True
+    )
     
-    blind_mode = st.toggle("🙈 盲測模式", value=False)
-    
-    with st.expander("🔑 API 設定", expanded=True):
-        st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
-        tavily_key = st.text_input("Tavily Key", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
-        
-        # 顯示 Tavily 搜尋狀態
-        if tavily_key:
-            st.success("✅ Tavily 搜尋已啟用")
-        else:
-            st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
-            
-        model_name = st.selectbox(
-            "模型 (Gemini 2.5 Series)", 
-            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"], 
-            index=0,
-            help="選擇用於分析的 Gemini 模型版本"
-        )
-        
-        st.markdown("---")
-        st.markdown("#### 🔍 Tavily 搜尋設定")
-        search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
-        max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
-        
-        selected_regions = st.multiselect(
-            "搜尋視角 (Region) - 可複選",
-            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
-            default=["🇹🇼 台灣 (Taiwan)"],
-            help="選擇要搜尋的區域，可多選"
-        )
+    return {'hero': hero, 'all_ancestors': refs, 'all_descendants': cites}
 
-    with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
-        uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
-        default_text = ""
-        is_json_upload = False
+@retry_on_failure()
+def enrich_segment(paper_objects: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    豐富論文資料（添加摘要、作者 ID 等）
+    
+    Args:
+        paper_objects: 論文對象列表
+        
+    Returns:
+        豐富後的論文列表
+    """
+    if not paper_objects:
+        return []
+    
+    ids = [p['paperId'] for p in paper_objects if p.get('paperId')]
+    if not ids:
+        return paper_objects
+    
+    enriched_map = {}
+    try:
+        response = requests.post(
+            "https://api.semanticscholar.org/graph/v1/paper/batch",
+            params={"fields": RICH_FIELDS},
+            json={"ids": ids},
+            headers=HEADERS,
+            timeout=API_TIMEOUT
+        )
+        response.raise_for_status()
+        for p in response.json():
+            if p:
+                enriched_map[p['paperId']] = p
+    except requests.RequestException as e:
+        logger.error(f"批量獲取論文失敗: {str(e)}")
+    
+    enriched_list = []
+    for p in paper_objects:
+        pid = p['paperId']
+        if pid in enriched_map:
+            full_data = enriched_map[pid].copy()
+            if 'code' in p:
+                full_data['code'] = p['code']
+            enriched_list.append(full_data)
+        else:
+            enriched_list.append(p)
+    
+    return enriched_list
+
+@retry_on_failure()
+def fetch_author_profile_no_cache(author_id: str) -> Optional[Dict[str, Any]]:
+    """
+    獲取作者資料（不使用快取）
+    
+    Args:
+        author_id: 作者 ID
+        
+    Returns:
+        作者資料字典，失敗返回 None
+    """
+    if not validate_input(author_id):
+        return None
+    
+    try:
+        response = requests.get(
+            f"https://api.semanticscholar.org/graph/v1/author/{author_id}",
+            params={"fields": AUTHOR_FIELDS},
+            headers=HEADERS,
+            timeout=API_TIMEOUT
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.HTTPError as e:
+        logger.error(f"獲取作者資料失敗 {author_id}: {e.response.status_code}")
+        return None
+    except requests.RequestException as e:
+        logger.error(f"請求錯誤: {str(e)}")
+        return None
+
+# ==========================================
+# 4. AI 分析功能
+# ==========================================
+def generate_deep_analysis_classic(
+    hero: Dict[str, Any],
+    ancestors: List[Dict[str, Any]],
+    descendants: List[Dict[str, Any]],
+    api_key: str,
+    model_name: str
+) -> str:
+    """
+    生成深度分析報告
+    
+    Args:
+        hero: 主角論文
+        ancestors: 祖先文獻列表
+        descendants: 後代文獻列表
+        api_key: Gemini API 金鑰
+        model_name: 模型名稱
+        
+    Returns:
+        分析報告（Markdown 格式）
+    """
+    if not api_key:
+        return "❌ 錯誤：未提供 API 金鑰"
+    
+    genai.configure(api_key=api_key)
+    
+    def format_paper(p: Dict[str, Any], code: str) -> str:
+        """格式化論文資訊"""
+        title = p.get('title', 'Unknown Title')
+        year = p.get('year', 'N/A')
+        cite = p.get('citationCount', 0)
+        
+        auth_list = p.get('authors', [])
+        if not auth_list:
+            auth_str = "Unknown"
+        elif len(auth_list) <= 4:
+            auth_str = ", ".join([a.get('name', '?') for a in auth_list])
+        else:
+            first = auth_list[0].get('name', '?')
+            last_3 = [a.get('name', '?') for a in auth_list[-3:]]
+            auth_str = f"First:{first} ... Last3:{', '.join(last_3)}"
+        
+        return f"[{code}] {title} ({year}) | {auth_str} | Cited:{cite}"
+    
+    context = f"主角論文: {format_paper(hero, 'Hero')}\n\n"
+    context += "【祖先文獻】:\n" + "\n".join([format_paper(a, a.get('code', 'A')) for a in ancestors]) + "\n\n"
+    context += "【後代文獻】:\n" + "\n".join([format_paper(d, d.get('code', 'D')) for d in descendants])
+    
+    system_prompt = """
+    你是一位精通「學術系譜學」的 AI 專家。
+    請基於提供的論文列表，進行深度的數據推論、概念流變分析，並預測未來的可能性。
+    
+    【重要指令】：
+    1. **語言**：所有輸出必須使用 **繁體中文 (Traditional Chinese, Taiwan)**。
+    2. **表格呈現**：概念流變請務必使用 **Markdown 表格** 呈現。
+    
+    【輸出報告格式】：
+    ### 📜 學術雷達深度報告
+    
+    #### 1. 🌊 概念流變表 (Concept Flow Table)
+    | 階段 | 核心關鍵詞 | 演變描述 |
+    | :--- | :--- | :--- |
+    | **A系列 (起源)** | ... | ... |
+    | **Hero (轉折)** | ... | ... |
+    | **D系列 (應用)** | ... | ... |
+    
+    #### 2. 🧩 領域分類與聚類
+    * **群組 A (理論基石)**：[A1], [A3]...
+    * **群組 B (方法突破)**：[Hero], [D1]...
+    
+    #### 3. 👑 領域領袖與師承
+    * **核心實驗室 (PI)**：(觀察作者群的最後幾位，推論核心實驗室)
+    * **第一作者 (執行者)**：(觀察第一作者的貢獻)
+    
+    #### 4. 🔗 技術演進詳解
+    **4.1 ⏪ 向前溯源**
+    * **[A?]** (PI: ...): **[貢獻]** ... 
+    
+    **4.2 ⏩ 向後展望**
+    * **[D?]** (PI: ...): **[貢獻]** ... 
+    
+    #### 5. 🔮 未來可能性圓錐 (The Cone of Possibilities)
+    *(針對 Hero 論文，預測未來)*
+    * **🎯 核心 (Probable)**：...
+    * **🚀 擴展 (Plausible)**：...
+    * **🌌 邊界 (Possible)**：...
+    """
+    
+    try:
+        model = genai.GenerativeModel(model_name)
+        result = model.generate_content(system_prompt + context)
+        return result.text
+    except Exception as e:
+        logger.error(f"AI 分析失敗: {str(e)}")
+        return f"❌ 分析失敗: {str(e)}"
+
+def generate_author_analysis(
+    author_name: str,
+    selected_papers: List[Dict[str, Any]],
+    api_key: str,
+    model_name: str
+) -> str:
+    """
+    生成作者分析報告
+    
+    Args:
+        author_name: 作者姓名
+        selected_papers: 選中的論文列表
+        api_key: Gemini API 金鑰
+        model_name: 模型名稱
+        
+    Returns:
+        分析報告（Markdown 格式）
+    """
+    if not api_key:
+        return "❌ 錯誤：未提供 API 金鑰"
+    
+    if not selected_papers:
+        return "❌ 錯誤：未選擇論文"
+    
+    genai.configure(api_key=api_key)
+    
+    papers_str = "\n".join([
+        f"- {p.get('title', 'Unknown')} ({p.get('year', 'N/A')}) | Cited: {p.get('citationCount', 0)}"
+        for p in selected_papers
+    ])
+    
+    system_prompt = f"""
+    你是一位「學術星探」。請分析這位 PI (或研究員)。
+    【注意】：**已排除同名同姓的干擾資料**，以下提供的論文確定皆為同一人所著。
+    
+    【檔案】姓名: {author_name}
+    【經確認的代表作】:
+    {papers_str}
+    
+    【任務】：請用**條列式**分析：
+    1. **學術江湖地位** (是資深大佬、實驗室主持人，還是新銳研究員？)
+    2. **核心研究版圖** (根據上述論文，精準定位其專長)
+    3. **研究風格與專長**
+    """
+    
+    try:
+        model = genai.GenerativeModel(model_name)
+        result = model.generate_content(system_prompt)
+        return result.text
+    except Exception as e:
+        logger.error(f"作者分析失敗: {str(e)}")
+        return f"❌ 分析失敗: {str(e)}"
+
+def ask_historian(
+    question: str,
+    context_data: List[Dict[str, Any]],
+    api_key: str,
+    model_name: str
+) -> str:
+    """
+    歷史學家問答功能
+    
+    Args:
+        question: 用戶問題
+        context_data: 上下文資料
+        api_key: Gemini API 金鑰
+        model_name: 模型名稱
+        
+    Returns:
+        AI 回答
+    """
+    if not api_key:
+        return "❌ 錯誤：未提供 API 金鑰"
+    
+    if not validate_input(question):
+        return "❌ 錯誤：問題不能為空"
+    
+    # 格式化上下文資料，避免 datetime 等複雜對象造成問題
+    def format_context_item(item: Dict[str, Any]) -> str:
+        """格式化單個上下文項目"""
+        parts = []
+        if 'code' in item:
+            parts.append(f"代號: {item['code']}")
+        if 'title' in item:
+            parts.append(f"標題: {item['title']}")
+        if 'year' in item:
+            # 處理年份，可能是數字或字符串
+            year = item['year']
+            if year and year != 'N/A':
+                parts.append(f"年份: {year}")
+        return " | ".join(parts)
+    
+    # 格式化所有上下文資料
+    formatted_context = "\n".join([
+        f"- {format_context_item(item)}"
+        for item in context_data
+        if isinstance(item, dict)
+    ])
+    
+    # 限制上下文長度
+    if len(formatted_context) > 2000:
+        formatted_context = formatted_context[:2000] + "..."
+    
+    genai.configure(api_key=api_key)
+    prompt = f"""你是一位學術顧問。請用繁體中文回答。
+
+【背景資料 - 相關論文列表】：
+{formatted_context}
+
+【問題】：
+{question}
+
+請基於上述論文資料，提供專業的分析和回答。"""
+    
+    try:
+        model = genai.GenerativeModel(model_name)
+        result = model.generate_content(prompt)
+        return result.text
+    except Exception as e:
+        logger.error(f"問答失敗: {str(e)}")
+        return f"❌ 回答失敗: {str(e)}"
+
+def generate_multilingual_abstract(
+    text_content: str,
+    api_key: str,
+    model_name: str
+) -> str:
+    """
+    生成多語言摘要
+    
+    Args:
+        text_content: 原始文本內容
+        api_key: Gemini API 金鑰
+        model_name: 模型名稱
+        
+    Returns:
+        多語言摘要
+    """
+    if not api_key:
+        return "❌ 錯誤：未提供 API 金鑰"
+    
+    genai.configure(api_key=api_key)
+    prompt = f"""請將報告總結為 **100 字摘要**。輸出：繁體中文、English、日本語。\n內容：\n{text_content[:2000]}"""
+    
+    try:
+        model = genai.GenerativeModel(model_name)
+        result = model.generate_content(prompt)
+        return result.text
+    except Exception as e:
+        logger.error(f"摘要生成失敗: {str(e)}")
+        return f"❌ 摘要生成失敗: {str(e)}"
+
+# ==========================================
+# 5. 存檔功能
+# ==========================================
+def export_state_to_json() -> str:
+    """
+    匯出狀態到 JSON
+    
+    Returns:
+        JSON 字符串
+    """
+    data = {
+        k: st.session_state[k]
+        for k in ['skeleton', 'full_lineage', 'offsets', 'deep_dive_result', 'pi_analysis_result']
+        if k in st.session_state
+    }
+    return json.dumps(data, default=str, ensure_ascii=False, indent=2)
+
+# ==========================================
+# 6. UI 邏輯
+# ==========================================
+# 初始化 session state
+if 'skeleton' not in st.session_state:
+    st.session_state.skeleton = None
+if 'full_lineage' not in st.session_state:
+    st.session_state.full_lineage = {'hero': {}, 'ancestors': [], 'descendants': []}
+if 'offsets' not in st.session_state:
+    st.session_state.offsets = {'a': 0, 'd': 0}
+if 'deep_dive_result' not in st.session_state:
+    st.session_state.deep_dive_result = None
+if 'pi_analysis_result' not in st.session_state:
+    st.session_state.pi_analysis_result = None
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'pre_fill_doi' not in st.session_state:
+    st.session_state.pre_fill_doi = ""
+if 'read_only_mode' not in st.session_state:
+    st.session_state.read_only_mode = False
+if 'pi_raw_data' not in st.session_state:
+    st.session_state.pi_raw_data = None
+
+# 側邊欄
+with st.sidebar:
+    st.title("🔬 參數設定")
+    
+    # Secrets 自動讀取邏輯
+    if "GOOGLE_API_KEY" in st.secrets:
+        st.success("✅ 已自動載入 Gemini Key (系統託管)")
+        api_key = st.secrets["GOOGLE_API_KEY"]
+    else:
+        api_key = st.text_input("Gemini API Key", type="password", help="請輸入 Google Gemini API 金鑰")
+    
+    model_name = st.selectbox(
+        "模型",
+        ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"],
+        index=0,
+        help="選擇 Gemini 模型版本"
+    )
+    
+    st.divider()
+    st.markdown("### 📥 知識庫存檔")
+    
+    if st.session_state.deep_dive_result:
+        st.download_button(
+            "下載進度 (JSON)",
+            export_state_to_json(),
+            "radar_fix.json",
+            "application/json",
+            help="完整資料備份"
+        )
+        st.download_button(
+            "下載報告 (.md)",
+            st.session_state.deep_dive_result,
+            "academic_report.md",
+            "text/markdown",
+            help="下載 Markdown 格式報告"
+        )
+    
+    with st.expander("📂 讀取舊檔案 (JSON/MD)", expanded=True):
+        uploaded_file = st.file_uploader("拖曳檔案到此", type=["json", "md"], help="支援 JSON 進度檔或 Markdown 報告檔")
         if uploaded_file:
             try:
                 if uploaded_file.name.endswith(".json"):
-                    is_json_upload = True
-                    st.success(f"✅ 完整存檔: {uploaded_file.name}")
-                else:
-                    default_text = uploaded_file.getvalue().decode("utf-8")
-                    st.success(f"✅ 文字檔: {uploaded_file.name}")
-            except: pass
-
-        past_report_input = st.text_area("或貼上內容：", value=default_text, height=150)
-        
-        if uploaded_file and st.button("🔄 確認載入/還原"):
-            if is_json_upload:
-                try:
-                    state_data = json.load(uploaded_file)
-                    st.session_state.result = state_data.get("result")
-                    st.session_state.scenario_result = state_data.get("scenario_result")
-                    st.session_state.sources = state_data.get("sources")
+                    data = json.load(uploaded_file)
+                    for k, v in data.items():
+                        st.session_state[k] = v
+                    st.session_state.read_only_mode = False
+                    st.toast("✅ JSON 進度還原成功！")
+                    time.sleep(1)
                     st.rerun()
-                except: st.error("JSON 解析失敗")
+                elif uploaded_file.name.endswith(".md"):
+                    content = uploaded_file.read().decode("utf-8")
+                    st.session_state.deep_dive_result = content
+                    st.session_state.read_only_mode = True
+                    st.toast("📖 進入純閱讀模式")
+                    time.sleep(1)
+                    st.rerun()
+            except json.JSONDecodeError as e:
+                st.error(f"JSON 解析失敗: {e}")
+            except Exception as e:
+                st.error(f"讀取失敗: {e}")
+
+st.title("🧬 學術雷達 V13.0 (Future Proof)")
+st.caption("核心：**同名同姓篩選** + **Streamlit 參數修正** + **Secrets 管理**。")
+
+# === 核心處理邏輯 ===
+def process_mining(doi_target: str, action: str = 'init') -> None:
+    """
+    處理深度挖掘
+    
+    Args:
+        doi_target: DOI、arXiv ID 或論文標題
+        action: 操作類型 ('init', 'older', 'newer', 'expand_both')
+    """
+    with st.status("正在啟動 V10.2 經典引擎...", expanded=True) as status:
+        if action == 'init':
+            st.write("📡 掃描引用網絡骨架...")
+            skeleton = fetch_network_skeleton(doi_target)
+            if not skeleton:
+                status.update(label="❌ 找不到資料", state="error")
+                st.error("找不到資料。請檢查輸入是否正確。")
+                return
+            st.session_state.skeleton = skeleton
+            st.session_state.offsets = {'a': 0, 'd': 0}
+            hero_enriched = enrich_segment([skeleton['hero']])
+            if hero_enriched:
+                st.session_state.full_lineage = {'hero': hero_enriched[0], 'ancestors': [], 'descendants': []}
             else:
-                st.toast("✅ 文字已匯入")
-
-    st.markdown("---")
-    st.markdown("### 🧠 情報分析方法論詳解")
-    st.caption("點擊下方區塊查看詳細的學術理論與方法說明")
-    
-    with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)", expanded=False):
-        st.markdown("""
-        **核心機制：混和權重搜尋**
-        - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
-        - **熱度補完 (Volume Fill)**：剩餘名額開放給全網熱度排序，反映真實輿論聲量。
+                st.error("無法豐富主角論文資料")
+                return
+            st.session_state.chat_history = []
+            st.session_state.pi_analysis_result = None
+            st.session_state.pi_raw_data = None
+            st.session_state.read_only_mode = False
         
-        **三軌搜尋架構 (Tri-Track via Dynamic Keywords)**
-        將「通用搜尋 (General)」任務拆解為三組不同目的的指令，確保抓取內容的維度完整：
-        1. **事實與時序 (Facts & Timeline)**
-           - 指令：`{query} 新聞 事件 時間軸`
-           - 目標：確保報告的骨架（人、事、時、地、物）是準確的。
-        2. **觀點與爭議 (Opinions & Controversy)**
-           - 指令：`{query} 評論 觀點 爭議 分析`
-           - 目標：捕捉不同陣營（正方/反方）的論述邏輯，這是 Entman 框架分析的原料。
-        3. **深度與結構 (Deep Dive)**
-           - 指令：`{query} 懶人包 重點 影響`
-           - 目標：快速獲取議題的全貌、背景知識與結構化資訊（如法規比較）。
-        """)
+        st.write("🔍 擴充詳細資料 (PI、摘要)...")
+        sk = st.session_state.skeleton
+        if not sk:
+            st.error("骨架資料不存在")
+            return
         
-    with st.expander("2. 框架分析：Entman 理論與立場判定 (Framing)"):
-        st.markdown("""
-        **Entman 框架理論 (Framing Theory)**
-        我們分析文本如何透過「選擇 (Selection)」與「凸顯 (Salience)」來建構現實。
-        - **問題定義**：不同陣營如何定義問題的核心？
-        - **歸因分析**：將責任歸咎於誰？
-        - **道德評價**：使用什麼樣的形容詞來進行道德審判？
+        off = st.session_state.offsets
+        new_a_objs, new_d_objs = [], []
         
-        **機構層次驗證**
-        結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫 (DB_MAP)，對文章立場進行雙重驗證。
-        """)
+        if action == 'init':
+            new_a_objs = sk['all_ancestors'][0:5]
+            new_d_objs = sk['all_descendants'][0:5]
+            st.session_state.offsets = {'a': 5, 'd': 5}
+        elif action == 'older':
+            new_a_objs = sk['all_ancestors'][off['a']:off['a']+5]
+            st.session_state.offsets['a'] += 5
+        elif action == 'newer':
+            new_d_objs = sk['all_descendants'][off['d']:off['d']+5]
+            st.session_state.offsets['d'] += 5
+        elif action == 'expand_both':
+            new_a_objs = sk['all_ancestors'][off['a']:off['a']+5]
+            new_d_objs = sk['all_descendants'][off['d']:off['d']+5]
+            st.session_state.offsets['a'] += 5
+            st.session_state.offsets['d'] += 5
         
-    with st.expander("3. 可信度驗證：水平閱讀與邏輯偵錯 (Verification)"):
-        st.markdown("""
-        **水平閱讀法 (Lateral Reading)**
-        採用史丹佛歷史教育群 (SHEG) 提倡之方法，不只深讀單一來源，而是橫向比對多個來源以確認事實。
+        enriched_a = enrich_segment(new_a_objs)
+        enriched_d = enrich_segment(new_d_objs)
         
-        **邏輯偵錯 (Logic Scan)**
-        AI 會自動掃描文本中的邏輯謬誤：
-        - **滑坡謬誤**：誇大微小行動的災難性後果。
-        - **稻草人論證**：扭曲對手觀點以便攻擊。
+        exist_a = len(st.session_state.full_lineage['ancestors'])
+        for i, p in enumerate(enriched_a):
+            p['code'] = f"A{exist_a + i + 1}"
         
-        **Cofacts 協作查核**
-        即時串接 g0v Cofacts 謠言資料庫，標註已被社群查核為錯誤的資訊。
-        """)
+        exist_d = len(st.session_state.full_lineage['descendants'])
+        for i, p in enumerate(enriched_d):
+            p['code'] = f"D{exist_d + i + 1}"
         
-    with st.expander("4. 戰略推演：CLA 層次分析與預警 (Futures)"):
-        st.markdown("""
-        **CLA 層次分析法 (Causal Layered Analysis)**
-        深入挖掘議題的四個層次：
-        1. **表象 (Litany)**：公眾看到的事件與數據。
-        2. **系統 (System)**：造成事件的社會結構與政策成因。
-        3. **世界觀 (Worldview)**：利益相關者的深層價值觀與意識形態。
-        4. **神話/隱喻 (Myth)**：潛意識中的集體焦慮或故事原型。
+        st.session_state.full_lineage['ancestors'].extend(enriched_a)
+        st.session_state.full_lineage['descendants'].extend(enriched_d)
         
-        **早期預警指標 (Signposts)**
-        為每個未來情境設定具體的監測訊號。
+        st.write("🧠 AI 正在進行深度推論...")
+        if not api_key:
+            st.error("❌ 請先設定 API 金鑰")
+            return
         
-        **驗屍分析 (Pre-mortem)**
-        假設預測失敗，反推可能的隱蔽變數。
-        """)
-        
-    st.markdown("### 📥 報告匯出")
-    if st.session_state.get('result') or st.session_state.get('scenario_result'):
-        html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
-        st.download_button("📥 列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
-        full_state_json = export_full_state()
-        st.download_button("📥 完整狀態 (JSON)", full_state_json, "Full_State.json", "application/json")
-        
-        export_data = st.session_state.get('result').copy()
-        if st.session_state.get('scenario_result'):
-            export_data['report_text'] += "\n\n# 未來發展推演報告\n" + st.session_state.get('scenario_result')['report_text']
-        st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
-
-st.title(f"{analysis_mode.split(' ')[0]}")
-query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
-search_btn = st.button("🚀 啟動全域掃描", type="primary")
-
-if 'result' not in st.session_state: st.session_state.result = None
-if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
-if 'sources' not in st.session_state: st.session_state.sources = None
-
-if search_btn and query and google_key and tavily_key:
-    st.session_state.result = None
-    st.session_state.scenario_result = None
-    
-    with st.status("🚀 啟動 V37.3 平衡報導分析引擎...", expanded=True) as status:
-        
-        st.write("🧠 1. 生成動態搜尋策略...")
-        dynamic_keywords = generate_dynamic_keywords(query, google_key)
-        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords)}")
-        
-        regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
-        st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方) + 熱度補完 (動態三軌)")
-        
-        # 驗證 Tavily Key
-        if not tavily_key:
-            st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
-            status.update(label="❌ 搜尋失敗", state="error", expanded=False)
-            st.stop()
-        
-        context_text, sources, actual_query, is_strict_tw = get_search_context(
-            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords
+        analysis = generate_deep_analysis_classic(
+            st.session_state.full_lineage['hero'],
+            st.session_state.full_lineage['ancestors'],
+            st.session_state.full_lineage['descendants'],
+            api_key,
+            model_name
         )
-        
-        st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
-        if is_strict_tw:
-            st.write(f"🛡️ 網域圍籬已啟動。")
-        
-        st.session_state.sources = sources
-        
-        st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
-        cofacts_txt = search_cofacts(query)
-        if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
-        
-        st.write("🧠 4. AI 進行深度戰略分析 (ACH 競爭假設 + 邏輯偵錯)...")
-        
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-        analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
-
-        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
-        
-        # 解析報告數據
-        parsed_data = parse_gemini_data(raw_report)
-        
-        # 驗證解析結果
-        if not parsed_data.get("report_text") or not parsed_data.get("report_text").strip():
-            st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
-            # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
-            if raw_report:
-                # 移除 [DATA_TIMELINE] 區塊
-                if "### [DATA_TIMELINE]" in raw_report:
-                    parts = raw_report.split("### [DATA_TIMELINE]")
-                    if len(parts) > 1:
-                        remaining = parts[1]
-                        if "### [REPORT_TEXT]" in remaining:
-                            parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
-                        else:
-                            # 移除時間軸行
-                            lines = remaining.split('\n')
-                            report_lines = []
-                            for line in lines:
-                                if "|" in line and len(line.split("|")) >= 3:
-                                    parts_line = line.split("|")
-                                    if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
-                                        continue
-                                report_lines.append(line)
-                            parsed_data["report_text"] = '\n'.join(report_lines).strip()
-                else:
-                    # 如果完全沒有標記，使用整個文本
-                    parsed_data["report_text"] = raw_report.strip()
-        
-        st.session_state.result = parsed_data
-        
-        # 顯示解析統計
-        timeline_count = len(parsed_data.get("timeline", []))
-        report_length = len(parsed_data.get("report_text", ""))
-        st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
-            
+        st.session_state.deep_dive_result = analysis
         status.update(label="✅ 分析完成", state="complete", expanded=False)
         
-    st.rerun()
+        time.sleep(0.5)
+        st.rerun()
 
-if st.session_state.result:
-    data = st.session_state.result
-    render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
+# === 頁籤介面 ===
+if st.session_state.read_only_mode:
+    st.warning("⚠️ 純閱讀模式 (Read-Only)。")
+    st.markdown('<span class="source-badge">📄 Archived Report</span>', unsafe_allow_html=True)
+    with st.container():
+        if st.session_state.deep_dive_result:
+            st.markdown(f'<div class="report-container">{st.session_state.deep_dive_result}</div>', unsafe_allow_html=True)
+        else:
+            st.info("沒有可顯示的報告")
 
-    st.markdown("---")
-    st.markdown("### 📝 平衡報導分析")
-    
-    report_text = data.get("report_text", "")
-    
-    # 檢查報告內容是否為空
-    if not report_text or not report_text.strip():
-        st.warning("⚠️ 報告內容為空。可能的原因：")
-        st.info("""
-        1. AI 返回的格式不符合預期
-        2. 解析過程中出現錯誤
-        3. 請檢查終端機/控制台的錯誤訊息
-        
-        **建議：**
-        - 嘗試重新執行分析
-        - 檢查 API 金鑰是否正確
-        - 查看原始返回數據（可在調試模式下）
-        """)
-        
-        # 顯示調試信息
-        with st.expander("🔍 調試信息", expanded=False):
-            st.write("**原始數據結構：**")
-            st.json({
-                "has_timeline": len(data.get("timeline", [])) > 0,
-                "timeline_count": len(data.get("timeline", [])),
-                "report_text_length": len(report_text),
-                "report_text_preview": report_text[:500] if report_text else "（空）"
-            })
-    else:
-        formatted_text = format_citation_style(report_text)
-        html_content = markdown.markdown(formatted_text, extensions=['tables'])
-        st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
-    
-    if "未來" not in analysis_mode and not st.session_state.scenario_result:
-        st.markdown("---")
-        if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
-            with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
-                current_report = data.get("report_text", "")
-                raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="DEEP_SCENARIO")
-                st.session_state.scenario_result = parse_gemini_data(raw_text) 
-                st.rerun()
+else:
+    tab_insight, tab_broad = st.tabs(["🕵️‍♀️ 深度挖掘 (Deep Dive)", "🔭 廣度搜尋 (Broad Search)"])
 
-if st.session_state.scenario_result:
-    st.markdown("---")
-    st.markdown("### 🔮 未來發展推演報告")
-    scenario_data = st.session_state.scenario_result
-    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
-    html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
+    with tab_insight:
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            doi_input = st.text_input(
+                "輸入 DOI 或 網址",
+                value=st.session_state.pre_fill_doi,
+                key="deep_input",
+                help="可輸入 DOI、arXiv ID 或論文標題"
+            )
+        with c2:
+            st.write("")
+            st.write("")
+            btn_analyze = st.button("🔍 執行深掘", use_container_width=True)
 
-if st.session_state.sources:
-    st.markdown("---")
-    st.markdown("### 📚 引用文獻列表")
-    md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
-    for i, s in enumerate(st.session_state.sources):
-        domain = get_domain_name(s.get('url'))
-        
-        media_name = domain
-        for k, v in DOMAIN_NAME_MAP.items():
-            if k in domain: media_name = v
+        if st.session_state.skeleton:
+            st.divider()
+            st.caption("🔄 擴展搜尋範圍")
+            cb1, cb2, cb3 = st.columns([1, 1, 1])
+            btn_older = cb1.button("⬅️ 找更早祖先", use_container_width=True)
+            btn_both = cb2.button("↔️ 雙向同時擴展", use_container_width=True)
+            btn_newer = cb3.button("找更新後代 ➡️", use_container_width=True)
             
-        if blind_mode: media_name = "*****"
+            if btn_older:
+                process_mining(doi_input, 'older')
+            if btn_newer:
+                process_mining(doi_input, 'newer')
+            if btn_both:
+                process_mining(doi_input, 'expand_both')
+
+        if btn_analyze and doi_input:
+            if not api_key:
+                st.error("❌ 請先在側邊欄設定 API 金鑰")
+            else:
+                process_mining(doi_input, 'init')
+
+        if st.session_state.get('deep_dive_result'):
+            st.markdown('<span class="source-badge">✅ V10.2 Logic Report</span>', unsafe_allow_html=True)
+            st.markdown(f'<div class="report-container">{st.session_state.deep_dive_result}</div>', unsafe_allow_html=True)
+            
+            st.divider()
+            st.markdown("### 🕵️‍♂️ PI 深度偵探 (Identity Verification)")
+            st.caption("同名同姓是資料庫常見錯誤。請在下方 **「驗明正身」**，剔除不屬於該作者的論文。")
+            
+            all_papers = (
+                st.session_state.full_lineage['ancestors'] +
+                [st.session_state.full_lineage['hero']] +
+                st.session_state.full_lineage['descendants']
+            )
+            pi_options = {}
+            
+            for p in all_papers:
+                auths = p.get('authors', [])
+                if not auths:
+                    continue
+                safe_title = (p.get('title', 'Unknown')[:20] + "...")
+                
+                def add_opt(a_obj: Dict[str, Any], role: str) -> None:
+                    """添加作者選項"""
+                    if a_obj.get('authorId'):
+                        lbl = f"[{role}] {a_obj.get('name')} (from {safe_title})"
+                        if lbl not in pi_options:
+                            pi_options[lbl] = a_obj['authorId']
+
+                add_opt(auths[0], "第一作者")
+                if len(auths) > 1:
+                    add_opt(auths[-1], "最後作者")
+                if len(auths) >= 3:
+                    add_opt(auths[-2], "倒數第二")
+                if len(auths) >= 4:
+                    add_opt(auths[-3], "倒數第三")
+            
+            if pi_options:
+                col_pi_sel, col_pi_btn = st.columns([3, 1])
+                with col_pi_sel:
+                    selected_pi_label = st.selectbox(
+                        "1️⃣ 選擇要分析的作者",
+                        options=list(pi_options.keys()),
+                        help="選擇要分析的作者"
+                    )
+                
+                if st.button("2️⃣ 載入論文列表 (驗明正身)", use_container_width=True) and selected_pi_label:
+                    target_author_id = pi_options[selected_pi_label]
+                    with st.spinner("正在調閱學術檔案..."):
+                        raw_data = fetch_author_profile_no_cache(target_author_id)
+                        st.session_state.pi_raw_data = raw_data
+                        st.session_state.pi_analysis_result = None
+
+                if st.session_state.pi_raw_data:
+                    author_name = st.session_state.pi_raw_data.get('name', 'Unknown')
+                    raw_papers = st.session_state.pi_raw_data.get('papers', [])
+                    
+                    st.markdown(f"**{author_name}** 的高引用論文列表 (共 {len(raw_papers)} 篇)：")
+                    st.info("💡 請勾選 **「真正屬於這位作者」** 的論文。若看到領域不符的（如同名同姓），請取消勾選。")
+                    
+                    if raw_papers:
+                        df_papers = pd.DataFrame(raw_papers)
+                        df_papers['Select'] = True
+                        cols = ['Select', 'title', 'year', 'venue', 'citationCount']
+                        valid_cols = [c for c in cols if c in df_papers.columns or c == 'Select']
+                        df_papers = df_papers[valid_cols]
+                        
+                        edited_df = st.data_editor(
+                            df_papers,
+                            column_config={
+                                "Select": st.column_config.CheckboxColumn("納入分析", help="勾選以納入 AI 分析", default=True),
+                                "title": "論文標題",
+                                "year": "年份",
+                                "venue": "期刊/會議",
+                                "citationCount": "引用數"
+                            },
+                            disabled=["title", "year", "venue", "citationCount"],
+                            hide_index=True,
+                            width='stretch'
+                        )
+                        
+                        selected_rows = edited_df[edited_df['Select'] == True]
+                        count_sel = len(selected_rows)
+                        
+                        if st.button(f"3️⃣ 確認 ({count_sel} 篇) 並執行 AI 分析", type="primary", use_container_width=True) and api_key:
+                            if count_sel == 0:
+                                st.error("請至少選擇一篇論文！")
+                            else:
+                                selected_paper_list = selected_rows.to_dict('records')
+                                with st.spinner(f"AI 正在閱讀這 {count_sel} 篇論文並分析風格..."):
+                                    pi_report = generate_author_analysis(author_name, selected_paper_list, api_key, model_name)
+                                    st.session_state.pi_analysis_result = pi_report
+                    else:
+                        st.warning("此作者沒有找到相關論文資料。")
+            else:
+                st.info("暫無可分析的作者資料")
+
+            if st.session_state.pi_analysis_result:
+                st.markdown('<div class="pi-box">', unsafe_allow_html=True)
+                st.markdown(st.session_state.pi_analysis_result)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            st.divider()
+            st.subheader("⏳ 技術與作者演進表")
+            table_data = []
+            
+            def get_auth_display(p: Dict[str, Any]) -> str:
+                """獲取作者顯示字串"""
+                auths = p.get('authors', [])
+                if not auths:
+                    return "Unknown"
+                if len(auths) == 1:
+                    return auths[0].get('name', 'Unknown')
+                if len(auths) == 2:
+                    return f"{auths[0].get('name', 'Unknown')} & {auths[1].get('name', 'Unknown')}"
+                first = auths[0].get('name', 'Unknown')
+                last = auths[-1].get('name', 'Unknown')
+                last_2 = auths[-2].get('name', 'Unknown')
+                return f"{first} ... {last_2}, {last}"
+
+            for p in all_papers:
+                role = (
+                    "🟨 主角" if p == st.session_state.full_lineage['hero']
+                    else ("🟦 基石" if p in st.session_state.full_lineage['ancestors'] else "🟩 後續")
+                )
+                tldr_text = (p.get('tldr') or {}).get('text')
+                abs_text = p.get('abstract')
+                smry = (tldr_text or abs_text or "")[:100]
+                table_data.append({
+                    "角色": role,
+                    "代號": p.get('code', ''),
+                    "年份": p.get('year'),
+                    "關鍵作者群": get_auth_display(p),
+                    "標題": p.get('title', 'Unknown'),
+                    "摘要重點": smry
+                })
+            
+            if table_data:
+                st.dataframe(pd.DataFrame(table_data), width='stretch', hide_index=True)
+            else:
+                st.info("暫無資料可顯示")
+
+            st.subheader("💬 追問歷史學家")
+            user_q = st.text_input("有疑問嗎？", key="chat_input", help="輸入問題，AI 會基於當前論文資料回答")
+            if st.button("送出") and user_q and api_key:
+                with st.spinner("AI 思考中..."):
+                    ctx = [
+                        {
+                            "code": p.get('code', 'Hero'),
+                            "title": p.get('title', 'Unknown'),
+                            "year": p.get('year', 'N/A')
+                        }
+                        for p in all_papers
+                    ]
+                    ans = ask_historian(user_q, ctx, api_key, model_name)
+                    st.session_state.chat_history.append({"q": user_q, "a": ans})
+            
+            for chat in reversed(st.session_state.chat_history):
+                st.markdown(f"<div class='chat-box'><b>Q: {chat['q']}</b><br>A: {chat['a']}</div>", unsafe_allow_html=True)
+
+            st.markdown("#### 📚 完整文獻詳情")
+            st.markdown('<div class="bib-container">', unsafe_allow_html=True)
+            for p in all_papers:
+                auth_html = ""
+                auths = p.get('authors', [])
+                if auths:
+                    auth_html += f"<span class='auth-tag-first'>{auths[0].get('name', 'Unknown')} (1st)</span>"
+                    if len(auths) > 1:
+                        if len(auths) > 3:
+                            auth_html += ", ... "
+                            auth_html += f", {auths[-2].get('name', 'Unknown')} (2nd Last)"
+                        auth_html += f", <span class='auth-tag-last'>{auths[-1].get('name', 'Unknown')} (Last)</span>"
+                else:
+                    auth_html = "Unknown"
+                
+                st.markdown(
+                    f"**[{p.get('code', 'Hero')}]** {p.get('title', 'Unknown')} ({p.get('year', 'N/A')})<br>"
+                    f"🏛️ {p.get('venue', 'N/A')} | 🔗 Cited: {p.get('citationCount', 0)}<br>"
+                    f"👤 {auth_html}",
+                    unsafe_allow_html=True
+                )
+                st.markdown("---")
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            if st.button("🌍 生成中/英/日 總結卡"):
+                if not api_key:
+                    st.error("❌ 請先設定 API 金鑰")
+                else:
+                    with st.spinner("翻譯中..."):
+                        summary = generate_multilingual_abstract(st.session_state.deep_dive_result, api_key, model_name)
+                        st.info("多語言摘要卡")
+                        st.markdown(summary)
+
+    with tab_broad:
+        st.markdown("### 🔭 技術關鍵字搜尋")
+        broad_query = st.text_input("輸入關鍵字", key="broad_input", help="輸入關鍵字搜尋相關論文")
+        limit = st.slider("搜尋數量", 5, 20, 10, help="選擇要返回的論文數量")
         
-        title = s.get('title', 'No Title')
-        if len(title) > 60: title = title[:60] + "..."
-        url = s.get('url')
-        md_table += f"| **{i+1}** | `{media_name}` | {title} | [點擊]({url}) |\n"
-    st.markdown(md_table)
+        if st.button("🚀 搜尋", key="btn_broad"):
+            if not validate_input(broad_query):
+                st.warning("⚠️ 請輸入有效的搜尋關鍵字")
+            else:
+                with st.spinner("搜尋 Semantic Scholar 資料庫..."):
+                    results = search_broad_papers(broad_query, limit)
+                    if results:
+                        json_str = json.dumps(results, indent=2, ensure_ascii=False)
+                        st.download_button(
+                            "📥 下載搜尋結果列表 (JSON)",
+                            json_str,
+                            "broad_search_results.json",
+                            "application/json",
+                            help="下載搜尋結果為 JSON 格式"
+                        )
+                        
+                        st.success(f"找到 {len(results)} 篇相關論文")
+                        for p in results:
+                            with st.container():
+                                t_text = (p.get('tldr') or {}).get('text')
+                                a_text = p.get('abstract')
+                                s_text = (t_text or a_text or "")[:200]
+                                st.markdown(f"""
+                                <div class="search-card">
+                                    <div class="sc-title">{p.get('title', 'Unknown')}</div>
+                                    <div style="font-size:0.9em; color:#616161; margin:5px 0;">
+                                        📅 {p.get('year', 'N/A')} | 🏛️ {p.get('venue','N/A')} | 🔗 Cited: {p.get('citationCount', 0)}
+                                    </div>
+                                    <div style="font-size:0.95em; color:#424242;">{s_text}...</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                if st.button(f"📥 深度分析 (ID: {p['paperId']})", key=f"btn_{p['paperId']}"):
+                                    st.session_state.pre_fill_doi = p['paperId']
+                                    st.info(f"已選定論文 ID: {p['paperId']}，請切換至「深度洞察」頁籤並點擊執行。")
+                                    st.rerun()
+                    else:
+                        st.warning("找不到相關論文。請嘗試其他關鍵字。")
