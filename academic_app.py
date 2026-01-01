@@ -479,8 +479,42 @@ def ask_historian(
     if not validate_input(question):
         return "❌ 錯誤：問題不能為空"
     
+    # 格式化上下文資料，避免 datetime 等複雜對象造成問題
+    def format_context_item(item: Dict[str, Any]) -> str:
+        """格式化單個上下文項目"""
+        parts = []
+        if 'code' in item:
+            parts.append(f"代號: {item['code']}")
+        if 'title' in item:
+            parts.append(f"標題: {item['title']}")
+        if 'year' in item:
+            # 處理年份，可能是數字或字符串
+            year = item['year']
+            if year and year != 'N/A':
+                parts.append(f"年份: {year}")
+        return " | ".join(parts)
+    
+    # 格式化所有上下文資料
+    formatted_context = "\n".join([
+        f"- {format_context_item(item)}"
+        for item in context_data
+        if isinstance(item, dict)
+    ])
+    
+    # 限制上下文長度
+    if len(formatted_context) > 2000:
+        formatted_context = formatted_context[:2000] + "..."
+    
     genai.configure(api_key=api_key)
-    prompt = f"""你是一位學術顧問。請用繁體中文回答。\n背景：{str(context_data)[:3000]}\n問題：「{question}」"""
+    prompt = f"""你是一位學術顧問。請用繁體中文回答。
+
+【背景資料 - 相關論文列表】：
+{formatted_context}
+
+【問題】：
+{question}
+
+請基於上述論文資料，提供專業的分析和回答。"""
     
     try:
         model = genai.GenerativeModel(model_name)
@@ -530,12 +564,22 @@ def export_state_to_json() -> str:
     Returns:
         JSON 字符串
     """
+    def json_serializer(obj):
+        """自定義 JSON 序列化器，處理 datetime 等特殊對象"""
+        from datetime import datetime, date
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        elif hasattr(obj, '__dict__'):
+            return str(obj)
+        else:
+            return str(obj)
+    
     data = {
         k: st.session_state[k]
         for k in ['skeleton', 'full_lineage', 'offsets', 'deep_dive_result', 'pi_analysis_result']
         if k in st.session_state
     }
-    return json.dumps(data, default=str, ensure_ascii=False, indent=2)
+    return json.dumps(data, default=json_serializer, ensure_ascii=False, indent=2)
 
 # ==========================================
 # 6. UI 邏輯
