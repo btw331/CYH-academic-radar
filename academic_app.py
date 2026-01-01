@@ -564,22 +564,12 @@ def export_state_to_json() -> str:
     Returns:
         JSON 字符串
     """
-    def json_serializer(obj):
-        """自定義 JSON 序列化器，處理 datetime 等特殊對象"""
-        from datetime import datetime, date
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        elif hasattr(obj, '__dict__'):
-            return str(obj)
-        else:
-            return str(obj)
-    
     data = {
         k: st.session_state[k]
         for k in ['skeleton', 'full_lineage', 'offsets', 'deep_dive_result', 'pi_analysis_result']
         if k in st.session_state
     }
-    return json.dumps(data, default=json_serializer, ensure_ascii=False, indent=2)
+    return json.dumps(data, default=str, ensure_ascii=False, indent=2)
 
 # ==========================================
 # 6. UI 邏輯
