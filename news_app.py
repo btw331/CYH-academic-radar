@@ -638,6 +638,23 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
         report_text = re.sub(r'^###?\s*\[?REPORT_TEXT\]?\s*\n*', '', report_text, flags=re.MULTILINE)
         # 移除開頭的空行
         report_text = report_text.lstrip('\n').strip()
+        
+        # 清理過多的破折號（可能是 Markdown 渲染問題）
+        # 移除連續超過 10 個破折號的行
+        report_text = re.sub(r'^-{10,}\s*$', '', report_text, flags=re.MULTILINE)
+        # 移除連續超過 5 個破折號但保留表格分隔符
+        lines = report_text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # 保留表格分隔符（|:---:| 格式）
+            if re.match(r'^\|[\s:---]+\|', line):
+                cleaned_lines.append(line)
+            # 移除只有破折號的行（超過 5 個）
+            elif re.match(r'^-{5,}\s*$', line):
+                continue  # 跳過這行
+            else:
+                cleaned_lines.append(line)
+        report_text = '\n'.join(cleaned_lines)
     
     data["report_text"] = report_text if report_text else text  # 如果還是空的，使用原始文本
     
@@ -1030,7 +1047,27 @@ if st.session_state.result:
                 "report_text_preview": report_text[:500] if report_text else "（空）"
             })
     else:
-        formatted_text = format_citation_style(report_text)
+        # 清理報告文本中的過多破折號
+        cleaned_report = report_text
+        
+        # 移除連續超過 10 個破折號的行
+        cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
+        
+        # 移除只有破折號的行（保留表格分隔符）
+        lines = cleaned_report.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # 保留表格分隔符（|:---:| 格式）
+            if re.match(r'^\|[\s:---]+\|', line):
+                cleaned_lines.append(line)
+            # 跳過只有破折號的行（超過 5 個）
+            elif re.match(r'^-{5,}\s*$', line):
+                continue
+            else:
+                cleaned_lines.append(line)
+        cleaned_report = '\n'.join(cleaned_lines)
+        
+        formatted_text = format_citation_style(cleaned_report)
         html_content = markdown.markdown(formatted_text, extensions=['tables'])
         st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
     
