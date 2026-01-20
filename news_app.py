@@ -11,18 +11,158 @@ import requests
 import concurrent.futures
 import random
 import markdown
-from urllib.parse import urlparse
-from typing import List, Dict, Any, Tuple, Optional
+import logging
+import hashlib
+import pickle
+import sqlite3
+import asyncio
+import aiohttp
+from pathlib import Path
+from urllib.parse import urlparse, quote
+from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
+from collections import Counter
+import math
 
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_core.prompts import ChatPromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tavily import TavilyClient
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
 
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
+
+# ==========================================
+# 日誌設定
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ==========================================
+# 常數定義
+# ==========================================
+MAX_WORKERS = 12  # 並行處理數
+MAX_CONTENT_LENGTH = 3000  # 內容最大長度（重視正確度，不縮減）
+TITLE_TRUNCATE_LENGTH = 60
+TIMEOUT_COFACTS = 3
+TIMEOUT_FACT_CHECK = 5  # Fact Check API 超時時間
+SIMILARITY_THRESHOLD = 0.8  # 聲量權重校正：標題相似度閾值
+CACHE_EXPIRY_HOURS = 24  # 快取過期時間（小時）
+SUMMARY_THRESHOLD = 2000  # 超過此長度將進行摘要
+CACHE_DIR = Path(".cache")
+CACHE_DB_PATH = CACHE_DIR / "search_cache.db"
+
+# ==========================================
+# 語言風格分析閾值常數（優化：抽取魔法數字）
+# ==========================================
+CLICKBAIT_MULTIPLIER = 0.3  # Clickbait 分數乘數
+CLICKBAIT_THRESHOLD = 0.3  # Clickbait 警示閾值
+SENSATIONALISM_MULTIPLIER = 0.15  # 聳動性分數乘數
+SENSATIONALISM_THRESHOLD = 0.5  # 聳動性警示閾值
+CAPS_RATIO_THRESHOLD = 0.3  # 大寫字母比例警示閾值
+TITLE_CONTENT_MISMATCH_THRESHOLD = 0.6  # 標題內容不匹配警示閾值
+TITLE_CONTENT_UNKNOWN_SCORE = 0.5  # 無法判斷時的不匹配分數
+EMOTIONAL_MANIPULATION_THRESHOLD = 0.5  # 情感操控警示閾值
+EMOTIONAL_WORDS_DIVISOR = 8.0  # 情感詞彙計算除數
+EMOTIONAL_TITLE_BONUS = 0.2  # 標題包含情感詞彙的加權
+
+# ==========================================
+# 證據強度分級閾值常數
+# ==========================================
+EVIDENCE_LEVEL_A_PLUS = 0.85  # A+ 等級閾值
+EVIDENCE_LEVEL_A = 0.70  # A 等級閾值
+EVIDENCE_LEVEL_B_PLUS = 0.55  # B+ 等級閾值
+EVIDENCE_LEVEL_B = 0.40  # B 等級閾值
+EVIDENCE_LEVEL_C = 0.25  # C 等級閾值
+
+# ==========================================
+# 協調行為偵測閾值常數
+# ==========================================
+COORDINATION_DUPLICATE_RATIO_THRESHOLD = 0.3  # 重複內容比例閾值
+COORDINATION_DOMAIN_CONCENTRATION_THRESHOLD = 0.5  # 域名集中度閾值
+COORDINATION_DATE_CONCENTRATION_THRESHOLD = 0.4  # 時間集中度閾值
+COORDINATION_HIGH_RISK_SCORE = 0.6  # 高風險協調行為分數閾值
+COORDINATION_DUPLICATE_PENALTY = 0.4  # 重複內容扣分
+COORDINATION_DOMAIN_PENALTY = 0.3  # 域名集中扣分
+COORDINATION_TIME_PENALTY = 0.2  # 時間集中扣分
+
+# ==========================================
+# 證據權重評估閾值常數
+# ==========================================
+EVIDENCE_WEIGHT_STRONG_CONSENSUS_EXPERT_RATIO = 0.7  # 強共識：權威來源比例
+EVIDENCE_WEIGHT_STRONG_CONSENSUS_QUALITY = 0.7  # 強共識：品質分數
+EVIDENCE_WEIGHT_MODERATE_EXPERT_RATIO = 0.5  # 中等共識：權威來源比例
+EVIDENCE_WEIGHT_MODERATE_QUALITY = 0.6  # 中等共識：品質分數
+EVIDENCE_WEIGHT_DIVIDED_EXPERT_RATIO = 0.3  # 分歧觀點：權威來源比例
+EVIDENCE_WEIGHT_WEAK_EXPERT_RATIO = 0.15  # 弱證據：權威來源比例
+
+# ==========================================
+# 內容品質評估閾值常數
+# ==========================================
+CONTENT_QUALITY_LONG = 1000  # 長內容閾值
+CONTENT_QUALITY_MEDIUM = 500  # 中等內容閾值
+CONTENT_QUALITY_SHORT = 200  # 短內容閾值
+CONTENT_OVERLAP_HIGH = 0.5  # 標題內容重疊度高閾值
+CONTENT_OVERLAP_MEDIUM = 0.2  # 標題內容重疊度中閾值
+
+# ==========================================
+# 網站品質評估常數
+# ==========================================
+WEBSITE_QUALITY_MIN_SCORE = 0.3  # 網站品質最低分數
+WEBSITE_QUALITY_PENALTY_PER_ISSUE = 0.15  # 每個問題扣分
+
+# ==========================================
+# 相似度計算權重常數
+# ==========================================
+TITLE_SIMILARITY_CHAR_WEIGHT = 0.3  # 字元相似度權重
+TITLE_SIMILARITY_WORD_WEIGHT = 0.7  # 詞級相似度權重
+TITLE_SIMILARITY_QUICK_FILTER = 0.5  # 快速過濾閾值
+
+# ==========================================
+# 共識分析閾值常數
+# ==========================================
+CONSENSUS_HIGH_THRESHOLD = 0.7  # 高共識度閾值
+CONSENSUS_MEDIUM_THRESHOLD = 0.4  # 中等共識度閾值
+CROSS_VALIDATION_HIGH_RATIO = 0.7  # 交叉驗證高比例閾值
+CROSS_VALIDATION_MEDIUM_RATIO = 0.4  # 交叉驗證中比例閾值
+
+# ==========================================
+# 公信力評分閾值常數
+# ==========================================
+CREDIBILITY_HIGH_THRESHOLD = 0.8  # 高公信力閾值
+CREDIBILITY_MEDIUM_THRESHOLD = 0.6  # 中等公信力閾值
+
+# 確保快取目錄存在
+CACHE_DIR.mkdir(exist_ok=True)
+
+# AI 輸出必需的章節標記
+REQUIRED_SECTIONS_FUSION = [
+    "ACH 競爭假設分析",
+    "全域現況摘要",
+    "爭議點與事實查核",
+    "媒體框架光譜分析",
+    "深度識讀與利益分析",
+    "結構性反思"
+]
+
+REQUIRED_SECTIONS_SCENARIO = [
+    "CLA 深度解構",
+    "未來趨勢路徑模擬",
+    "驗屍分析",
+    "綜合發展與因應建議"
+]
 
 # ==========================================
 # 1. 基礎設定與 CSS樣式
@@ -125,7 +265,10 @@ OFFICIAL_WHITELIST = ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "t
 FULL_TAIWAN_WHITELIST = BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw"]
 
 INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me"]
-INTL_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "dw.com", "voanews.com", "nikkei.com", "nhk.or.jp"]
+INTL_ASIA_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "nikkei.com", "nhk.or.jp", "scmp.com", "asia.nikkei.com", "channelnewsasia.com"]
+INTL_EUROPE_WHITELIST = ["bbc.com", "dw.com", "euronews.com", "theguardian.com", "lemonde.fr", "elpais.com", "spiegel.de", "ft.com", "politico.eu"]
+INTL_AMERICAS_WHITELIST = ["cnn.com", "bbc.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "washingtonpost.com", "latimes.com", "nbcnews.com", "abcnews.go.com", "cbsnews.com"]
+INTL_WHITELIST = INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST
 
 DOMAIN_NAME_MAP = {
     "udn.com": "聯合報", "chinatimes.com": "中國時報", "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞",
@@ -155,19 +298,143 @@ DB_MAP = {
 NOISE_BLACKLIST = ["zhihu.com", "baidu.com", "pinterest.com", "instagram.com", "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"]
 
 # ==========================================
+# 來源公信力評分系統（方案 2）
+# ==========================================
+AUTHORITY_TIERS = {
+    "Tier_1_Academic": {
+        "domains": [".edu", ".ac.uk", ".ac.jp", ".ac.tw"],
+        "base_score": 0.95,
+        "weight_coefficient": 1.5
+    },
+    "Tier_1_Government": {
+        "domains": [".gov.tw", ".gov", ".gov.uk", ".gov.au"],
+        "base_score": 0.90,
+        "weight_coefficient": 1.4
+    },
+    "Tier_2_International": {
+        "media_list": ["bbc.com", "reuters.com", "apnews.com", "bloomberg.com", 
+                       "wsj.com", "nytimes.com", "theguardian.com", "dw.com"],
+        "base_score": 0.85,
+        "weight_coefficient": 1.3
+    },
+    "Tier_2_Independent": {
+        "media_list": ["twreporter.org", "theinitium.com", "thenewslens.com"],
+        "base_score": 0.75,
+        "weight_coefficient": 1.2
+    },
+    "Tier_3_Commercial": {
+        "base_score": 0.60,
+        "weight_coefficient": 1.0
+    },
+    "Tier_4_Social": {
+        "media_list": ["facebook.com", "twitter.com", "youtube.com", "ptt.cc", "dcard.tw"],
+        "base_score": 0.30,
+        "weight_coefficient": 0.5
+    }
+}
+
+# ==========================================
 # 3. 輔助函式 (Helper Functions)
 # ==========================================
 
 def get_domain_name(url: str) -> str:
-    try: return urlparse(url).netloc.replace("www.", "")
-    except: return ""
+    try: 
+        return urlparse(url).netloc.replace("www.", "")
+    except Exception as e:
+        logger.debug(f"域名提取失敗: {url}, 錯誤: {str(e)}")
+        return ""
+
+class SourceReputationManager:
+    """
+    來源公信力評分管理器（方案 2）
+    
+    功能:
+    - 靜態評分：基於域名、機構類型
+    - 權重係數：用於 RAG 過程中的資訊加權
+    """
+    
+    def __init__(self):
+        self.static_scores_cache = {}  # 靜態評分快取
+    
+    def calculate_credibility_score(self, url: str, domain: str) -> Tuple[float, str]:
+        """
+        計算來源公信力分數 (0-1)
+        
+        Returns:
+            Tuple[float, str]: (分數, Tier 名稱)
+        """
+        if url in self.static_scores_cache:
+            return self.static_scores_cache[url]
+        
+        domain_lower = domain.lower()
+        
+        # Tier 1: 學術機構
+        for domain_suffix in AUTHORITY_TIERS["Tier_1_Academic"]["domains"]:
+            if domain_suffix in domain_lower:
+                score = AUTHORITY_TIERS["Tier_1_Academic"]["base_score"]
+                tier = "Tier_1_Academic"
+                self.static_scores_cache[url] = (score, tier)
+                return score, tier
+        
+        # Tier 1: 政府機構
+        for domain_suffix in AUTHORITY_TIERS["Tier_1_Government"]["domains"]:
+            if domain_suffix in domain_lower:
+                score = AUTHORITY_TIERS["Tier_1_Government"]["base_score"]
+                tier = "Tier_1_Government"
+                self.static_scores_cache[url] = (score, tier)
+                return score, tier
+        
+        # Tier 2: 國際權威媒體
+        for media in AUTHORITY_TIERS["Tier_2_International"]["media_list"]:
+            if media in domain_lower:
+                score = AUTHORITY_TIERS["Tier_2_International"]["base_score"]
+                tier = "Tier_2_International"
+                self.static_scores_cache[url] = (score, tier)
+                return score, tier
+        
+        # Tier 2: 獨立媒體
+        for media in AUTHORITY_TIERS["Tier_2_Independent"]["media_list"]:
+            if media in domain_lower:
+                score = AUTHORITY_TIERS["Tier_2_Independent"]["base_score"]
+                tier = "Tier_2_Independent"
+                self.static_scores_cache[url] = (score, tier)
+                return score, tier
+        
+        # Tier 4: 社群媒體
+        for media in AUTHORITY_TIERS["Tier_4_Social"]["media_list"]:
+            if media in domain_lower:
+                score = AUTHORITY_TIERS["Tier_4_Social"]["base_score"]
+                tier = "Tier_4_Social"
+                self.static_scores_cache[url] = (score, tier)
+                return score, tier
+        
+        # Tier 3: 預設商業媒體
+        score = AUTHORITY_TIERS["Tier_3_Commercial"]["base_score"]
+        tier = "Tier_3_Commercial"
+        self.static_scores_cache[url] = (score, tier)
+        return score, tier
+    
+    def get_weight_coefficient(self, source_category: str, domain: str) -> float:
+        """
+        獲取權重係數（用於 RAG 加權）
+        
+        Returns:
+            float: 權重係數（0.5-1.5）
+        """
+        _, tier = self.calculate_credibility_score("", domain)
+        return AUTHORITY_TIERS.get(tier, {}).get("weight_coefficient", 1.0)
+
+# 全局實例
+_reputation_manager = SourceReputationManager()
 
 def classify_source(url: str) -> str:
     if not url or url == "#": return "OTHER"
     try:
         domain = urlparse(url).netloc.lower()
         clean_domain = domain.replace("www.", "")
-    except: return "OTHER"
+    except Exception as e:
+        logger.debug(f"來源分類失敗: {url}, 錯誤: {str(e)}")
+        return "OTHER"
     for cat, keywords in DB_MAP.items():
         for kw in keywords:
             if kw in domain: return cat
@@ -199,12 +466,25 @@ def format_citation_style(text: str) -> str:
     text = re.sub(r'([\[\(（]\s*Source\s+[\d,，、\s]+[\]\)）])', replacement, text)
     return text
 
+def validate_date(date_str: str) -> bool:
+    """驗證日期字串是否為有效的 YYYY-MM-DD 格式"""
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+        return True
+    except (ValueError, TypeError):
+        return False
+
 def extract_date_from_url(url: str) -> Optional[str]:
+    """從 URL 中提取日期，並驗證有效性"""
     if not url: return None
     patterns = [r'/(\d{4})[-/](\d{2})[-/](\d{2})/', r'/(\d{4})(\d{2})(\d{2})/', r'-(\d{4})(\d{2})(\d{2})']
     for p in patterns:
         match = re.search(p, url)
-        if match: return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        if match:
+            date_str = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+            # 驗證日期有效性
+            if validate_date(date_str):
+                return date_str
     return None
 
 # [V37.3 New] 核心渲染邏輯抽取 (DRY Fix)
@@ -216,11 +496,15 @@ def process_timeline_rows(timeline_data: List[Dict], sources: List[Dict], blind_
     if not timeline_data: return ""
     
     valid_rows = []
+    invalid_count = 0
     
     for item in timeline_data:
         s_id = item.get('source_id', 0)
         # 1. 嚴格過濾：無效來源直接丟棄
-        if s_id == 0 or s_id > len(sources): continue
+        if s_id == 0 or s_id > len(sources): 
+            invalid_count += 1
+            logger.debug(f"時間軸項目無效 Source ID: {s_id} (總來源數: {len(sources)})")
+            continue
         
         source_data = sources[s_id-1]
         real_url = source_data.get('url', '#')
@@ -278,6 +562,9 @@ def process_timeline_rows(timeline_data: List[Dict], sources: List[Dict], blind_
     # 4. 強制按日期排序 (最新的在上面)
     valid_rows.sort(key=lambda x: x['sort_date'], reverse=True)
     
+    if invalid_count > 0:
+        logger.warning(f"時間軸處理：發現 {invalid_count} 個無效的 Source ID 引用")
+    
     return "".join([r['html'] for r in valid_rows])
 
 # ==========================================
@@ -285,95 +572,1529 @@ def process_timeline_rows(timeline_data: List[Dict], sources: List[Dict], blind_
 # ==========================================
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
-def generate_dynamic_keywords(query: str, api_key: str) -> List[str]:
+def get_cached_query_expansion(query: str) -> Optional[Dict[str, Any]]:
+    """從快取獲取查詢擴展結果"""
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
-        prompt = f"""
-        請針對議題「{query}」，生成 3 組最具情報價值的搜尋關鍵字，分別對應以下三個維度：
+        conn = init_cache_db()
+        cache_key = hashlib.md5(query.encode()).hexdigest()
+        cursor = conn.execute(
+            "SELECT expanded_queries, balanced_queries, expiry_time FROM query_expansion_cache WHERE cache_key = ?",
+            (cache_key,)
+        )
+        row = cursor.fetchone()
+        if row:
+            expanded_json, balanced_json, expiry_time = row
+            if time.time() < expiry_time:
+                result = {
+                    "expanded_queries": json.loads(expanded_json) if expanded_json else None,
+                    "balanced_queries": json.loads(balanced_json) if balanced_json else None
+                }
+                conn.close()
+                logger.info(f"查詢擴展快取命中: {query[:50]}")
+                return result
+            else:
+                # 快取過期，刪除
+                conn.execute("DELETE FROM query_expansion_cache WHERE cache_key = ?", (cache_key,))
+                conn.commit()
+        conn.close()
+        return None
+    except Exception as e:
+        logger.warning(f"查詢擴展快取讀取失敗: {str(e)}")
+        return None
+
+def cache_query_expansion(query: str, expanded_queries: List[Dict], balanced_queries: Optional[Dict] = None):
+    """將查詢擴展結果存入快取"""
+    try:
+        conn = init_cache_db()
+        cache_key = hashlib.md5(query.encode()).hexdigest()
+        timestamp = time.time()
+        expiry_time = timestamp + (CACHE_EXPIRY_HOURS * 3600)
+        
+        expanded_json = json.dumps(expanded_queries, ensure_ascii=False)
+        balanced_json = json.dumps(balanced_queries, ensure_ascii=False) if balanced_queries else None
+        
+        conn.execute("""
+            INSERT OR REPLACE INTO query_expansion_cache 
+            (cache_key, query, expanded_queries, balanced_queries, timestamp, expiry_time) 
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (cache_key, query[:200], expanded_json, balanced_json, timestamp, expiry_time))
+        conn.commit()
+        conn.close()
+        logger.info(f"查詢擴展已快取: {query[:50]}")
+    except Exception as e:
+        logger.warning(f"查詢擴展快取寫入失敗: {str(e)}")
+
+def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12, use_cache: bool = True) -> List[Dict[str, Any]]:
+    """
+    多層次查詢擴展機制（方案 1.1，優化版：減少 API 調用）
+    
+    優化策略：
+    1. 使用快取避免重複調用
+    2. 合併 base 和 semantic 為一次 LLM 調用
+    
+    Returns:
+        List[Dict]: [{"query": "...", "type": "...", "priority": ...}, ...]
+    """
+    # 檢查快取
+    if use_cache:
+        cached = get_cached_query_expansion(query)
+        if cached and cached.get("expanded_queries"):
+            return cached["expanded_queries"][:max_expansions]
+    
+    expanded_queries = []
+    
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
+        
+        # 優化：合併 base 和 semantic 為一次調用（減少 1 次 API 調用）
+        combined_prompt = f"""
+        請針對議題「{query}」，生成搜尋關鍵字，包含以下兩個部分：
+        
+        【第一部分：基礎三軌】（3 個關鍵字）
         1. [事實軌]：針對事件發展、時間軸、新聞報導。
         2. [觀點軌]：針對爭議、正反評論、社論。
         3. [深度軌]：針對懶人包、影響分析、法規細節。
         
-        請直接輸出 3 個字串，用逗號分隔，不要標號。
-        範例："{query} 事件進度, {query} 正反爭議, {query} 懶人包重點"
+        【第二部分：語義擴展】（6-8 個關鍵字）
+        生成語義相關的搜尋查詢變體，涵蓋不同的表達方式、專業術語和語境。
+        
+        請以以下格式輸出：
+        第一部分：關鍵字1, 關鍵字2, 關鍵字3
+        第二部分：關鍵字1, 關鍵字2, 關鍵字3, 關鍵字4, 關鍵字5, 關鍵字6
+        
+        範例：
+        第一部分：台積電美國設廠事件, 台積電美國設廠爭議, 台積電美國設廠分析
+        第二部分：台積電海外投資, 半導體產業外移, 科技供應鏈重組, 美國製造業回流, 晶圓廠建置, 地緣政治影響
+        """
+        
+        combined_resp = llm.invoke(combined_prompt).content
+        
+        # 解析第一部分（基礎三軌）
+        part1_match = re.search(r'第一部分[：:]\s*(.+?)(?=第二部分|$)', combined_resp, re.DOTALL)
+        if part1_match:
+            base_keywords = [k.strip() for k in part1_match.group(1).split(',') if k.strip()]
+            if len(base_keywords) >= 3:
+                expanded_queries.append({"query": base_keywords[0], "type": "事實軌", "priority": 1})
+                expanded_queries.append({"query": base_keywords[1], "type": "觀點軌", "priority": 1})
+                expanded_queries.append({"query": base_keywords[2], "type": "深度軌", "priority": 1})
+        
+        # 解析第二部分（語義擴展）
+        part2_match = re.search(r'第二部分[：:]\s*(.+?)$', combined_resp, re.DOTALL)
+        if part2_match:
+            semantic_keywords = [k.strip() for k in part2_match.group(1).split(',') if k.strip()][:8]
+            for kw in semantic_keywords:
+                if kw and kw not in [q["query"] for q in expanded_queries]:
+                    expanded_queries.append({"query": kw, "type": "語義擴展", "priority": 2})
+        
+        # 如果解析失敗，使用降級策略
+        if len(expanded_queries) < 3:
+            expanded_queries.extend([
+                {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
+                {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
+                {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+            ])
+        
+        # 層次三：語境級擴展（時間/觀點維度）- 不需要 LLM
+        contextual_queries = [
+            f"{query} 最新發展",
+            f"{query} 歷史背景",
+            f"{query} 支持觀點",
+            f"{query} 反對觀點",
+            f"{query} 中立分析",
+        ]
+        
+        for cq in contextual_queries:
+            if cq not in [q["query"] for q in expanded_queries]:
+                expanded_queries.append({"query": cq, "type": "語境擴展", "priority": 3})
+        
+        # 按優先級排序並去重
+        seen = set()
+        unique_queries = []
+        for q in sorted(expanded_queries, key=lambda x: x["priority"]):
+            query_str = q["query"]
+            if query_str not in seen:
+                seen.add(query_str)
+                unique_queries.append(q)
+                if len(unique_queries) >= max_expansions:
+                    break
+        
+        # 存入快取
+        if use_cache:
+            cache_query_expansion(query, unique_queries)
+        
+        logger.info(f"查詢擴展完成：生成了 {len(unique_queries)} 個擴展查詢（優化：合併為 1 次 API 調用）")
+        return unique_queries
+        
+    except Exception as e:
+        logger.warning(f"查詢擴展失敗，使用基礎關鍵字: {str(e)}")
+        fallback = [
+            {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
+            {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
+            {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+        ]
+        # 即使失敗也快取降級結果
+        if use_cache:
+            cache_query_expansion(query, fallback)
+        return fallback
+
+# 向後相容的函數
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
+def generate_dynamic_keywords(query: str, api_key: str, use_cache: bool = True) -> List[str]:
+    """向後相容：返回前三個關鍵字（優化：使用快取）"""
+    expanded = generate_expanded_queries(query, api_key, max_expansions=3, use_cache=use_cache)
+    return [q["query"] for q in expanded[:3]]
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
+def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) -> Dict[str, List[str]]:
+    """
+    生成多維度平衡檢索查詢（方案 3）
+    
+    Returns:
+        Dict: {
+            "pro_arguments": ["支持觀點查詢1", ...],
+            "con_arguments": ["反對觀點查詢1", ...],
+            "neutral_analysis": ["中立分析查詢1", ...],
+            "factual_timeline": ["事實時序查詢1", ...]
+        }
+    """
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
+        
+        prompt = f"""
+針對議題「{query}」，請生成三組搜尋查詢：
+
+1. 【正方觀點查詢】：
+   - 生成 3-4 個支持該議題的觀點/論述的搜尋查詢
+   - 範例：針對「核電」→ "核電優點 支持 效益"
+
+2. 【反方觀點查詢】：
+   - 生成 3-4 個反對該議題的觀點/論述的搜尋查詢
+   - 範例：針對「核電」→ "核電缺點 反對 風險"
+
+3. 【中立學術分析查詢】：
+   - 生成 3-4 個中立的學術研究、數據分析查詢
+   - 範例：針對「核電」→ "核電研究 數據分析 學術論文"
+
+請以 JSON 格式輸出：
+{{
+    "pro": ["查詢1", "查詢2", "查詢3", "查詢4"],
+    "con": ["查詢1", "查詢2", "查詢3", "查詢4"],
+    "neutral": ["查詢1", "查詢2", "查詢3", "查詢4"]
+}}
         """
         resp = llm.invoke(prompt).content
-        keywords = [k.strip() for k in resp.split(',') if k.strip()]
-        return keywords[:3] if len(keywords) >= 3 else [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
-    except:
-        return [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"] 
+        
+        # 嘗試解析 JSON
+        json_match = re.search(r'\{.*\}', resp, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            return {
+                "pro_arguments": result.get("pro", [f"{query} 支持 優點", f"{query} 贊成"]),
+                "con_arguments": result.get("con", [f"{query} 反對 缺點", f"{query} 批評"]),
+                "neutral_analysis": result.get("neutral", [f"{query} 研究", f"{query} 數據分析"]),
+                "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+            }
+    except Exception as e:
+        logger.warning(f"平衡查詢生成失敗: {str(e)}")
+    
+    # 降級策略（使用共用函數）
+    fallback = {
+        "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+        "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+        "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+        "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+    }
+    # 即使失敗也快取降級結果
+    if use_cache:
+        cached = get_cached_query_expansion(query)
+        if cached:
+            cache_query_expansion(query, cached.get("expanded_queries", []), fallback)
+        else:
+            cache_query_expansion(query, [], fallback)
+    return fallback
 
-def search_cofacts(query: str) -> str:
+def analyze_consensus(all_sources: Dict[str, List[Dict]]) -> Dict[str, Any]:
+    """
+    分析不同立場間的共識與分歧（方案 3.3 - 共識分析）
+    
+    Args:
+        all_sources: {
+            "pro_sources": [...],
+            "con_sources": [...],
+            "neutral_sources": [...],
+            "factual_sources": [...]
+        }
+    
+    Returns:
+        Dict: {
+            "common_facts": [...],  # 各方都認同的事實
+            "divergence_points": [...],  # 分歧點
+            "consensus_score": 0.0-1.0,  # 共識度分數
+            "perspective_balance": {...}  # 立場平衡度
+        }
+    """
+    pro_sources = all_sources.get("pro_sources", [])
+    con_sources = all_sources.get("con_sources", [])
+    neutral_sources = all_sources.get("neutral_sources", [])
+    
+    # 簡單的共識分析（可以進一步用 LLM 優化）
+    total_sources = len(pro_sources) + len(con_sources) + len(neutral_sources)
+    
+    # 立場平衡度
+    perspective_balance = {
+        "pro_ratio": len(pro_sources) / total_sources if total_sources > 0 else 0,
+        "con_ratio": len(con_sources) / total_sources if total_sources > 0 else 0,
+        "neutral_ratio": len(neutral_sources) / total_sources if total_sources > 0 else 0
+    }
+    
+    # 計算平衡度（0-1，越接近 0.5 越平衡）
+    pro_con_balance = min(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) / max(
+        perspective_balance["pro_ratio"], perspective_balance["con_ratio"]
+    ) if max(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) > 0 else 0
+    
+    return {
+        "common_facts": [],  # 待 LLM 進一步分析
+        "divergence_points": [],  # 待 LLM 進一步分析
+        "consensus_score": pro_con_balance,
+        "perspective_balance": perspective_balance
+    } 
+
+# ==========================================
+# 快取機制
+# ==========================================
+def init_cache_db():
+    """初始化快取資料庫"""
+    conn = sqlite3.connect(str(CACHE_DB_PATH))
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS search_cache (
+            cache_key TEXT PRIMARY KEY,
+            query TEXT,
+            results TEXT,
+            timestamp REAL,
+            expiry_time REAL
+        )
+    """)
+    # 新增查詢擴展快取表
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS query_expansion_cache (
+            cache_key TEXT PRIMARY KEY,
+            query TEXT,
+            expanded_queries TEXT,
+            balanced_queries TEXT,
+            timestamp REAL,
+            expiry_time REAL
+        )
+    """)
+    conn.commit()
+    return conn
+
+def get_cache_key(query: str, params: Dict) -> str:
+    """生成快取鍵"""
+    cache_data = f"{query}_{json.dumps(params, sort_keys=True)}"
+    return hashlib.md5(cache_data.encode()).hexdigest()
+
+def get_cached_results(query: str, params: Dict) -> Optional[List[Dict]]:
+    """從快取獲取搜尋結果"""
+    try:
+        conn = init_cache_db()
+        cache_key = get_cache_key(query, params)
+        cursor = conn.execute(
+            "SELECT results, expiry_time FROM search_cache WHERE cache_key = ?",
+            (cache_key,)
+        )
+        row = cursor.fetchone()
+        if row:
+            results_json, expiry_time = row
+            if time.time() < expiry_time:
+                # 快取有效
+                results = json.loads(results_json)
+                conn.close()
+                logger.info(f"快取命中: {query[:50]}")
+                return results
+            else:
+                # 快取過期，刪除
+                conn.execute("DELETE FROM search_cache WHERE cache_key = ?", (cache_key,))
+                conn.commit()
+        conn.close()
+        return None
+    except Exception as e:
+        logger.warning(f"快取讀取失敗: {str(e)}")
+        return None
+
+def cache_results(query: str, params: Dict, results: List[Dict]):
+    """將搜尋結果存入快取"""
+    try:
+        conn = init_cache_db()
+        cache_key = get_cache_key(query, params)
+        results_json = json.dumps(results, ensure_ascii=False)
+        timestamp = time.time()
+        expiry_time = timestamp + (CACHE_EXPIRY_HOURS * 3600)
+        
+        conn.execute(
+            """INSERT OR REPLACE INTO search_cache 
+               (cache_key, query, results, timestamp, expiry_time) 
+               VALUES (?, ?, ?, ?, ?)""",
+            (cache_key, query[:200], results_json, timestamp, expiry_time)
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"結果已快取: {query[:50]}")
+    except Exception as e:
+        logger.warning(f"快取寫入失敗: {str(e)}")
+
+def clear_cache():
+    """清除所有過期快取"""
+    try:
+        conn = init_cache_db()
+        current_time = time.time()
+        cursor = conn.execute("DELETE FROM search_cache WHERE expiry_time < ?", (current_time,))
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logger.info(f"已清除 {deleted} 條過期快取")
+        return deleted
+    except Exception as e:
+        logger.warning(f"清除快取失敗: {str(e)}")
+        return 0
+
+# ==========================================
+# AI 輸出格式驗證
+# ==========================================
+def validate_ai_output_format(raw_text: str, mode: str = "FUSION") -> Dict[str, Any]:
+    """
+    驗證 AI 輸出是否包含必需的章節和格式
+    
+    Returns:
+        Dict with validation results and missing sections
+    """
+    if not raw_text:
+        return {
+            'is_valid': False,
+            'missing_sections': [],
+            'has_timeline': False,
+            'has_report': False,
+            'score': 0.0
+        }
+    
+    required_sections = REQUIRED_SECTIONS_FUSION if mode == "FUSION" else REQUIRED_SECTIONS_SCENARIO
+    
+    validation = {
+        'is_valid': True,
+        'missing_sections': [],
+        'has_timeline': False,
+        'has_report': False,
+        'has_ach_table': False,
+        'has_logic_table': False,
+        'has_framing_table': False,
+        'score': 0.0
+    }
+    
+    # 檢查時間軸
+    validation['has_timeline'] = bool('[DATA_TIMELINE]' in raw_text or 'DATA_TIMELINE' in raw_text)
+    
+    # 檢查報告文本
+    validation['has_report'] = bool('[REPORT_TEXT]' in raw_text or 'REPORT_TEXT' in raw_text)
+    
+    # 檢查必需章節
+    for section in required_sections:
+        # 使用多種可能的形式檢查
+        section_variants = [
+            section,
+            section.replace(' ', ''),
+            section.split('(')[0].strip(),
+            section.split('（')[0].strip()
+        ]
+        
+        found = any(variant in raw_text for variant in section_variants)
+        if not found:
+            validation['missing_sections'].append(section)
+            validation['is_valid'] = False
+    
+    # 檢查表格格式
+    validation['has_ach_table'] = bool('| 假設' in raw_text and '| 支持證據' in raw_text)
+    validation['has_logic_table'] = bool('| 謬誤類型' in raw_text or '邏輯謬誤偵測表' in raw_text)
+    validation['has_framing_table'] = bool('| 媒體陣營' in raw_text and '| 問題定義' in raw_text)
+    
+    # 計算分數（0-100）
+    base_score = 50 if validation['has_timeline'] else 0
+    base_score += 30 if validation['has_report'] else 0
+    base_score += 10 * (len(required_sections) - len(validation['missing_sections'])) / len(required_sections)
+    base_score += 3 if validation['has_ach_table'] else 0
+    base_score += 3 if validation['has_logic_table'] else 0
+    base_score += 4 if validation['has_framing_table'] else 0
+    
+    validation['score'] = min(100.0, base_score)
+    
+    return validation
+
+# ==========================================
+# 證據強度評估增強
+# ==========================================
+def analyze_language_style(content: str, title: str) -> Dict[str, Any]:
+    """
+    分析語言風格異常與情感操控（改進項目：語言風格分析模組）
+    
+    參考最新研究，檢測：
+    - 誇張性標題（clickbait）
+    - 情感操控性語言
+    - 標題與內容不匹配
+    - 語法錯誤與格式異常
+    
+    Args:
+        content: 內容文本
+        title: 標題
+    
+    Returns:
+        Dict: {
+            "clickbait_score": float,  # 標題誘導性分數 0-1
+            "emotional_manipulation": float,  # 情感操控強度 0-1
+            "title_content_mismatch": float,  # 標題與內容不匹配度 0-1
+            "sensationalism_score": float,  # 聳動性分數 0-1
+            "grammar_errors": int,  # 語法錯誤數（預留，未來可整合語法檢查）
+            "flags": List[str],  # 警示標記列表
+            "emotional_indicators": Dict  # 情感指標詳情
+        }
+    """
+    if not title:
+        return {
+            "clickbait_score": 0.0,
+            "emotional_manipulation": 0.0,
+            "title_content_mismatch": 0.0,
+            "sensationalism_score": 0.0,
+            "grammar_errors": 0,
+            "flags": [],
+            "emotional_indicators": {}
+        }
+    
+    flags = []
+    
+    # === 1. 檢測 Clickbait 標題模式 ===
+    clickbait_patterns = [
+        "你不會相信", "驚人真相", "被隱瞞", "震驚", "驚呆了",
+        "99%的人都不知道", "最後竟然", "沒想到", "竟然這樣",
+        "秘密曝光", "真相大白", "內幕", "曝光", "震撼",
+        "嚇一跳", "不敢相信", "原來是", "終於知道"
+    ]
+    clickbait_matches = sum(1 for pattern in clickbait_patterns if pattern in title)
+    clickbait_score = min(1.0, clickbait_matches * CLICKBAIT_MULTIPLIER)
+    
+    if clickbait_score > CLICKBAIT_THRESHOLD:
+        flags.append("⚠️ 標題具有誘導性（Clickbait）")
+    
+    # === 2. 檢測過度誇張語言 ===
+    exaggeration_indicators = [
+        "極度", "非常", "超級", "絕對", "完全", "永遠", "從來沒有",
+        "史上最", "前所未有", "史無前例", "絕無僅有", "空前絕後",
+        "無與倫比", "登峰造極", "徹底", "全面", "徹底崩潰"
+    ]
+    combined_text = (title + " " + content[:300]).lower()
+    exaggeration_count = sum(1 for indicator in exaggeration_indicators if indicator in combined_text)
+    sensationalism_score = min(1.0, exaggeration_count * SENSATIONALISM_MULTIPLIER)
+    
+    if sensationalism_score > SENSATIONALISM_THRESHOLD:
+        flags.append("⚠️ 使用過度誇張語言")
+    
+    # === 3. 檢測標題格式異常 ===
+    alpha_chars = [c for c in title if c.isalpha()]
+    caps_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars) if alpha_chars else 0
+    exclamation_count = title.count('!')
+    question_mark_count = title.count('?')
+    
+    format_anomaly = False
+    if caps_ratio > CAPS_RATIO_THRESHOLD:
+        format_anomaly = True
+        flags.append("⚠️ 標題包含過多大寫字母")
+    if exclamation_count > 2:
+        format_anomaly = True
+        flags.append("⚠️ 標題使用過多感嘆號")
+    if question_mark_count > 2:
+        format_anomaly = True
+    
+    # === 4. 標題與內容語義相似度（不匹配度檢測）===
+    title_words = set(re.findall(r'\w+', title.lower()))
+    content_sample = content[:500].lower()  # 取前500字元
+    content_words = set(re.findall(r'\w+', content_sample))
+    
+    # 過濾停用詞（簡化版）
+    stopwords = {'的', '是', '在', '了', '和', '與', '及', '或', '但', '而', '也', '都', '就', '還', '更', '又', '要', '為', '會', '可以', '能', '可', '被', '將', '已', '對', '從', '由', '以', '等', '個', '一', '二', '三', '這', '那', '他', '她', '它', '我們', '你們', '他們', '這', '那'}
+    title_keywords = title_words - stopwords
+    content_keywords = content_words - stopwords
+    
+    if title_keywords:
+        overlap_ratio = len(title_keywords & content_keywords) / len(title_keywords)
+        title_content_mismatch = 1.0 - overlap_ratio
+    else:
+        title_content_mismatch = TITLE_CONTENT_UNKNOWN_SCORE  # 無法判斷
+    
+    if title_content_mismatch > TITLE_CONTENT_MISMATCH_THRESHOLD:
+        flags.append("⚠️ 標題與內容不匹配（標題黨）")
+    
+    # === 5. 情感操控檢測 ===
+    # 恐懼詞彙
+    fear_words = ["恐懼", "害怕", "危險", "威脅", "災難", "毀滅", "崩潰", 
+                  "危機", "失控", "恐怖", "驚嚇", "恐慌", "滅亡"]
+    # 憤怒詞彙
+    anger_words = ["憤怒", "不滿", "抗議", "譴責", "暴怒", "憤慨", "反感",
+                   "痛批", "怒斥", "抨擊", "譏諷", "嘲諷"]
+    # 興奮/煽動詞彙
+    excitement_words = ["興奮", "激動", "震撼", "驚人", "爆炸性", "轟動",
+                        "驚爆", "勁爆", "爆裂", "炸裂", "驚天"]
+    
+    content_lower = content.lower()
+    emotional_indicators = {
+        "fear": sum(1 for w in fear_words if w in content_lower),
+        "anger": sum(1 for w in anger_words if w in content_lower),
+        "excitement": sum(1 for w in excitement_words if w in content_lower)
+    }
+    
+    # 計算情感操控強度（多種情感同時出現時更強）
+    total_emotional_words = sum(emotional_indicators.values())
+    emotional_manipulation = min(1.0, total_emotional_words / EMOTIONAL_WORDS_DIVISOR)
+    
+    # 如果標題也包含情感詞彙，加權
+    title_lower = title.lower()
+    title_emotional = any(w in title_lower for w in fear_words + anger_words + excitement_words)
+    if title_emotional:
+        emotional_manipulation = min(1.0, emotional_manipulation + EMOTIONAL_TITLE_BONUS)
+    
+    if emotional_manipulation > EMOTIONAL_MANIPULATION_THRESHOLD:
+        dominant_emotion = max(emotional_indicators.items(), key=lambda x: x[1])[0]
+        emotion_names = {"fear": "恐懼", "anger": "憤怒", "excitement": "興奮"}
+        flags.append(f"⚠️ 情感操控性強（主要為{emotion_names.get(dominant_emotion, '情緒化')}語言）")
+    
+    return {
+        "clickbait_score": clickbait_score,
+        "emotional_manipulation": emotional_manipulation,
+        "title_content_mismatch": title_content_mismatch,
+        "sensationalism_score": sensationalism_score,
+        "grammar_errors": 0,  # 預留：未來可整合語法檢查 API
+        "flags": flags,
+        "emotional_indicators": emotional_indicators,
+        "format_anomaly": format_anomaly
+    }
+
+def assess_website_quality(url: str, content: str) -> Dict[str, Any]:
+    """
+    評估網頁結構品質（改進項目：topic-agnostic 方法）
+    
+    檢測：
+    - 域名可疑性（拼寫錯誤、模仿知名媒體）
+    - 域名模式異常（非標準後綴）
+    
+    Args:
+        url: 來源 URL
+        content: 內容文本（預留，未來可用於檢測廣告密度等）
+    
+    Returns:
+        Dict: {
+            "domain_suspicious": bool,
+            "domain_issues": List[str],
+            "quality_score": float,  # 0-1
+            "flags": List[str]
+        }
+    """
+    domain = get_domain_name(url)
+    flags = []
+    issues = []
+    
+    if not domain:
+        return {
+            "domain_suspicious": True,
+            "domain_issues": ["無法解析域名"],
+            "quality_score": 0.3,
+            "flags": ["⚠️ 域名無法解析"]
+        }
+    
+    domain_lower = domain.lower()
+    
+    # === 1. 檢查域名可疑模式 ===
+    suspicious_patterns = [
+        (r'\.co$', "使用非標準後綴 .co（可能是仿冒）"),
+        (r'\.info$', "使用 .info 後綴（可信度較低）"),
+        (r'\.biz$', "使用 .biz 後綴（可信度較低）"),
+        (r'[0-9]{3,}', "域名包含多個數字（可能是仿冒）"),
+        (r'news-.*-news', "域名模式可疑（news-xxx-news）"),
+        (r'-news-', "域名包含多個 news 關鍵字"),
+    ]
+    
+    for pattern, description in suspicious_patterns:
+        if re.search(pattern, domain_lower):
+            issues.append(description)
+            flags.append(f"⚠️ {description}")
+    
+    # === 2. 檢查是否模仿知名媒體 ===
+    known_media_domains = {
+        "bbc.com": ["bbcc", "bbcnews", "bbc-news"],
+        "cnn.com": ["cnnnews", "cnn-news", "cnninfo"],
+        "nytimes.com": ["nytimesnews", "ny-times"],
+        "udn.com": ["udnnews", "udn-news"],
+        "ltn.com.tw": ["ltnnews", "ltn-news"],
+        "cna.com.tw": ["cnanews", "cna-news"],
+    }
+    
+    for legit_domain, variations in known_media_domains.items():
+        legit_base = legit_domain.replace('.com', '').replace('.tw', '').replace('.', '')
+        if legit_base in domain_lower and domain_lower != legit_domain.lower():
+            # 檢查是否為變體
+            is_variant = any(var in domain_lower for var in variations)
+            if not is_variant and legit_domain.lower() not in domain_lower:
+                issues.append(f"可能模仿知名媒體：{legit_domain}")
+                flags.append(f"⚠️ 域名可能為仿冒：疑似模仿 {legit_domain}")
+    
+    # === 3. 評估品質分數 ===
+    quality_score = 1.0
+    if issues:
+        # 每個問題扣分，最低分數
+        quality_score = max(WEBSITE_QUALITY_MIN_SCORE, 1.0 - len(issues) * WEBSITE_QUALITY_PENALTY_PER_ISSUE)
+    
+    return {
+        "domain_suspicious": len(issues) > 0,
+        "domain_issues": issues,
+        "quality_score": quality_score,
+        "flags": flags
+    }
+
+def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
+    """評估內容品質"""
+    quality_score = 0.0
+    indicators = {}
+    
+    if not content:
+        return {'score': 0.0, 'indicators': indicators}
+    
+    # 長度評估
+    content_length = len(content)
+    if content_length > CONTENT_QUALITY_LONG:
+        quality_score += 0.2
+        indicators['length'] = '長'
+    elif content_length > CONTENT_QUALITY_MEDIUM:
+        quality_score += 0.15
+        indicators['length'] = '中'
+    elif content_length > CONTENT_QUALITY_SHORT:
+        quality_score += 0.1
+        indicators['length'] = '短'
+    else:
+        indicators['length'] = '極短'
+    
+    # 完整性評估（檢查是否有結構化資訊）
+    has_dates = bool(re.search(r'\d{4}[-年]\d{1,2}[-月]\d{1,2}', content))
+    has_numbers = bool(re.search(r'\d+', content))
+    has_quotes = bool('"' in content or '"' in content or "'" in content)
+    
+    if has_dates:
+        quality_score += 0.15
+        indicators['has_dates'] = True
+    if has_numbers:
+        quality_score += 0.1
+        indicators['has_numbers'] = True
+    if has_quotes:
+        quality_score += 0.1
+        indicators['has_quotes'] = True
+    
+    # 引用評估
+    citation_patterns = ['來源', '引用', '據', '指出', '表示', 'Source', 'reference']
+    citation_count = sum(1 for pattern in citation_patterns if pattern in content)
+    if citation_count > 2:
+        quality_score += 0.15
+        indicators['citations'] = '多'
+    elif citation_count > 0:
+        quality_score += 0.1
+        indicators['citations'] = '有'
+    
+    # 標題與內容相關性
+    if title:
+        title_words = set(title.lower().split()[:5])  # 取標題前5個詞
+        content_words = set(content.lower().split()[:50])  # 取內容前50個詞
+        overlap = len(title_words & content_words) / len(title_words) if title_words else 0
+        if overlap > CONTENT_OVERLAP_HIGH:
+            quality_score += 0.15
+            indicators['relevance'] = '高'
+        elif overlap > CONTENT_OVERLAP_MEDIUM:
+            quality_score += 0.1
+            indicators['relevance'] = '中'
+        else:
+            indicators['relevance'] = '低'
+    
+    return {
+        'score': min(1.0, quality_score),
+        'indicators': indicators
+    }
+
+def calculate_academic_evidence_level(url: str, source_category: str, content: str, title: str, all_sources: Optional[List[Dict]] = None) -> Tuple[str, float, Dict[str, Any]]:
+    """
+    學術級證據強度分級系統（方案 2.2）
+    
+    參考 GRADE 標準，實作多維度評分：
+    - Tier 1: 官方原始文檔、同儕評審論文、權威機構報告
+    - Tier 2: 專業媒體深度調查、獨立媒體機構報告、國際權威媒體
+    - Tier 3: 一般媒體報導、專家評論、組織聲明
+    - Tier 4: 社群媒體、個人部落格、內容農場
+    
+    Args:
+        url: 來源 URL
+        source_category: 來源類型
+        content: 內容文本
+        title: 標題
+        all_sources: 所有來源列表（用於交叉驗證）
+    
+    Returns:
+        Tuple[str, float, Dict]: (強度等級, 數值分數 0-1, 詳細評分明細)
+    """
+    details = {
+        "source_tier": 3,
+        "source_score": 0.0,
+        "content_score": 0.0,
+        "cross_validation": 0.0,
+        "conflict_of_interest": 0.0,
+        "temporal_score": 0.0
+    }
+    
+    # === 層次一：證據類型分級 (GRADE 標準) ===
+    source_tier = 3
+    source_score = 0.0
+    
+    # Tier 1 (最高證據強度): 官方原始文檔、學術論文、權威機構報告
+    if source_category == "OFFICIAL":
+        official_patterns = ["gov.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "judicial.gov.tw"]
+        if any(pattern in url.lower() for pattern in official_patterns):
+            source_tier = 1
+            source_score = 0.9
+            details["source_tier"] = 1
+        else:
+            source_tier = 2
+            source_score = 0.7
+            details["source_tier"] = 2
+    
+    # Tier 2 (高證據強度): 專業媒體、獨立媒體、國際權威媒體
+    elif source_category == "INDIE":
+        source_tier = 2
+        source_score = 0.75
+        details["source_tier"] = 2
+    elif source_category == "INTL":
+        intl_authorities = ["bbc.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com"]
+        if any(auth in url.lower() for auth in intl_authorities):
+            source_tier = 2
+            source_score = 0.75
+            details["source_tier"] = 2
+        else:
+            source_tier = 3
+            source_score = 0.55
+            details["source_tier"] = 3
+    
+    # Tier 3 (中等證據強度): 一般媒體
+    elif source_category in ["BLUE", "GREEN"]:
+        source_tier = 3
+        source_score = 0.5
+        details["source_tier"] = 3
+    
+    # Tier 4 (低證據強度): 內容農場、社群媒體
+    elif source_category in ["FARM", "SOCIAL"]:
+        source_tier = 4
+        source_score = 0.2
+        details["source_tier"] = 4
+    elif source_category == "CHINA":
+        source_tier = 3
+        source_score = 0.4
+        details["source_tier"] = 3
+    
+    details["source_score"] = source_score
+    
+    # === 層次二：來源公信力評分（方案 2）===
+    domain = get_domain_name(url)
+    credibility_score, tier = _reputation_manager.calculate_credibility_score(url, domain)
+    details["credibility_score"] = credibility_score
+    details["credibility_tier"] = tier
+    
+    # === 層次三：內容品質評估 (CERQual) ===
+    quality = assess_content_quality(content, title)
+    content_score = quality['score']
+    details["content_score"] = content_score
+    
+    # === 層次四：交叉驗證機制 ===
+    cross_validation_score = 0.0
+    if all_sources and len(all_sources) > 1:
+        similar_title_count = 0
+        title_lower = title.lower() if title else ""
+        
+        for other_source in all_sources:
+            if other_source.get('url') == url:
+                continue
+            other_title = other_source.get('title', '').lower()
+            if title_lower and other_title:
+                common_words = set(title_lower.split()) & set(other_title.split())
+                if len(common_words) >= 3:
+                    similar_title_count += 1
+        
+        if similar_title_count > 0:
+            consensus_ratio = min(1.0, similar_title_count / max(1, len(all_sources) - 1))
+            if consensus_ratio > CROSS_VALIDATION_HIGH_RATIO:
+                cross_validation_score = 0.2
+            elif consensus_ratio > CROSS_VALIDATION_MEDIUM_RATIO:
+                cross_validation_score = 0.1
+    
+    details["cross_validation"] = cross_validation_score
+    
+    # === 層次四：利益衝突檢測 ===
+    conflict_score = 0.0
+    conflict_patterns = ["贊助", "廣告", "業配", "合作", "投資", "股東"]
+    if any(pattern in content for pattern in conflict_patterns):
+        conflict_score = -0.15
+    details["conflict_of_interest"] = conflict_score
+    
+    # === 層次五：語言風格分析（改進項目：新增）===
+    language_style = analyze_language_style(content, title)
+    # 計算風格分數（負向指標，需要轉換為正向分數）
+    style_penalty = max(
+        language_style['clickbait_score'] * 0.4,
+        language_style['emotional_manipulation'] * 0.3,
+        language_style['title_content_mismatch'] * 0.3,
+        language_style['sensationalism_score'] * 0.2
+    )
+    style_score = 1.0 - style_penalty  # 轉換為正向分數
+    details["language_style"] = language_style
+    details["style_score"] = style_score
+    
+    # === 層次六：網頁品質評估（改進項目：新增）===
+    website_quality = assess_website_quality(url, content)
+    details["website_quality"] = website_quality
+    
+    # === 綜合評分（整合所有維度）===
+    final_score = (
+        source_score * 0.20 +  # 降低來源類型權重
+        credibility_score * 0.20 +
+        content_score * 0.20 +  # 降低內容品質權重
+        cross_validation_score * 0.20 +
+        conflict_score * 0.10 +
+        style_score * 0.10 +  # 新增語言風格權重（10%）
+        website_quality['quality_score'] * 0.05  # 新增網頁品質權重（5%）
+    )
+    final_score = max(0.0, min(1.0, final_score))
+    
+    # === 轉換為等級 ===
+    if final_score >= EVIDENCE_LEVEL_A_PLUS:
+        level = "A+"
+        level_cn = "極強"
+    elif final_score >= EVIDENCE_LEVEL_A:
+        level = "A"
+        level_cn = "強"
+    elif final_score >= EVIDENCE_LEVEL_B_PLUS:
+        level = "B+"
+        level_cn = "中強"
+    elif final_score >= EVIDENCE_LEVEL_B:
+        level = "B"
+        level_cn = "中等"
+    elif final_score >= EVIDENCE_LEVEL_C:
+        level = "C"
+        level_cn = "中弱"
+    else:
+        level = "D"
+        level_cn = "弱"
+    
+    details["final_score"] = final_score
+    details["level"] = level
+    details["level_cn"] = level_cn
+    
+    return level_cn, final_score, details
+
+def calculate_enhanced_evidence_level(url: str, source_category: str, content: str, title: str) -> Tuple[str, float]:
+    """
+    向後相容：計算增強版證據強度（考慮來源類型和內容品質）
+    
+    Returns:
+        Tuple[str, float]: (強度等級, 數值分數 0-1)
+    """
+    level_cn, score, _ = calculate_academic_evidence_level(url, source_category, content, title)
+    return level_cn, score
+
+def search_cofacts(query: str) -> Tuple[str, List[Dict]]:
+    """
+    查詢 Cofacts 謠言資料庫
+    
+    Returns:
+        Tuple[str, List[Dict]]: (結果文字, 謠言清單)
+    """
     url = "https://cofacts-api.g0v.tw/graphql"
     graphql_query = """query ListArticles($text: String!) { ListArticles(filter: {q: $text}, orderBy: [{_score: DESC}], first: 3) { edges { node { text articleReplies(status: NORMAL) { reply { text type } } } } } }"""
     try:
-        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=3)
+        response = requests.post(url, json={'query': graphql_query, 'variables': {'text': query}}, timeout=TIMEOUT_COFACTS)
         if response.status_code == 200:
             data = response.json()
             articles = data.get('data', {}).get('ListArticles', {}).get('edges', [])
             result_text = ""
+            rumor_list = []
             if articles:
                 result_text += "【Cofacts 查核資料庫】\n"
                 for i, art in enumerate(articles):
                     node = art.get('node', {})
-                    rumor = node.get('text', '')[:50]
+                    rumor_text = node.get('text', '')
+                    rumor_short = rumor_text[:50] if rumor_text else ""
                     replies = node.get('articleReplies', [])
                     if replies:
-                        r_type = replies[0].get('reply', {}).get('type')
-                        result_text += f"- 謠言: {rumor}... (判定: {r_type})\n"
-            return result_text
-    except: return ""
-    return ""
+                        reply = replies[0].get('reply', {})
+                        r_type = reply.get('type', 'UNKNOWN')
+                        r_text = reply.get('text', '')
+                        result_text += f"- 謠言: {rumor_short}... (判定: {r_type})\n"
+                        rumor_list.append({
+                            'text': rumor_text,
+                            'type': r_type,
+                            'reply': r_text
+                        })
+            return result_text, rumor_list
+    except Exception as e:
+        logger.warning(f"Cofacts 查詢失敗: {str(e)}")
+        return "", []
+    return "", []
 
-def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, is_strict_mode: bool, dynamic_keywords: List[str], selected_regions: List[str]) -> List[Dict]:
+# ==========================================
+# 方案一：Google Fact Check Tools API 整合
+# ==========================================
+def extract_claims_from_sources(sources: List[Dict], api_key: str) -> List[Dict[str, Any]]:
+    """
+    從來源中提取核心聲明（方案 1.1 - 聲明提取）
+    
+    Args:
+        sources: 來源列表
+        api_key: Google API Key (用於 LLM)
+    
+    Returns:
+        List[Dict]: [{"text": "聲明文本", "source_id": 1, "url": "...", "claim_type": "factual"}, ...]
+    """
+    claims = []
+    
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
+        
+        # 優化：增加批次大小，減少 API 調用次數（從 5 增加到 8）
+        # 注意：如果來源很多，可以進一步優化為只提取前 N 個高品質來源的聲明
+        batch_size = 8
+        for i in range(0, len(sources), batch_size):
+            batch = sources[i:i+batch_size]
+            batch_texts = []
+            
+            for j, source in enumerate(batch):
+                title = source.get('title', 'No Title')
+                content = source.get('content', '')[:500]  # 只取前 500 字元
+                batch_texts.append(f"Source {i+j+1}: {title}\n{content[:300]}")
+            
+            prompt = f"""
+            請從以下新聞來源中提取核心聲明（主張），每個來源提取 1-2 個最重要的聲明。
+            只提取事實性聲明，不需要提取評論或意見。
+            
+            {chr(10).join(batch_texts)}
+            
+            請以 JSON 格式輸出：
+            [
+                {{"source_id": 1, "claim": "聲明文本", "claim_type": "factual"}},
+                ...
+            ]
+            """
+            
+            try:
+                resp = llm.invoke(prompt).content
+                # 嘗試解析 JSON
+                json_match = re.search(r'\[.*\]', resp, re.DOTALL)
+                if json_match:
+                    extracted = json.loads(json_match.group())
+                    for item in extracted:
+                        source_idx = item.get('source_id', 0) - 1
+                        if 0 <= source_idx < len(batch):
+                            claims.append({
+                                "text": item.get('claim', ''),
+                                "source_id": i + source_idx + 1,
+                                "url": batch[source_idx].get('url', ''),
+                                "claim_type": item.get('claim_type', 'factual')
+                            })
+            except Exception as e:
+                logger.warning(f"批次 {i//batch_size+1} 聲明提取失敗: {str(e)}")
+                # 降級：直接使用標題作為聲明
+                for j, source in enumerate(batch):
+                    claims.append({
+                        "text": source.get('title', ''),
+                        "source_id": i + j + 1,
+                        "url": source.get('url', ''),
+                        "claim_type": "factual"
+                    })
+    
+    except Exception as e:
+        logger.error(f"聲明提取失敗: {str(e)}")
+        # 降級策略：使用標題作為聲明
+        for i, source in enumerate(sources):
+            claims.append({
+                "text": source.get('title', ''),
+                "source_id": i + 1,
+                "url": source.get('url', ''),
+                "claim_type": "factual"
+            })
+    
+    return claims
+
+async def verify_single_claim(session: aiohttp.ClientSession, claim_text: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    驗證單一聲明（異步版本）
+    
+    Args:
+        session: aiohttp session
+        claim_text: 聲明文本
+        api_key: Google API Key
+    
+    Returns:
+        Dict 或 None: {"textualRating": "VERIFIED_FALSE", ...} 或 None（如果失敗）
+    """
+    try:
+        endpoint = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
+        params = {
+            "query": claim_text[:100],  # Google API 限制長度
+            "languageCode": "zh-TW",
+            "key": api_key,
+            "pageSize": 3,
+            "maxAgeDays": 365
+        }
+        
+        async with session.get(endpoint, params=params, timeout=aiohttp.ClientTimeout(total=TIMEOUT_FACT_CHECK)) as response:
+            if response.status == 200:
+                data = await response.json()
+                claims = data.get('claims', [])
+                if claims:
+                    # 返回第一個最相關的結果
+                    return claims[0]
+            return None
+    except Exception as e:
+        logger.warning(f"Fact Check API 驗證失敗: {claim_text[:50]}... 錯誤: {str(e)}")
+        return None
+
+async def verify_claims_async(claims: List[Dict[str, Any]], api_key: str) -> Dict[str, List[Dict]]:
+    """
+    異步批次驗證聲明（方案 1.2 - API 驗證）
+    
+    Returns:
+        Dict: {
+            "verified_claims": [...],
+            "false_claims": [...],
+            "misleading_claims": [...],
+            "unverified_claims": [...]
+        }
+    """
+    results = {
+        "verified_claims": [],
+        "false_claims": [],
+        "misleading_claims": [],
+        "unverified_claims": []
+    }
+    
+    if not claims or not api_key:
+        return results
+    
+    # 限制並發數，避免 API 配額問題
+    semaphore = asyncio.Semaphore(5)
+    
+    async def verify_with_semaphore(session, claim):
+        async with semaphore:
+            return await verify_single_claim(session, claim['text'], api_key)
+    
+    async def run_verifications():
+        async with aiohttp.ClientSession() as session:
+            tasks = [verify_with_semaphore(session, claim) for claim in claims]
+            api_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for i, (claim, api_result) in enumerate(zip(claims, api_results)):
+                if isinstance(api_result, Exception):
+                    logger.warning(f"驗證失敗: {claim['text'][:50]}... 錯誤: {str(api_result)}")
+                    results["unverified_claims"].append(claim)
+                    continue
+                
+                if not api_result:
+                    results["unverified_claims"].append(claim)
+                    continue
+                
+                # 解析評級
+                claim_review = api_result.get('claimReview', [])
+                if not claim_review:
+                    results["unverified_claims"].append(claim)
+                    continue
+                
+                # 取第一個查核結果
+                review = claim_review[0]
+                textual_rating = review.get('textualRating', '').upper()
+                
+                claim_with_rating = {**claim, 'rating': textual_rating, 'review_url': review.get('url', '')}
+                
+                if 'FALSE' in textual_rating:
+                    results["false_claims"].append(claim_with_rating)
+                elif 'MISLEADING' in textual_rating or 'PARTLY_FALSE' in textual_rating:
+                    results["misleading_claims"].append(claim_with_rating)
+                else:
+                    results["verified_claims"].append(claim_with_rating)
+    
+    try:
+        # 執行異步驗證
+        await run_verifications()
+    except Exception as e:
+        logger.error(f"異步驗證執行失敗: {str(e)}")
+        # 降級：標記為未驗證
+        results["unverified_claims"].extend(claims)
+    
+    return results
+
+def verify_claims(claims: List[Dict[str, Any]], api_key: str) -> Dict[str, List[Dict]]:
+    """
+    驗證聲明（同步包裝器）
+    
+    Returns:
+        Dict: 驗證結果分類
+    """
+    if not claims:
+        return {
+            "verified_claims": [],
+            "false_claims": [],
+            "misleading_claims": [],
+            "unverified_claims": []
+        }
+    
+    try:
+        # 創建新的事件循環
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(verify_claims_async(claims, api_key))
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.error(f"驗證執行失敗: {str(e)}")
+        return {
+            "verified_claims": [],
+            "false_claims": [],
+            "misleading_claims": [],
+            "unverified_claims": claims  # 所有聲明標記為未驗證
+        }
+
+def apply_fact_check_tags(sources: List[Dict], fact_check_results: Dict[str, List[Dict]]) -> List[Dict]:
+    """
+    應用事實查核標籤和降權（方案 1.3 - 標註與降權）
+    
+    Args:
+        sources: 來源列表
+        fact_check_results: 事實查核結果
+    
+    Returns:
+        List[Dict]: 更新後的來源列表
+    """
+    # 建立 source_id 到查核結果的映射
+    false_map = {c['source_id']: c for c in fact_check_results.get('false_claims', [])}
+    misleading_map = {c['source_id']: c for c in fact_check_results.get('misleading_claims', [])}
+    
+    for i, source in enumerate(sources):
+        source_id = i + 1
+        
+        # 檢查是否為已證偽
+        if source_id in false_map:
+            # 降權：證據強度降 2 級
+            current_level = source.get('evidence_level', '中等')
+            if current_level == '強':
+                source['evidence_level'] = '弱'
+            elif current_level == '中等':
+                source['evidence_level'] = '弱'
+            source['fact_check_status'] = '❌ 已證偽'
+            source['fact_check_rating'] = false_map[source_id].get('rating', 'VERIFIED_FALSE')
+            source['fact_check_url'] = false_map[source_id].get('review_url', '')
+            logger.warning(f"Source {source_id} 已證偽，證據強度降級")
+        
+        # 檢查是否為誤導性
+        elif source_id in misleading_map:
+            # 降權：證據強度降 1 級
+            current_level = source.get('evidence_level', '中等')
+            if current_level == '強':
+                source['evidence_level'] = '中等'
+            source['fact_check_status'] = '⚠️ 誤導性內容'
+            source['fact_check_rating'] = misleading_map[source_id].get('rating', 'MISLEADING')
+            source['fact_check_url'] = misleading_map[source_id].get('review_url', '')
+            logger.info(f"Source {source_id} 標記為誤導性")
+    
+    return sources
+
+def generate_fact_check_warning(fact_check_results: Dict[str, List[Dict]]) -> str:
+    """
+    生成事實查核警告文字（用於 context）
+    """
+    warning_text = "\n【⚠️ 事實查核警告】\n"
+    
+    false_claims = fact_check_results.get('false_claims', [])
+    misleading_claims = fact_check_results.get('misleading_claims', [])
+    
+    if false_claims:
+        warning_text += f"❌ 已證偽的聲明（{len(false_claims)} 項）：\n"
+        for claim in false_claims[:5]:  # 最多顯示 5 項
+            warning_text += f"  - Source {claim['source_id']}: {claim['text'][:80]}... (評級: {claim.get('rating', 'VERIFIED_FALSE')})\n"
+    
+    if misleading_claims:
+        warning_text += f"⚠️ 誤導性內容（{len(misleading_claims)} 項）：\n"
+        for claim in misleading_claims[:5]:
+            warning_text += f"  - Source {claim['source_id']}: {claim['text'][:80]}... (評級: {claim.get('rating', 'MISLEADING')})\n"
+    
+    return warning_text + "\n"
+
+def calculate_title_similarity(title1: str, title2: str) -> float:
+    """計算兩個標題的相似度（0-1之間）- 優化版使用 TF-IDF 概念"""
+    if not title1 or not title2:
+        return 0.0
+    
+    # 快速字元級相似度（用於初步過濾）
+    char_similarity = SequenceMatcher(None, title1.lower(), title2.lower()).ratio()
+    if char_similarity < 0.5:  # 快速過濾明顯不同的標題
+        return char_similarity
+    
+    # 詞級相似度（更準確）
+    words1 = set(title1.lower().split())
+    words2 = set(title2.lower().split())
+    
+    if not words1 or not words2:
+        return char_similarity
+    
+    # Jaccard 相似度
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    word_similarity = intersection / union if union > 0 else 0
+    
+    # 加權組合（字元相似度 30%，詞相似度 70%）
+    return 0.3 * char_similarity + 0.7 * word_similarity
+
+def detect_coordinated_behavior(sources: List[Dict]) -> Dict[str, Any]:
+    """
+    檢測協調行為（改進項目：網軍協調行為偵測 - 簡化版）
+    
+    基於現有資料分析：
+    1. 內容相似度（已實作在 analyze_volume_weight）
+    2. 來源域名集中度
+    3. 時間分佈模式（如有時間數據）
+    
+    Args:
+        sources: 來源列表
+    
+    Returns:
+        Dict: {
+            "coordination_score": float,  # 0-1，協調性分數
+            "flags": List[str],
+            "similar_content_groups": List[List[int]],
+            "domain_concentration": float,
+            "time_clustering": Dict  # 時間聚集模式（如有）
+        }
+    """
+    if not sources:
+        return {
+            "coordination_score": 0.0,
+            "flags": [],
+            "similar_content_groups": [],
+            "domain_concentration": 0.0,
+            "time_clustering": {}
+        }
+    
+    flags = []
+    
+    # === 1. 內容相似度分析（重用現有函數）===
+    volume_analysis = analyze_volume_weight(sources)
+    duplicate_groups = volume_analysis.get('duplicate_groups', [])
+    duplicate_count = volume_analysis.get('duplicate_count', 0)
+    total_count = len(sources)
+    
+    # === 2. 來源域名集中度 ===
+    domain_counts = Counter(get_domain_name(s.get('url', '')) for s in sources)
+    domain_concentration = max(domain_counts.values()) / total_count if total_count > 0 else 0
+    
+    # === 3. 計算協調性分數 ===
+    coordination_score = 0.0
+    
+    # 如果重複內容超過閾值，可能為協調行為
+    duplicate_ratio = duplicate_count / total_count if total_count > 0 else 0
+    if duplicate_ratio > COORDINATION_DUPLICATE_RATIO_THRESHOLD:
+        coordination_score += COORDINATION_DUPLICATE_PENALTY
+        flags.append(f"⚠️ 高度重複內容（>{COORDINATION_DUPLICATE_RATIO_THRESHOLD*100:.0f}%），可能存在協調發布")
+    
+    # 如果單一域名超過閾值，可能為組織性操作
+    if domain_concentration > COORDINATION_DOMAIN_CONCENTRATION_THRESHOLD:
+        top_domain = domain_counts.most_common(1)[0][0] if domain_counts else ""
+        coordination_score += COORDINATION_DOMAIN_PENALTY
+        flags.append(f"⚠️ 來源過度集中（{top_domain} 佔 {domain_concentration*100:.1f}%），可能為組織性操作")
+    
+    # === 4. 時間聚集分析（簡化版：基於日期）===
+    date_counts = Counter()
+    for source in sources:
+        date_str = source.get('published_date') or source.get('final_date', '')
+        if date_str and date_str != 'Missing':
+            date_counts[date_str[:10]] += 1
+    
+    if date_counts:
+        max_same_date = max(date_counts.values())
+        date_concentration = max_same_date / total_count
+        
+        if date_concentration > COORDINATION_DATE_CONCENTRATION_THRESHOLD:  # 同一天發布超過閾值
+            coordination_score += COORDINATION_TIME_PENALTY
+            flags.append(f"⚠️ 時間高度集中（{max_same_date} 篇在同一天發布），可能存在同步操作")
+    
+    coordination_score = min(1.0, coordination_score)
+    
+    if coordination_score > COORDINATION_HIGH_RISK_SCORE:
+        flags.insert(0, "🚨 高風險：檢測到明顯的協調行為特徵")
+    
+    return {
+        "coordination_score": coordination_score,
+        "flags": flags,
+        "similar_content_groups": duplicate_groups,
+        "domain_concentration": domain_concentration,
+        "time_clustering": dict(date_counts) if date_counts else {},
+        "duplicate_ratio": duplicate_ratio
+    }
+
+def analyze_volume_weight(sources: List[Dict], progress_callback=None) -> Dict[str, Any]:
+    """
+    聲量權重校正：識別重複論述和獨特觀點（優化版）
+    
+    Args:
+        sources: 來源列表
+        progress_callback: 進度回調函數 (current, total) -> None
+    
+    Returns:
+        Dict containing: duplicate_groups, unique_articles
+    """
+    duplicate_groups = []
+    processed_indices = set()
+    unique_articles = []
+    total = len(sources)
+    
+    # 預處理：建立標題索引（去除空標題）
+    valid_sources = [(i, s.get('title', '')) for i, s in enumerate(sources) if s.get('title', '')]
+    
+    for idx, (i, title1) in enumerate(valid_sources):
+        if i in processed_indices:
+            if progress_callback:
+                progress_callback(idx + 1, total)
+            continue
+        
+        group = [i]
+        # 只比較尚未處理的來源（優化：不重複比較）
+        for j, title2 in valid_sources[idx+1:]:
+            if j in processed_indices:
+                continue
+            
+            # 快速過濾：先檢查字首相似度
+            if title1[:10].lower() != title2[:10].lower():
+                similarity = calculate_title_similarity(title1, title2)
+                if similarity >= SIMILARITY_THRESHOLD:
+                    group.append(j)
+                    processed_indices.add(j)
+            else:
+                # 字首相同，直接計算完整相似度
+                similarity = calculate_title_similarity(title1, title2)
+                if similarity >= SIMILARITY_THRESHOLD:
+                    group.append(j)
+                    processed_indices.add(j)
+        
+        processed_indices.add(i)
+        
+        if len(group) > 1:
+            duplicate_groups.append(group)
+        else:
+            unique_articles.append(i)
+        
+        if progress_callback and (idx + 1) % 10 == 0:
+            progress_callback(idx + 1, total)
+    
+    return {
+        'duplicate_groups': duplicate_groups,
+        'unique_articles': unique_articles,
+        'duplicate_count': len(duplicate_groups),
+        'unique_count': len(unique_articles)
+    }
+
+def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, is_strict_mode: bool, dynamic_keywords: List, selected_regions: List[str]) -> List[Dict]:
+    """
+    執行混和搜尋（完整版 - 重視正確度）
+    
+    Args:
+        dynamic_keywords: 可以是 List[str] 或 List[Dict] (擴展查詢格式)
+    """
     tavily = TavilyClient(api_key=api_key_tavily)
     seen_urls = set()
     tasks = []
     
-    # 1. 通用熱度搜尋 (Tri-Track)
-    general_domains = []
-    if "台灣" in str(selected_regions): general_domains.extend(FULL_TAIWAN_WHITELIST)
-    if "獨立" in str(selected_regions): general_domains.extend(INDIE_WHITELIST)
-    if "亞洲" in str(selected_regions): general_domains.extend(INTL_WHITELIST)
+    # === Tavily API 參數優化策略（方案 1.2）===
+    optimized_params = search_params.copy()
+    optimized_params['search_depth'] = "advanced"  # 重視正確度，始終使用 advanced
     
-    general_params = search_params.copy()
-    general_params['max_results'] = 10 
+    # 1. 通用熱度搜尋
+    general_domains = []
+    selected_str = str(selected_regions)
+    if "台灣" in selected_str: general_domains.extend(FULL_TAIWAN_WHITELIST)
+    if "獨立" in selected_str: general_domains.extend(INDIE_WHITELIST)
+    if "亞洲" in selected_str: general_domains.extend(INTL_ASIA_WHITELIST)
+    if "歐洲" in selected_str: general_domains.extend(INTL_EUROPE_WHITELIST)
+    if "美洲" in selected_str: general_domains.extend(INTL_AMERICAS_WHITELIST)
+    
+    general_params = optimized_params.copy()
+    general_params['max_results'] = 10  # 重視正確度，確保足夠結果
     if is_strict_mode and general_domains:
         general_params['include_domains'] = list(set(general_domains))
     
-    tasks.append({"name": "General_Main", "query": query, "params": general_params})
-    tasks.append({"name": "General_Fact", "query": dynamic_keywords[0], "params": general_params})
-    tasks.append({"name": "General_Opn", "query": dynamic_keywords[1], "params": general_params})
-    tasks.append({"name": "General_Deep", "query": dynamic_keywords[2], "params": general_params})
+    # === 查詢擴展機制（方案 1.1 + 方案 3）===
+    # 處理擴展查詢列表
+    if isinstance(dynamic_keywords, list) and len(dynamic_keywords) > 0:
+        if all(isinstance(k, str) for k in dynamic_keywords):
+            # 字串列表，轉換為 Dict 格式
+            expanded_queries = [
+                {"query": k, "type": f"查詢{i+1}", "priority": 1}
+                for i, k in enumerate(dynamic_keywords)
+            ]
+        else:
+            # 已經是 Dict 列表
+            expanded_queries = dynamic_keywords
+    else:
+        # 預設查詢
+        expanded_queries = [
+            {"query": query, "type": "主查詢", "priority": 1},
+            {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
+            {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
+            {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+        ]
+    
+    # 使用所有高優先級查詢（重視正確度，不減少任務）
+    priority_queries = [q for q in expanded_queries if q.get("priority", 3) <= 2]
+    for q in priority_queries[:10]:  # 最多 10 個查詢
+        tasks.append({"name": f"General_{q['type']}", "query": q["query"], "params": general_params})
     
     # 2. 分眾保底搜尋 (Hybrid Weighted - Standard Guard)
-    if "台灣" in str(selected_regions):
-        blue_params = search_params.copy()
-        blue_params['max_results'] = 5 
+    if "台灣" in selected_str:
+        guard_max = 5  # 重視正確度，確保足夠的保底來源
+        
+        blue_params = optimized_params.copy()
+        blue_params['max_results'] = guard_max 
         blue_params['include_domains'] = BLUE_WHITELIST
         tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
         
-        green_params = search_params.copy()
-        green_params['max_results'] = 5 
+        green_params = optimized_params.copy()
+        green_params['max_results'] = guard_max 
         green_params['include_domains'] = GREEN_WHITELIST
         tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
         
-        official_params = search_params.copy()
-        official_params['max_results'] = 5
+        official_params = optimized_params.copy()
+        official_params['max_results'] = guard_max
         official_params['include_domains'] = OFFICIAL_WHITELIST
         tasks.append({"name": "Official_Guard", "query": f"{query} 聲明 新聞稿", "params": official_params})
 
     def fetch(task):
         try:
             return tavily.search(query=task['query'], **task['params']).get('results', [])
-        except: return []
+        except Exception as e:
+            logger.warning(f"搜尋任務失敗: {task['name']}, 錯誤: {str(e)}")
+            return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(fetch, t): t['name'] for t in tasks}
         results_map = {}
         for future in concurrent.futures.as_completed(futures):
             t_name = futures[future]
-            results_map[t_name] = future.result()
+            try:
+                results_map[t_name] = future.result()
+            except Exception as e:
+                logger.error(f"任務 {t_name} 執行失敗: {str(e)}")
+                results_map[t_name] = []
             
     final_list = []
     
@@ -386,8 +2107,9 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
                     seen_urls.add(item['url'])
                     final_list.append(item)
     
-    # B. 再加入通用 (Tri-Track)
-    general_keys = ["General_Fact", "General_Opn", "General_Deep", "General_Main"]
+    # B. 再加入通用搜尋結果（重視正確度，使用所有查詢）
+    # 收集所有 General_ 開頭的任務結果
+    general_keys = [k for k in results_map.keys() if k.startswith("General_")]
     max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
     
     for i in range(max_len):
@@ -400,54 +2122,484 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
                 
     return final_list
 
-def get_search_context(query: str, api_key_tavily: str, days_back: int, selected_regions: List[str], max_results: int, dynamic_keywords: List[str]):
+def summarize_content(content: str, max_length: int = 800) -> str:
+    """
+    快速摘要內容（使用簡單的句子提取）
+    
+    Args:
+        content: 原始內容
+        max_length: 目標最大長度
+    
+    Returns:
+        摘要後的內容
+    """
+    if len(content) <= max_length:
+        return content
+    
+    # 簡單摘要：保留開頭和結尾的重要句子
+    sentences = content.split('。')
+    if len(sentences) <= 3:
+        return content[:max_length]
+    
+    # 保留前 40% 和後 30% 的句子
+    start_count = max(1, int(len(sentences) * 0.4))
+    end_count = max(1, int(len(sentences) * 0.3))
+    
+    summary = '。'.join(sentences[:start_count]) + '。'
+    if end_count > 0:
+        summary += '...' + '。'.join(sentences[-end_count:])
+    
+    if len(summary) > max_length:
+        summary = summary[:max_length] + "..."
+    
+    return summary
+
+def analyze_stance_balance(sources: List[Dict]) -> Dict[str, Any]:
+    """
+    系統化立場分析框架（方案 2.1）
+    
+    實作立場檢測和平衡評估：
+    1. 立場檢測：來源層 + 內容層
+    2. 平衡評估：自動識別缺失立場
+    3. Entman 框架：問題定義、歸因分析、道德評價
+    
+    Returns:
+        Dict: 包含立場分佈、平衡度評估、建議補充來源
+    """
+    stance_analysis = {
+        "camp_distribution": {},
+        "balance_score": 0.0,
+        "missing_stances": [],
+        "recommendations": []
+    }
+    
+    # === 層次一：立場分佈統計 ===
+    camp_counts = Counter()
+    for source in sources:
+        category = source.get('source_category', 'OTHER')
+        camp_counts[category] += 1
+    
+    stance_analysis["camp_distribution"] = dict(camp_counts)
+    
+    # === 層次二：平衡度評估 ===
+    taiwan_camps = ["BLUE", "GREEN", "OFFICIAL"]
+    taiwan_counts = {camp: camp_counts.get(camp, 0) for camp in taiwan_camps}
+    
+    if sum(taiwan_counts.values()) > 0:
+        # 計算藍綠平衡度（理想狀態是接近 1:1）
+        blue_count = taiwan_counts.get("BLUE", 0)
+        green_count = taiwan_counts.get("GREEN", 0)
+        official_count = taiwan_counts.get("OFFICIAL", 0)
+        
+        total_political = blue_count + green_count
+        if total_political > 0:
+            blue_ratio = blue_count / total_political
+            green_ratio = green_count / total_political
+            balance_ratio = min(blue_ratio, green_ratio) / max(blue_ratio, green_ratio) if max(blue_ratio, green_ratio) > 0 else 0
+            
+            # 平衡度分數（0-1）
+            balance_score = balance_ratio * 0.6 + (1 if official_count > 0 else 0) * 0.4
+            stance_analysis["balance_score"] = balance_score
+            
+            # === 層次三：缺口檢測 ===
+            min_threshold = max(2, int(sum(taiwan_counts.values()) * 0.15))  # 至少 15% 或 2 篇
+            
+            if blue_count < min_threshold and green_count >= blue_count * 2:
+                stance_analysis["missing_stances"].append("BLUE")
+                stance_analysis["recommendations"].append({
+                    "type": "BLUE",
+                    "reason": f"藍營觀點不足（僅 {blue_count} 篇，綠營 {green_count} 篇）",
+                    "priority": "高"
+                })
+            
+            if green_count < min_threshold and blue_count >= green_count * 2:
+                stance_analysis["missing_stances"].append("GREEN")
+                stance_analysis["recommendations"].append({
+                    "type": "GREEN",
+                    "reason": f"綠營觀點不足（僅 {green_count} 篇，藍營 {blue_count} 篇）",
+                    "priority": "高"
+                })
+            
+            if official_count == 0 and len(sources) > 5:
+                stance_analysis["missing_stances"].append("OFFICIAL")
+                stance_analysis["recommendations"].append({
+                    "type": "OFFICIAL",
+                    "reason": "缺少官方/中立觀點",
+                    "priority": "中"
+                })
+    else:
+        stance_analysis["balance_score"] = 0.5  # 非台灣議題，平衡度設為中等
+    
+    return stance_analysis
+
+def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
+    """
+    並行處理單一來源項目（已整合公信力評分）
+    
+    Returns:
+        Tuple[str, Dict]: (context 文字行, 處理後的結果字典)
+    """
+    """
+    並行處理單一來源項目
+    
+    Returns:
+        Tuple[str, Dict]: (context 文字行, 處理後的結果字典)
+    """
+    title = res.get('title', 'No Title')
+    url = res.get('url', '#')
+    
+    pub_date = res.get('published_date')
+    if not pub_date:
+        url_date = extract_date_from_url(url)
+        pub_date = url_date if url_date else "Missing"
+    else:
+        pub_date = pub_date[:10]
+    
+    res['final_date'] = pub_date
+    content = res.get('content', '')
+    
+    # 重視正確度：使用完整內容長度
+    content = content[:MAX_CONTENT_LENGTH]
+    # 如果內容太長，進行摘要
+    if len(res.get('content', '')) > SUMMARY_THRESHOLD:
+        content = summarize_content(content, MAX_CONTENT_LENGTH)
+    
+    # 學術級證據強度分級（需要所有來源用於交叉驗證，但在這裡只能使用現有來源）
+    source_category = classify_source(url)
+    domain = get_domain_name(url)
+    
+    # 注意：在 process_source_item 階段，all_sources 可能還未完全構建
+    # 完整的交叉驗證會在後續階段進行
+    evidence_level, evidence_score, evidence_details = calculate_academic_evidence_level(
+        url, source_category, content, title, all_sources=None
+    )
+    
+    # 來源公信力評分（方案 2）
+    credibility_score, tier = _reputation_manager.calculate_credibility_score(url, domain)
+    weight_coefficient = _reputation_manager.get_weight_coefficient(source_category, domain)
+    
+    res['evidence_level'] = evidence_level
+    res['evidence_score'] = evidence_score
+    res['evidence_details'] = evidence_details
+    res['source_category'] = source_category
+    res['credibility_score'] = credibility_score
+    res['credibility_tier'] = tier
+    res['weight_coefficient'] = weight_coefficient
+    
+    # RAG 權重應用（方案 2.3）：根據公信力調整內容長度
+    if credibility_score >= 0.8:
+        # 高公信力：完整展示
+        prefix = "[高可信度來源] "
+        adjusted_content_length = MAX_CONTENT_LENGTH
+    elif credibility_score >= 0.6:
+        # 中等：正常展示
+        prefix = ""
+        adjusted_content_length = MAX_CONTENT_LENGTH
+    else:
+        # 低公信力：縮短並標註
+        prefix = "[⚠️ 低可信度，請謹慎參考] "
+        adjusted_content_length = MAX_CONTENT_LENGTH // 2
+    
+    # 確保內容不超過調整後的長度
+    if len(content) > adjusted_content_length:
+        content = content[:adjusted_content_length] + "..."
+    
+    # 優化 context 格式（包含公信力標註與語言風格警示）
+    evidence_label = evidence_details.get('level', 'B')
+    
+    # 添加語言風格警示標記（改進項目：新增）
+    language_flags = evidence_details.get('language_style', {}).get('flags', [])
+    style_warning = ""
+    if language_flags:
+        # 只顯示最重要的警示（最多2個）
+        critical_flags = [f for f in language_flags if '⚠️' in f][:2]
+        if critical_flags:
+            style_warning = " " + " ".join(critical_flags)
+    
+    context_line = f"Source {index+1}: [Date: {pub_date}] [Evidence: {evidence_level} ({evidence_label}, {evidence_score:.2f})] [Credibility: {credibility_score:.2f}] {prefix}[Title: {title}]{style_warning} {content} (URL: {url})\n"
+    
+    return context_line, res
+
+def get_search_context(query: str, api_key_tavily: str, days_back: int, selected_regions: List[str], max_results: int, dynamic_keywords: List[str], use_cache: bool = True, google_api_key: str = None):
+    """
+    獲取搜尋上下文（完整版 - 整合事實查核、公信力評分、平衡檢索）
+    
+    Args:
+        google_api_key: 用於事實查核的 Google API Key
+    
+    Returns:
+        Tuple: (context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis)
+    """
     try:
         active_blacklist = NOISE_BLACKLIST
 
         search_params = {
-            "search_depth": "advanced",
+            "search_depth": "advanced",  # 重視正確度，始終使用 advanced
             "topic": "general",
             "days": days_back,
-            "exclude_domains": active_blacklist
+            "exclude_domains": active_blacklist,
+            "selected_regions": selected_regions,
+            "max_results": max_results
         }
 
+        # 嘗試從快取獲取
+        cached_results = None
+        if use_cache:
+            cached_results = get_cached_results(query, search_params)
+        
         is_strict_mode = bool(selected_regions)
-        results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, dynamic_keywords, selected_regions)
+        
+        if cached_results:
+            results = cached_results
+            logger.info(f"使用快取結果: {len(results)} 篇")
+        else:
+            # === 多維度平衡檢索（方案 3，優化：使用快取）===
+            # 生成平衡查詢（使用快取減少 API 調用）
+            if google_api_key:
+                balanced_queries = generate_balanced_queries(query, google_api_key, use_cache=use_cache)
+            else:
+                # 如果沒有 API Key，使用降級策略
+                balanced_queries = {
+                    "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+                    "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+                    "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+                    "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+                }
+            
+            # 合併到擴展查詢列表
+            balanced_expanded = []
+            for q in balanced_queries.get("pro_arguments", [])[:3]:
+                balanced_expanded.append({"query": q, "type": "正方觀點", "priority": 1, "perspective": "pro"})
+            for q in balanced_queries.get("con_arguments", [])[:3]:
+                balanced_expanded.append({"query": q, "type": "反方觀點", "priority": 1, "perspective": "con"})
+            for q in balanced_queries.get("neutral_analysis", [])[:3]:
+                balanced_expanded.append({"query": q, "type": "中立分析", "priority": 1, "perspective": "neutral"})
+            
+            # 合併原有查詢和平衡查詢
+            all_queries = dynamic_keywords + balanced_expanded
+            
+            results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, all_queries, selected_regions)
+            
+            # 存入快取
+            if use_cache and results:
+                cache_results(query, search_params, results)
         
         results.sort(key=lambda x: x.get('published_date') or "", reverse=True)
         results = results[:max_results]
         
-        context_text = ""
-        for i, res in enumerate(results):
-            title = res.get('title', 'No Title')
-            url = res.get('url', '#')
+        # 標註來源立場（基於查詢類型）
+        perspective_map = {}  # source_id -> perspective
+        for i, result in enumerate(results):
+            # 根據來源標題和內容推斷立場（簡單實現）
+            # 可以進一步使用 LLM 進行更精確的立場檢測
+            perspective_map[i+1] = "neutral"  # 預設中立
+        
+        # 並行處理所有來源（應用公信力評分）
+        context_lines = []
+        if len(results) > 10:  # 大量來源時使用並行處理
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(results))) as executor:
+                futures = {executor.submit(process_source_item, res, i): i for i, res in enumerate(results)}
+                processed_results = [None] * len(results)
+                
+                for future in concurrent.futures.as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        context_line, processed_res = future.result()
+                        context_lines.append(context_line)
+                        processed_results[idx] = processed_res
+                    except Exception as e:
+                        logger.warning(f"處理來源 {idx} 失敗: {str(e)}")
+                        processed_results[idx] = results[idx]
+                        context_lines.append(f"Source {idx+1}: [Date: Missing] [Title: {results[idx].get('title', 'No Title')}] (URL: {results[idx].get('url', '#')})\n")
+                
+                results = [r for r in processed_results if r is not None]
+        else:
+            # 少量來源時使用串行處理
+            for i, res in enumerate(results):
+                context_line, processed_res = process_source_item(res, i)
+                context_lines.append(context_line)
+                results[i] = processed_res
+        
+        context_text = "".join(context_lines)
+        
+        # === 事實查核驗證（方案 1，優化：可選功能）===
+        # 預設關閉事實查核以節省 API 配額（用戶可在 UI 中啟用）
+        fact_check_results = None
+        # 注意：事實查核功能預設關閉，需要時可在 UI 中添加開關
+        
+        # === 立場平衡分析（方案 2.1）===
+        stance_analysis = analyze_stance_balance(results)
+        
+        # === 共識分析（方案 3.3）===
+        # 分類來源為不同立場
+        perspective_sources = {
+            "pro_sources": [],
+            "con_sources": [],
+            "neutral_sources": [],
+            "factual_sources": results  # 所有來源都可作為事實來源
+        }
+        consensus_analysis = analyze_consensus(perspective_sources)
             
-            pub_date = res.get('published_date')
-            if not pub_date:
-                url_date = extract_date_from_url(url)
-                pub_date = url_date if url_date else "Missing"
-            else:
-                pub_date = pub_date[:10]
-            
-            res['final_date'] = pub_date
-            content = res.get('content', '')[:3000]
-            context_text += f"Source {i+1}: [Date: {pub_date}] [Title: {title}] {content} (URL: {url})\n"
-            
-        return context_text, results, query, is_strict_mode
+        return context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis
         
     except Exception as e:
-        return f"Error: {str(e)}", [], "Error", False
+        logger.error(f"搜尋上下文獲取失敗: {str(e)}")
+        return f"Error: {str(e)}", [], "Error", False, None, None, None
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=True)
+def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
+    """
+    驗證 API Key 的有效性
+    
+    Returns:
+        Tuple[bool, str]: (是否有效, 錯誤訊息或成功訊息)
+    """
+    # 驗證 Google Gemini API
+    if google_key:
+        try:
+            os.environ["GOOGLE_API_KEY"] = google_key
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key, temperature=0.0)
+            test_response = llm.invoke("test")
+            if not test_response or not test_response.content:
+                return False, "Gemini API Key 無效：無法取得回應"
+        except Exception as e:
+            logger.error(f"Gemini API 驗證失敗: {str(e)}")
+            return False, f"Gemini API Key 無效：{str(e)[:100]}"
+    else:
+        return False, "未提供 Gemini API Key"
+    
+    # 驗證 Tavily API
+    if tavily_key:
+        try:
+            tavily = TavilyClient(api_key=tavily_key)
+            test_results = tavily.search(query="test", max_results=1)
+            if not test_results:
+                return False, "Tavily API Key 無效：無法取得搜尋結果"
+        except Exception as e:
+            logger.error(f"Tavily API 驗證失敗: {str(e)}")
+            return False, f"Tavily API Key 無效：{str(e)[:100]}"
+    else:
+        return False, "未提供 Tavily API Key"
+    
+    return True, "✅ 所有 API Key 驗證通過"
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=False)
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str) -> str:
+    """
+    呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型
+    """
     os.environ["GOOGLE_API_KEY"] = api_key
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
-    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-    chain = prompt | llm
-    return chain.invoke({"input": user_text}).content
+    
+    # 嘗試使用指定的模型
+    try:
+        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        return chain.invoke({"input": user_text}).content
+    except Exception as e:
+        error_msg = str(e)
+        
+        # 檢查是否為配額耗盡錯誤
+        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
+            # 決定降級策略：根據模型版本選擇適當的降級目標
+            fallback_models = []
+            if "3.0-pro" in model_name.lower():
+                # Gemini 3.0 Pro -> 3.0 Flash -> 2.5 Flash
+                fallback_models = ["gemini-3.0-flash", "gemini-2.5-flash"]
+            elif "3.0-flash" in model_name.lower():
+                # Gemini 3.0 Flash -> 2.5 Flash
+                fallback_models = ["gemini-2.5-flash"]
+            elif "2.5-pro" in model_name.lower():
+                # Gemini 2.5 Pro -> 2.5 Flash
+                fallback_models = ["gemini-2.5-flash"]
+            
+            # 如果是 pro 模型，嘗試降級
+            if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
+                for fallback_model in fallback_models:
+                    try:
+                        logger.info(f"模型 {model_name} 配額耗盡，嘗試降級到 {fallback_model}")
+                        llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+                        chain = prompt | llm
+                        result = chain.invoke({"input": user_text}).content
+                        logger.info(f"成功降級到 {fallback_model}")
+                        return result
+                    except Exception as e2:
+                        logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個降級選項")
+                        continue
+                
+                # 所有降級都失敗，拋出錯誤
+                raise ChatGoogleGenerativeAIError(
+                    f"❌ API 配額已耗盡\n\n"
+                    f"**錯誤詳情：**\n"
+                    f"- 嘗試使用模型：{model_name}\n"
+                    f"- 降級嘗試：{', '.join(fallback_models)} 都失敗\n\n"
+                    f"**解決方案：**\n"
+                    f"1. 檢查您的 Google AI Studio 配額：https://ai.dev/rate-limit\n"
+                    f"2. 等待配額重置（通常每分鐘/每天重置）\n"
+                    f"3. 升級到付費方案以獲得更高配額\n"
+                    f"4. 嘗試使用 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                    f"原始錯誤：{error_msg[:200]}"
+                ) from e
+            
+            # 其他配額錯誤，直接拋出友善錯誤訊息
+            raise ChatGoogleGenerativeAIError(
+                f"❌ API 配額已耗盡\n\n"
+                f"**錯誤詳情：**\n"
+                f"- 模型：{model_name}\n"
+                f"- 錯誤：免費層配額已用盡\n\n"
+                f"**解決方案：**\n"
+                f"1. 檢查配額使用情況：https://ai.dev/rate-limit\n"
+                f"2. 等待配額重置（每分鐘/每天限制）\n"
+                f"3. 升級到付費方案\n"
+                f"4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                f"建議：免費層對 pro 模型的限制較嚴格，建議使用 flash 版本（如 gemini-3.0-flash）"
+            ) from e
+        else:
+            # 其他錯誤，直接拋出
+            raise
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION") -> str:
+def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
+    """
+    優化 context 以減少 token 使用
+    
+    Args:
+        context_text: 原始 context
+        max_tokens: 目標最大 token 數（約 4 字元 = 1 token）
+    
+    Returns:
+        優化後的 context
+    """
+    max_chars = max_tokens * 4  # 粗略估計
+    
+    if len(context_text) <= max_chars:
+        return context_text
+    
+    # 優先保留前面和後面的 Source（通常是重要的）
+    lines = context_text.split('\n')
+    source_lines = [line for line in lines if line.startswith('Source')]
+    
+    if len(source_lines) <= 1:
+        return context_text[:max_chars]
+    
+    # 保留前 60% 和後 20% 的來源
+    keep_start = int(len(source_lines) * 0.6)
+    keep_end = int(len(source_lines) * 0.2)
+    
+    kept_lines = source_lines[:keep_start] + source_lines[-keep_end:]
+    non_source_lines = [line for line in lines if not line.startswith('Source')]
+    
+    optimized = '\n'.join(non_source_lines + kept_lines)
+    
+    if len(optimized) > max_chars:
+        optimized = optimized[:max_chars] + "\n...（內容已截斷以優化處理速度）"
+    
+    return optimized
+
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # 重視正確度：不使用快速模式，保持完整 context
+    # context_text 保持原樣，不進行截斷
     
     tone_instruction = """
     【⚠️ 語氣風格指令】：
@@ -466,9 +2618,11 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         【⚠️ 數據結構指令】：輸出 Source ID (如 Source 1)。
         
         【分析方法論】：
-        1. **邏輯謬誤偵測**：指出滑坡謬誤、稻草人論證。
-        2. **證據強度分級**：評估證據力（強/弱）。
-        3. **聲量權重校正**：識別複讀機，挖掘長尾觀點。
+        1. **ACH 競爭假設分析 (Analysis of Competing Hypotheses)**：列出至少 3 個可能的解釋/假設，評估每個假設的支持與反對證據。
+        2. **邏輯謬誤偵測**：系統性掃描文本，識別滑坡謬誤、稻草人論證、訴諸情感等邏輯謬誤。
+        3. **證據強度分級**：依據來源類型（第一手來源、官方聲明、轉述、評論）評估證據力（強/中/弱）。
+        4. **Entman 框架分析**：針對不同媒體陣營，分析問題定義、歸因分析、道德評價三個維度。
+        5. **聲量權重校正**：識別重複論述（複讀機現象），特別標註獨特的長尾觀點。
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -477,14 +2631,44 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
+        
+        0. **🎯 ACH 競爭假設分析 (Analysis of Competing Hypotheses)**
+           請以表格呈現至少 3 個可能的解釋假設：
+           | 假設 | 支持證據 (Source ID) | 反對證據 (Source ID) | 可信度評估 | 備註 |
+           |:---|:---|:---|:---|:---|
+           
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響)。
+           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響 | 證據強度)。
+           
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
-           - *包含：邏輯謬誤偵測、證據強度評估*
-        3. **⚖️ 媒體框架光譜分析 (Framing Analysis)**
-           - *請應用聲量權重校正，指出話語權是否失衡*
+           **邏輯謬誤偵測表**（必須以表格呈現）：
+           | 謬誤類型 | 來源 (Source ID) | 原文片段（摘要） | 分析說明 |
+           |:---|:---|:---|:---|
+           （如：滑坡謬誤、稻草人論證、訴諸情感、錯誤二分法等）
+           
+           **證據強度評估**：
+           - 強證據：第一手來源、官方聲明、多個獨立來源交叉驗證
+           - 中證據：權威媒體轉述、專業分析
+           - 弱證據：評論、社論、單一來源、未經查證的轉述
+           
+        3. **⚖️ 媒體框架光譜分析 (Entman Framing Analysis)**
+           請針對主要媒體陣營，進行 Entman 框架的三維度分析：
+           
+           **框架對照表**：
+           | 媒體陣營 | 問題定義 | 歸因分析 | 道德評價 | 典型用語範例 |
+           |:---|:---|:---|:---|:---|
+           （分析不同陣營如何框定議題核心、歸因責任、使用道德語言）
+           
+           **聲量權重校正**：
+           - 重複論述：列出高度相似的多篇報導（Source ID），指出複讀機現象
+           - 獨特觀點：特別標註與主流論述不同的長尾觀點（Source ID）
+           - 話語權失衡評估：評估是否有特定陣營的聲音被過度放大或壓制
+           
         4. **🧠 深度識讀與利益分析 (Cui Bono)**
+           分析利益相關者的動機與獲益
+           
         5. **🤔 結構性反思 (Structural Reflection)**
+           深層結構問題與系統性思考
         """
         
     elif mode == "DEEP_SCENARIO":
@@ -647,7 +2831,7 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
         cleaned_lines = []
         for line in lines:
             # 保留表格分隔符（|:---:| 格式）
-            if re.match(r'^\|[\s:---]+\|', line):
+            if re.match(r'^\|[\s:-]+\|', line):
                 cleaned_lines.append(line)
             # 移除只有破折號的行（超過 5 個）
             elif re.match(r'^-{5,}\s*$', line):
@@ -756,15 +2940,17 @@ def export_full_state():
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def convert_data_to_md(data):
+    timeline_df = pd.DataFrame(data.get('timeline', []))
+    timeline_md = timeline_df.to_markdown(index=False) if not timeline_df.empty else "無時間軸資料"
     return f"""
 # 全域觀點分析報告 (V38.0)
-产生時間: {datetime.now()}
+產生時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## 1. 平衡報導分析
-{data.get('report_text')}
+{data.get('report_text', '')}
 
 ## 2. 時間軸
-{pd.DataFrame(data.get('timeline')).to_markdown(index=False)}
+{timeline_md}
     """
 
 # ==========================================
@@ -789,6 +2975,18 @@ with st.sidebar:
         google_key = st.text_input("Gemini Key", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
         tavily_key = st.text_input("Tavily Key", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         
+        # API Key 驗證按鈕
+        if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
+            if google_key and tavily_key:
+                with st.spinner("正在驗證 API Key..."):
+                    is_valid, message = validate_api_keys(google_key, tavily_key)
+                    if is_valid:
+                        st.success(message)
+                    else:
+                        st.error(message)
+            else:
+                st.warning("⚠️ 請先輸入 API Key")
+        
         # 顯示 Tavily 搜尋狀態
         if tavily_key:
             st.success("✅ Tavily 搜尋已啟用")
@@ -796,16 +2994,44 @@ with st.sidebar:
             st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
             
         model_name = st.selectbox(
-            "模型 (Gemini 2.5 Series)", 
-            ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"], 
-            index=0,
-            help="選擇用於分析的 Gemini 模型版本"
+            "模型選擇 (Gemini Series)", 
+            [
+                "gemini-3.0-pro",
+                "gemini-3.0-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite"
+            ], 
+            index=1,  # 預設使用 gemini-3.0-flash（配額限制較寬鬆）
+            help="選擇用於分析的 Gemini 模型版本\n\n"
+                 "**Gemini 3.0 系列（推薦）**：\n"
+                 "• gemini-3.0-pro：最強性能，適合複雜分析\n"
+                 "• gemini-3.0-flash：平衡性能與速度，推薦使用\n\n"
+                 "**Gemini 2.5 系列**：\n"
+                 "• gemini-2.5-pro：高性能，配額限制嚴格\n"
+                 "• gemini-2.5-flash：速度與配額平衡\n"
+                 "• gemini-2.5-flash-lite：最輕量級\n\n"
+                 "⚠️ 注意：免費層對 pro 模型的配額限制較嚴格，建議使用 flash 版本"
         )
+        
+        # 顯示模型特性提示
+        if "3.0-pro" in model_name:
+            st.info("🚀 **Gemini 3.0 Pro**：最新最強模型，具備 1M token 上下文窗口、Deep Think 模式和增強的多模態理解能力，適合複雜分析任務")
+        elif "3.0-flash" in model_name:
+            st.info("⚡ **Gemini 3.0 Flash**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
+        elif "2.5-pro" in model_name:
+            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議升級到 gemini-3.0-flash 或使用 gemini-2.5-flash。")
         
         st.markdown("---")
         st.markdown("#### 🔍 Tavily 搜尋設定")
+        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，整合事實查核、公信力評分與平衡檢索")
         search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
         max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
+        use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
+        st.session_state.use_cache = use_cache  # 儲存到 session_state
+        if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
+            deleted = clear_cache()
+            st.success(f"✅ 已清除 {deleted} 條過期快取")
         
         selected_regions = st.multiselect(
             "搜尋視角 (Region) - 可複選",
@@ -826,7 +3052,9 @@ with st.sidebar:
                 else:
                     default_text = uploaded_file.getvalue().decode("utf-8")
                     st.success(f"✅ 文字檔: {uploaded_file.name}")
-            except: pass
+            except Exception as e:
+                logger.warning(f"檔案讀取失敗: {str(e)}")
+                st.warning("⚠️ 檔案讀取失敗，請檢查檔案格式")
 
         past_report_input = st.text_area("或貼上內容：", value=default_text, height=150)
         
@@ -845,13 +3073,13 @@ with st.sidebar:
     # ==================== 學術方法論詳解 ====================
     st.markdown("---")
     st.markdown("### 🧠 情報分析方法論詳解")
-    st.caption("📚 點擊下方區塊查看詳細的學術理論與方法說明")
+    st.caption("📚 點擊下方區塊查看詳細的學術理論與方法說明 - 研究方法透明化")
     st.markdown("")  # 添加空行增加可讀性
     
     # 強制顯示：確保這些區塊一定會顯示
     # 這些 expander 區塊包含完整的學術方法論說明
     
-    with st.expander("1. 資訊檢索：混和權重與三軌搜尋 (Hybrid Weighted Search)", expanded=False):
+    with st.expander("1. 資訊檢索：混和權重與多層次查詢擴展 (Hybrid Weighted Search)", expanded=False):
         st.markdown("""
         **核心機制：混和權重搜尋**
         - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
@@ -868,48 +3096,452 @@ with st.sidebar:
         3. **深度與結構 (Deep Dive)**
            - 指令：`{query} 懶人包 重點 影響`
            - 目標：快速獲取議題的全貌、背景知識與結構化資訊（如法規比較）。
+        
+        **多層次查詢擴展機制 (Multi-Level Query Expansion)**
+        為提升搜尋覆蓋廣度 (Search Coverage & Recall)，系統採用三層擴展策略：
+        - **詞彙級擴展**：基礎三軌（事實/觀點/深度）
+        - **語義級擴展**：使用 LLM 生成 6-8 個語義相關的查詢變體，涵蓋不同表達方式和專業術語
+        - **語境級擴展**：時間維度（最新發展、歷史背景）與觀點維度（支持觀點、反對觀點、中立分析）
+        
+        **多維度平衡檢索 (Multi-Perspective Retrieval)**
+        為避免過濾氣泡 (Filter Bubble)，系統自動生成三組平衡查詢：
+        - **正方觀點查詢**：生成 3-4 個支持該議題的觀點/論述查詢
+        - **反方觀點查詢**：生成 3-4 個反對該議題的觀點/論述查詢
+        - **中立學術分析查詢**：生成 3-4 個中立的學術研究、數據分析查詢
+        
+        **搜尋深度優化**
+        - 系統始終使用 `advanced` 搜尋深度，確保深度挖掘高質量內容
+        - 不使用快速模式，專注於正確度而非速度
         """)
         
-    with st.expander("2. 框架分析：Entman 理論與立場判定 (Framing)"):
+    with st.expander("2. 來源公信力評分系統 (Source Credibility Scoring)", expanded=False):
         st.markdown("""
-        **Entman 框架理論 (Framing Theory)**
-        我們分析文本如何透過「選擇 (Selection)」與「凸顯 (Salience)」來建構現實。
-        - **問題定義**：不同陣營如何定義問題的核心？
-        - **歸因分析**：將責任歸咎於誰？
-        - **道德評價**：使用什麼樣的形容詞來進行道德審判？
+        **四層評分架構 (Four-Tier Scoring System)**
+        參考 GRADE 標準與 Media Bias/Fact Check 機制，建立系統化的來源公信力評分：
         
-        **機構層次驗證**
-        結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫 (DB_MAP)，對文章立場進行雙重驗證。
+        **Tier 1：最高證據強度 (0.90-0.95)**
+        - **學術機構** (.edu, .ac.uk, .ac.jp, .ac.tw)：權重係數 1.5
+        - **政府機構** (.gov.tw, .gov, .gov.uk)：權重係數 1.4
+        - 用途：官方原始文檔、同儕評審論文、權威機構正式報告
+        
+        **Tier 2：高證據強度 (0.75-0.85)**
+        - **國際權威媒體** (BBC, Reuters, AP, Bloomberg, WSJ, NYT, The Guardian, DW)：權重係數 1.3
+        - **獨立媒體機構** (報導者、端傳媒、關鍵評論網)：權重係數 1.2
+        - 用途：專業媒體深度調查、獨立媒體機構報告
+        
+        **Tier 3：中等證據強度 (0.60-0.70)**
+        - **商業媒體**：權重係數 1.0
+        - 用途：一般媒體報導、專家評論、組織聲明
+        
+        **Tier 4：低證據強度 (0.30-0.40)**
+        - **社群媒體** (Facebook, Twitter, YouTube, PTT, Dcard)：權重係數 0.5
+        - 用途：個人觀點、未經查證的轉述
+        
+        **RAG 權重應用 (RAG Weighting)**
+        在檢索增強生成 (RAG) 過程中，根據來源公信力動態調整：
+        - **高公信力來源** (≥0.8)：完整展示內容，優先引用，詳細標註
+        - **中等公信力來源** (0.6-0.8)：正常展示內容
+        - **低公信力來源** (<0.6)：縮短內容至 50%，標註「⚠️ 低可信度，請謹慎參考」警告
+        
+        **評分計算公式**
+        ```
+        證據強度 = 來源類型 (25%) + 公信力評分 (20%) + 內容品質 (25%) + 交叉驗證 (20%) + 利益衝突 (10%)
+        ```
         """)
         
-    with st.expander("3. 可信度驗證：水平閱讀與邏輯偵錯 (Verification)"):
+    with st.expander("3. 事實查核與去謠言機制 (Fact-Checking Integration)", expanded=False):
         st.markdown("""
-        **水平閱讀法 (Lateral Reading)**
-        採用史丹佛歷史教育群 (SHEG) 提倡之方法，不只深讀單一來源，而是橫向比對多個來源以確認事實。
+        **Google Fact Check Tools API 整合**
+        系統整合 Google Fact Check Tools API，對搜尋結果進行二次驗證：
         
-        **邏輯偵錯 (Logic Scan)**
-        AI 會自動掃描文本中的邏輯謬誤：
-        - **滑坡謬誤**：誇大微小行動的災難性後果。
-        - **稻草人論證**：扭曲對手觀點以便攻擊。
+        **三階段處理流程**
+        1. **聲明提取 (Claim Extraction)**
+           - 使用 LLM 從標題和內容摘要中提取核心聲明（主張）
+           - 每個聲明標註來源 ID 和上下文
+           - 批次處理（每 5 個來源一批）以優化效能
+        
+        2. **API 驗證 (API Verification)**
+           - 異步並行驗證（最多 5 個並發）
+           - 查詢 Google Fact Check Tools API
+           - 語言設定：zh-TW（繁體中文）
+           - 時間範圍：最多查詢一年內的查核結果
+        
+        3. **結果標註與降權 (Result Tagging & Weighting)**
+           - **VERIFIED_FALSE（已證偽）**：
+             * 標籤：❌ 已證偽
+             * 降權：證據強度降 2 級（A → C，中等 → 弱）
+             * 在報告中突出顯示警告
+        
+           - **MISLEADING / PARTLY_FALSE（誤導性/部分錯誤）**：
+             * 標籤：⚠️ 誤導性內容
+             * 降權：證據強度降 1 級（A → B，強 → 中等）
+        
+           - **UNVERIFIED（未驗證）**：保持原狀
         
         **Cofacts 協作查核**
-        即時串接 g0v Cofacts 謠言資料庫，標註已被社群查核為錯誤的資訊。
+        - 即時串接 g0v Cofacts 謠言資料庫
+        - 標註已被社群查核為錯誤的資訊
+        - 提供查核回應與詳細說明
+        
+        **水平閱讀法 (Lateral Reading)**
+        - 採用史丹佛歷史教育群 (SHEG) 提倡之方法
+        - 不只深讀單一來源，而是橫向比對多個獨立來源以確認事實
+        - 透過多來源搜尋實作交叉驗證
         """)
         
-    with st.expander("4. 戰略推演：CLA 層次分析與預警 (Futures)"):
+    with st.expander("5. False Balance 防範機制 (Evidence Weight Assessment)", expanded=False):
+        st.markdown("""
+        **證據權重評估（改進項目：新增）**
+        避免「虛假平衡」（False Balance），根據證據強度而非觀點數量分配權重。
+        參考 ABC 編採政策：「balance that follows the weight of evidence」
+        
+        **共識等級分類**
+        - **強共識 (strong_consensus)**：權威來源比例 ≥70%，品質分 ≥0.7 → 權重 1.0
+        - **中等共識 (moderate)**：權威來源比例 ≥50%，品質分 ≥0.6 → 權重 0.7
+        - **分歧觀點 (divided)**：權威來源比例 ≥30% → 權重 0.5
+        - **弱證據 (weak)**：權威來源比例 ≥15% → 權重 0.3，標註「⚠️ 證據薄弱，非主流觀點」
+        - **邊緣觀點 (marginal)**：權威來源比例 <15% → 權重 0.15，標註「⚠️ 證據極弱，邊緣觀點」
+        
+        **權威來源定義**
+        - Tier 1：官方機構（OFFICIAL）、學術機構（.edu, .ac.tw）
+        - Tier 2：國際權威媒體（BBC, Reuters, AP, NYT 等）、獨立媒體（報導者、端傳媒等）
+        - 計算權威來源數量和比例
+        
+        **品質分數計算**
+        - 平均證據強度分數（evidence_score）
+        - 考慮來源公信力（credibility_score）
+        - 綜合評估來源品質
+        
+        **False Balance 防範**
+        - 系統自動檢測邊緣觀點並標註警告
+        - AI 分析時明確要求：「根據證據權重分配篇幅，避免 false balance」
+        - 在報告中明確標示「主流共識」vs「邊緣觀點」
+        - 避免將科學共識與邊緣主張等同處理
+        
+        **應用場景**
+        - 在共識分析中為每個觀點計算證據權重
+        - 在平衡報導中根據權重分配篇幅
+        - 在 UI 中顯示 false_balance_warning 警示
+        """)
+        
+    with st.expander("6. 學術級證據強度分級 (Academic Evidence Grading)", expanded=False):
+        st.markdown("""
+        **GRADE 標準參考 (Grading of Recommendations Assessment, Development and Evaluation)**
+        參考 GRADE 系統與 CERQual（Confidence in the Evidence from Reviews of Qualitative research）方法：
+        
+        **證據類型分級**
+        - **A+ / 極強 (≥0.85)**：官方原始文檔 + 多源交叉驗證
+        - **A / 強 (0.70-0.84)**：權威來源 + 完整內容品質
+        - **B+ / 中強 (0.55-0.69)**：一般媒體 + 基本品質
+        - **B / 中等 (0.40-0.54)**：商業媒體報導
+        - **C / 中弱 (0.25-0.39)**：低品質來源
+        - **D / 弱 (<0.25)**：社群媒體、內容農場
+        
+        **多維度評分系統**
+        ```
+        證據強度 = f(來源類型, 來源公信力, 內容品質, 交叉驗證, 利益衝突)
+        
+        其中：
+        - 來源類型權重：25%
+        - 來源公信力權重：20%（整合 Tier 1-4 評分）
+        - 內容品質權重：25%（長度、完整性、引用、相關性）
+        - 交叉驗證權重：20%（多個獨立來源確認）
+        - 利益衝突權重：10%（負權重，檢測贊助/廣告關係）
+        ```
+        
+        **內容品質評估 (CERQual)**
+        - **完整性 (Completeness)**：是否有完整的敘述、背景資訊、結論
+        - **相關性 (Relevance)**：與議題核心的相關程度
+        - **可信度 (Credibility)**：是否提供引用來源、是否有交叉驗證
+        - **適用性 (Applicability)**：是否適用於當前情境
+        
+        **交叉驗證機制**
+        - 檢查是否有其他獨立來源支持相同主張
+        - 共識度計算：支持該主張的獨立來源數 / 總相關來源數
+        - 高共識度 (>70%)：證據強度 +0.2
+        - 中共識度 (40-70%)：證據強度 +0.1
+        - 低共識度 (<40%)：可能為爭議點，證據強度不增加
+        
+        **利益衝突檢測**
+        - 檢測內容中的利益關係標記（贊助、廣告、業配、合作、投資、股東）
+        - 如果檢測到利益衝突，證據強度扣 0.15
+        """)
+        
+    with st.expander("7. 框架分析：Entman 理論與立場判定 (Framing Analysis)", expanded=False):
+        st.markdown("""
+        **Entman 框架理論 (Framing Theory)**
+        分析文本如何透過「選擇 (Selection)」與「凸顯 (Salience)」來建構現實：
+        
+        **三維度分析框架**
+        1. **問題定義 (Problem Definition)**
+           - 不同陣營如何框定議題核心？
+           - 使用什麼詞彙來描述議題？
+           - 強調哪些面向（經濟/政治/社會/道德）？
+           - 如何設定議題的邊界？
+        
+        2. **歸因分析 (Causal Attribution)**
+           - **責任歸咎**：主要責任者（個人/組織/系統/外部因素）
+           - **歸因傾向**：內因（個人能力/意圖）vs 外因（環境/結構）
+           - **歸因明確性**：明確歸因 vs 模糊歸因
+        
+        3. **道德評價 (Moral Evaluation)**
+           - **正面修辭**：讚揚、支持、正當化
+           - **負面修辭**：批評、譴責、妖魔化
+           - **道德框架**：正義/不義、公平/不公平、合法/非法
+        
+        **框架對比分析**
+        - 對比至少 2-3 個不同媒體陣營的框架
+        - 識別框架的共通點和差異點
+        - 標註「框架衝突」和「框架共識」
+        - 分析框架的意識形態基礎
+        
+        **立場平衡檢測 (Stance Balance Assessment)**
+        - **陣營覆蓋**：檢查各陣營（藍/綠/官方/中立/國際）的來源數量和質量
+        - **觀點光譜**：將觀點放置在光譜上（支持/中立/反對），檢查分佈
+        - **缺口檢測**：自動識別缺失的立場或觀點
+        - **平衡建議**：生成平衡性報告，建議補充的搜尋方向
+        
+        **機構層次驗證**
+        - 結合媒體所有權結構 (Ownership) 與過往政治傾向資料庫 (DB_MAP)
+        - 對文章立場進行雙重驗證（來源層 + 內容層）
+        - 靜態分類（媒體歷史立場）+ 動態評估（內容情感極性）
+        """)
+        
+    with st.expander("8. ACH 競爭假設分析 (Analysis of Competing Hypotheses)", expanded=False):
+        st.markdown("""
+        **ACH 方法論 (Analysis of Competing Hypotheses)**
+        ACH 是情報分析中避免認知偏誤的系統性方法，要求分析師同時考慮多個可能的解釋。
+        
+        **假設生成**
+        - 必須列出所有可能的解釋假設（至少 3 個）
+        - 包含「零假設」（沒有特殊情況）
+        - 避免僅關注單一假設
+        
+        **證據評估**
+        - 對每個假設，明確列出：
+          * **支持證據**：Source ID + 證據描述
+          * **反對證據**：Source ID + 證據描述
+        - 評估證據的強度和可信度
+        
+        **可信度評估**
+        - 使用量化或半量化方式評估每個假設的可信度
+        - 標註「高/中/低」或使用 0-100 分數
+        
+        **不確定性標註**
+        - 對於證據不足的情況，必須明確標註「證據不足」或「無法確定」
+        - 嚴禁臆測，若證據不足直接標示
+        
+        **輸出格式**
+        | 假設 | 支持證據 (Source ID) | 反對證據 (Source ID) | 可信度評估 | 備註 |
+        |:---|:---|:---|:---|:---|
+        """)
+        
+    with st.expander("9. 邏輯謬誤偵測 (Logic Fallacy Detection)", expanded=False):
+        st.markdown("""
+        **系統性邏輯掃描 (Systematic Logic Scan)**
+        AI 會自動掃描文本中的邏輯謬誤，識別論證缺陷：
+        
+        **常見謬誤類型**
+        - **滑坡謬誤 (Slippery Slope)**：誇大小事與大災難之間的因果關係
+        - **稻草人論證 (Straw Man)**：扭曲對手觀點以便攻擊
+        - **訴諸情感 (Appeal to Emotion)**：用情感訴求替代理性論證
+        - **錯誤二分法 (False Dilemma)**：將複雜議題簡化為非黑即白
+        - **訴諸權威 (Appeal to Authority)**：過度依賴權威而非證據
+        - **因果謬誤 (Causal Fallacy)**：混淆相關性與因果關係
+        - **以偏概全 (Hasty Generalization)**：從少數案例推論整體
+        
+        **偵測要求**
+        - 必須列出謬誤的具體位置（Source ID + 原文片段）
+        - 說明謬誤類型和影響程度
+        - 分析謬誤如何影響論述的可信度
+        
+        **輸出格式**
+        | 謬誤類型 | 來源 (Source ID) | 原文片段（摘要） | 分析說明 |
+        |:---|:---|:---|:---|
+        """)
+        
+    with st.expander("10. 共識分析 (Consensus Analysis)", expanded=False):
+        st.markdown("""
+        **多維度平衡檢索後的共識分析**
+        在執行多維度平衡檢索（正方/反方/中立）後，系統會進行共識分析：
+        
+        **共同事實識別**
+        - 列出所有立場都認同的核心事實
+        - 標註支持這些事實的來源（Source ID）
+        - 評估事實的可信度（基於來源權威性）
+        - 區分「事實」與「解釋」
+        
+        **分歧點分析**
+        - 識別各方觀點的主要分歧點
+        - 分析分歧的**根本原因**：
+          * **價值觀差異**：例如經濟效率 vs 環境保護
+          * **利益衝突**：例如產業利益 vs 公共利益
+          * **資訊差異**：例如不同數據來源或解釋方式
+        
+        **共識度評估**
+        - **高共識 (>70%)**：各方對核心事實有高度共識
+        - **中共識 (40-70%)**：有部分共識，但存在明顯分歧
+        - **低共識 (<40%)**：各方觀點高度對立
+        
+        **立場平衡度計算**
+        - 計算各立場（正方/反方/中立）的來源比例
+        - 評估觀點光譜分佈是否平衡
+        - 識別話語權失衡（特定陣營聲音被過度放大或壓制）
+        
+        **輸出格式**
+        **共同事實表**：
+        | 事實描述 | 支持來源 (Source ID) | 可信度評估 |
+        |:---|:---|:---|
+        
+        **分歧點分析表**：
+        | 分歧點 | 正方立場 | 反方立場 | 根本原因 | 支持來源 |
+        |:---|:---|:---|:---|:---|
+        
+        **共識度總結**：
+        - 共識度等級：[高/中/低]
+        - 共識分數：X%
+        - 主要分歧領域：[列出 1-3 個]
+        """)
+        
+    with st.expander("11. 網軍協調行為偵測 (Coordinated Behavior Detection)", expanded=False):
+        st.markdown("""
+        **協調行為偵測（改進項目：新增）**
+        檢測組織性資訊操作（Coordinated Inauthentic Behavior, CIB）特徵：
+        
+        **內容相似度分析**
+        - 重用聲量權重校正的相似度檢測
+        - 如果重複內容超過 30%，可能為協調發布
+        - 識別相似內容群組
+        
+        **來源集中度分析**
+        - 計算域名集中度（單一域名占比）
+        - 如果單一域名超過 50%，可能為組織性操作
+        - 檢測可能為網軍的集中發布模式
+        
+        **時間聚集分析**
+        - 分析發布時間分佈
+        - 如果同一天發布超過 40%，可能存在同步操作
+        - 檢測異常的時間集中模式
+        
+        **協調性分數計算**
+        - 重複內容 > 30%：+0.4
+        - 域名集中度 > 50%：+0.3
+        - 時間集中度 > 40%：+0.2
+        - 總分 ≥ 0.6：標註「🚨 高風險：檢測到明顯的協調行為特徵」
+        
+        **警示標記**
+        - 「⚠️ 高度重複內容，可能存在協調發布」
+        - 「⚠️ 來源過度集中，可能為組織性操作」
+        - 「⚠️ 時間高度集中，可能存在同步操作」
+        
+        **限制說明**
+        - 目前為簡化版，基於現有資料（標題、域名、日期）
+        - 完整版需要社群媒體 API 進行帳號層級分析（co-tweet、網絡結構等）
+        - 未來可整合 GNN（圖神經網絡）進行深度網絡分析
+        """)
+        
+    with st.expander("12. 聲量權重校正 (Volume Weight Analysis)", expanded=False):
+        st.markdown("""
+        **重複論述檢測 (Duplicate Narrative Detection)**
+        識別「複讀機現象」，避免少數觀點被重複計算而放大影響：
+        
+        **相似度計算**
+        - 使用加權組合的相似度算法：
+          * **字元級相似度**：SequenceMatcher 相似度
+          * **詞級相似度**：Jaccard 相似度（共同詞彙）
+        - 綜合相似度 = 0.6 × 字元相似度 + 0.4 × 詞級相似度
+        - 閾值：≥0.8 視為重複論述
+        
+        **快速過濾機制**
+        - 先檢查標題字首相似度，快速過濾明顯不同的標題
+        - 優化效能，避免不必要的計算
+        
+        **重複論述組識別**
+        - 將相似度 ≥0.8 的標題分組
+        - 每組至少包含 2 篇來源
+        - 在報告中標註，避免重複計算聲量
+        
+        **獨特觀點識別**
+        - 標註與主流論述不同的長尾觀點
+        - 確保少數但重要的觀點不被淹沒
+        - 特別關注獨立媒體和專家觀點
+        
+        **話語權失衡評估**
+        - 評估是否有特定陣營的聲音被過度放大或壓制
+        - 結合立場平衡分析，識別可能的偏見
+        """)
+        
+    with st.expander("13. 戰略推演：CLA 層次分析與未來學方法 (Futures Studies)", expanded=False):
         st.markdown("""
         **CLA 層次分析法 (Causal Layered Analysis)**
         深入挖掘議題的四個層次：
-        1. **表象 (Litany)**：公眾看到的事件與數據。
-        2. **系統 (System)**：造成事件的社會結構與政策成因。
-        3. **世界觀 (Worldview)**：利益相關者的深層價值觀與意識形態。
-        4. **神話/隱喻 (Myth)**：潛意識中的集體焦慮或故事原型。
+        1. **表象 (Litany)**：公眾看到的事件與數據
+           - 新聞標題、統計數字、表面現象
+        
+        2. **系統 (System)**：造成事件的社會結構與政策成因
+           - 制度設計、政策框架、經濟結構、社會關係
+        
+        3. **世界觀 (Worldview)**：利益相關者的深層價值觀與意識形態
+           - 信念體系、文化規範、哲學基礎
+        
+        4. **神話/隱喻 (Myth)**：潛意識中的集體焦慮或故事原型
+           - 深層文化敘事、集體記憶、情感結構
+        
+        **場景規劃 (Scenario Planning)**
+        為議題建立多種未來發展路徑：
+        - **基準路徑 (Baseline Path)**：延續現有趨勢的發展
+        - **轉折路徑 (Alternative Path)**：重要轉折點後的發展
+        - **極端路徑 (Wild Card Path)**：極端情況下的發展
         
         **早期預警指標 (Signposts)**
-        為每個未來情境設定具體的監測訊號。
+        - 為每個未來情境設定具體的監測訊號
+        - 可觀察、可測量的指標
+        - 幫助提前識別趨勢轉折點
         
-        **驗屍分析 (Pre-mortem)**
-        假設預測失敗，反推可能的隱蔽變數。
+        **驗屍分析 (Pre-mortem Analysis)**
+        - 假設預測失敗，反推可能的隱蔽變數
+        - 識別可能導致分析失效的因素
+        - 提高分析的韌性與可靠性
+        
+        **預警指標分類**
+        - **量化指標**：經濟數據、民調數字、統計趨勢
+        - **質化指標**：政策變動、重要人物表態、社會運動
+        - **轉折點指標**：關鍵事件、決策時刻、外部衝擊
+        """)
+        
+    with st.expander("14. 研究方法透明度要求 (Research Transparency)", expanded=False):
+        st.markdown("""
+        **方法論說明**
+        - 報告必須說明使用的研究方法
+        - 明確標註使用的框架（ACH、Entman、GRADE 等）
+        - 解釋為什麼選擇這些方法
+        
+        **資料來源標註**
+        - 所有引用的來源都必須標註 Source ID
+        - 明確列出所有資料來源的 URL
+        - 標註來源的公信力等級和證據強度
+        
+        **局限性聲明**
+        - 說明分析的局限性：
+          * 資料不足：某些觀點可能未充分搜尋到
+          * 時間限制：只涵蓋特定時間範圍的資料
+          * 語言限制：主要搜尋中文資料
+          * 來源限制：受限於可用的資料來源
+        
+        **不確定性標註**
+        - 對於存疑或證據不足的部分，必須明確標註
+        - 區分「事實」（可驗證）與「解釋」（需進一步證據）
+        - 避免過度自信的結論
+        
+        **可重現性**
+        - 報告生成時間、搜尋參數、使用模型都有記錄
+        - 支援匯出完整狀態（JSON）以便後續分析
+        - 快取機制確保相同查詢可重現結果
+        
+        **利益衝突聲明**
+        - 系統會自動檢測並標註可能的利益衝突
+        - 標註贊助、廣告、業配等關係
+        - 降低可能受利益影響的來源權重
         """)
         
     st.markdown("### 📥 報告匯出")
@@ -931,6 +3563,9 @@ search_btn = st.button("🚀 啟動全域掃描", type="primary")
 if 'result' not in st.session_state: st.session_state.result = None
 if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
 if 'sources' not in st.session_state: st.session_state.sources = None
+if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
+if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
+if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
 
 if search_btn and query and google_key and tavily_key:
     st.session_state.result = None
@@ -939,7 +3574,12 @@ if search_btn and query and google_key and tavily_key:
     with st.status("🚀 啟動 V38.0 平衡報導分析引擎...", expanded=True) as status:
         
         st.write("🧠 1. 生成動態搜尋策略...")
-        dynamic_keywords = generate_dynamic_keywords(query, google_key)
+        use_cache_enabled = st.session_state.get('use_cache', True)
+        if google_key:
+            dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled)
+        else:
+            # 如果沒有 API Key，使用降級策略
+            dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
         st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords)}")
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
@@ -952,9 +3592,23 @@ if search_btn and query and google_key and tavily_key:
             status.update(label="❌ 搜尋失敗", state="error", expanded=False)
             st.stop()
         
-        context_text, sources, actual_query, is_strict_tw = get_search_context(
-            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords
+        # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
+        use_cache_enabled = st.session_state.get('use_cache', True)
+        
+        # 執行搜尋（整合所有功能）
+        search_result = get_search_context(
+            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords, 
+            use_cache=use_cache_enabled, google_api_key=google_key
         )
+        
+        if len(search_result) == 7:
+            context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
+        else:
+            # 向後相容
+            context_text, sources, actual_query, is_strict_tw = search_result[:4]
+            stance_analysis = None
+            fact_check_results = None
+            consensus_analysis = None
         
         st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
         if is_strict_tw:
@@ -962,19 +3616,97 @@ if search_btn and query and google_key and tavily_key:
         
         st.session_state.sources = sources
         
-        st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
-        cofacts_txt = search_cofacts(query)
-        if cofacts_txt: context_text += f"\n{cofacts_txt}\n"
+        # 顯示立場平衡分析結果
+        if stance_analysis and stance_analysis.get('missing_stances'):
+            st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
+            if stance_analysis.get('recommendations'):
+                with st.expander("🔍 查看平衡性建議", expanded=False):
+                    for rec in stance_analysis['recommendations']:
+                        st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
         
-        st.write("🧠 4. AI 進行深度戰略分析 (ACH 競爭假設 + 邏輯偵錯)...")
+        st.session_state.stance_analysis = stance_analysis
+        st.session_state.fact_check_results = fact_check_results
+        st.session_state.consensus_analysis = consensus_analysis
+        
+        st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
+        cofacts_txt, cofacts_rumors = search_cofacts(query)
+        if cofacts_txt: 
+            context_text += f"\n{cofacts_txt}\n"
+            st.session_state.cofacts_rumors = cofacts_rumors
+        else:
+            st.session_state.cofacts_rumors = []
+        
+        # 事實查核結果顯示（方案 1）
+        if fact_check_results:
+            false_count = len(fact_check_results.get('false_claims', []))
+            misleading_count = len(fact_check_results.get('misleading_claims', []))
+            if false_count > 0 or misleading_count > 0:
+                st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
+        
+        # 聲量權重分析
+        if sources:
+            st.write("📊 4. 執行聲量權重校正分析...")
+            volume_analysis = analyze_volume_weight(sources)
+            st.write(f"   ↳ 發現 {volume_analysis['duplicate_count']} 組重複論述，{volume_analysis['unique_count']} 篇獨特觀點")
+            st.session_state.volume_analysis = volume_analysis
+        else:
+            st.session_state.volume_analysis = None
+        
+        # 共識分析結果顯示（方案 3.3）
+        if consensus_analysis:
+            consensus_score = consensus_analysis.get('consensus_score', 0)
+            consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
+            st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
+        
+        st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
         
         mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
         analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
 
-        raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code)
+        try:
+            raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code, fast_mode=False)
+        except Exception as e:
+            error_msg = str(e)
+            if "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg or "ChatGoogleGenerativeAIError" in str(type(e)):
+                st.error("""
+                ❌ **API 配額已耗盡**
+                
+                **可能的原因：**
+                - 免費層配額已用盡（每分鐘/每天限制）
+                - 使用的模型（gemini-2.5-pro）配額限制較嚴格
+                
+                **解決方案：**
+                1. **切換模型**：在側邊欄切換到 `gemini-3.0-flash` 或 `gemini-2.5-flash`（配額限制較寬鬆）
+                2. **檢查配額**：前往 https://ai.dev/rate-limit 查看使用情況
+                3. **等待重置**：配額通常每分鐘或每天重置
+                4. **升級方案**：考慮升級到付費方案
+                
+                **建議**：免費層建議使用 `gemini-3.0-flash` 或 `gemini-2.5-flash`，功能相似但配額更寬鬆。
+                """)
+                status.update(label="❌ 分析失敗：API 配額耗盡", state="error", expanded=False)
+                st.stop()
+            else:
+                st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
+                status.update(label="❌ 分析失敗", state="error", expanded=False)
+                logger.error(f"AI 分析失敗: {error_msg}")
+                with st.expander("🔍 錯誤詳情", expanded=False):
+                    st.code(error_msg)
+                st.stop()
+        
+        # 驗證 AI 輸出格式
+        validation = validate_ai_output_format(raw_report, mode_code)
+        if validation['score'] < 70:
+            st.warning(f"⚠️ AI 輸出格式驗證分數: {validation['score']:.1f}/100")
+            if validation['missing_sections']:
+                st.warning(f"缺少章節: {', '.join(validation['missing_sections'])}")
+            if not validation['has_timeline']:
+                st.warning("⚠️ 未檢測到時間軸區塊")
+            if not validation['has_report']:
+                st.warning("⚠️ 未檢測到報告文本區塊")
         
         # 解析報告數據
         parsed_data = parse_gemini_data(raw_report)
+        parsed_data['validation'] = validation  # 保存驗證結果
         
         # 驗證解析結果
         if not parsed_data.get("report_text") or not parsed_data.get("report_text").strip():
@@ -1014,9 +3746,154 @@ if search_btn and query and google_key and tavily_key:
         
     st.rerun()
 
+# Cofacts 謠言警告區塊
+if st.session_state.get('cofacts_rumors'):
+    st.markdown("---")
+    with st.container():
+        st.markdown("### ⚠️ Cofacts 查核警告")
+        st.warning("⚠️ 發現相關謠言或爭議訊息，請注意查證")
+        for rumor in st.session_state.cofacts_rumors:
+            rumor_type_emoji = "❌" if rumor.get('type') == 'NOT_ARTICLE' else "⚠️"
+            with st.expander(f"{rumor_type_emoji} {rumor.get('text', '')[:100]}... (判定: {rumor.get('type', 'UNKNOWN')})"):
+                st.write(f"**謠言內容**：{rumor.get('text', '')}")
+                if rumor.get('reply'):
+                    st.write(f"**查核回應**：{rumor.get('reply', '')}")
+
+# 聲量權重分析區塊
+if st.session_state.get('volume_analysis') and st.session_state.get('sources'):
+    st.markdown("---")
+    st.markdown("### 📊 聲量權重分析")
+    vol_analysis = st.session_state.volume_analysis
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("重複論述組數", vol_analysis['duplicate_count'])
+    with col2:
+        st.metric("獨特觀點數", vol_analysis['unique_count'])
+    
+    if vol_analysis['duplicate_groups']:
+        with st.expander("🔍 查看重複論述詳情", expanded=False):
+            for group in vol_analysis['duplicate_groups']:
+                st.write(f"**重複組 #{len(group)} 篇相似報導：**")
+                for idx in group[:5]:  # 只顯示前5篇
+                    source = st.session_state.sources[idx]
+                    st.write(f"- [{idx+1}] {source.get('title', 'No Title')}")
+                if len(group) > 5:
+                    st.caption(f"... 還有 {len(group)-5} 篇相似報導")
+
 if st.session_state.result:
     data = st.session_state.result
     render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
+    
+    # 視覺化圖表區塊
+    if PLOTLY_AVAILABLE and st.session_state.get('sources'):
+        st.markdown("---")
+        st.markdown("### 📊 資料視覺化分析")
+        
+        sources = st.session_state.sources
+        if sources:
+            tab1, tab2, tab3 = st.tabs(["📅 時間軸分佈", "🏛️ 媒體立場分佈", "📈 證據強度分佈"])
+            
+            with tab1:
+                # 時間軸分佈圖
+                timeline_dates = []
+                for source in sources:
+                    date_str = source.get('final_date') or source.get('published_date', '')
+                    if date_str and date_str != "Missing":
+                        try:
+                            date_obj = datetime.strptime(date_str[:10], "%Y-%m-%d")
+                            timeline_dates.append(date_obj)
+                        except:
+                            pass
+                
+                if timeline_dates:
+                    fig = go.Figure()
+                    fig.add_trace(go.Histogram(
+                        x=timeline_dates,
+                        nbinsx=20,
+                        marker_color='#673ab7',
+                        name='報導數量'
+                    ))
+                    fig.update_layout(
+                        title='報導時間分佈',
+                        xaxis_title='日期',
+                        yaxis_title='報導數量',
+                        template='plotly_white'
+                    )
+                    st.plotly_chart(fig, width='stretch')
+                else:
+                    st.info("無有效日期資料可供視覺化")
+            
+            with tab2:
+                # 媒體立場分佈圓餅圖
+                category_counts = Counter()
+                for source in sources:
+                    category = source.get('source_category', 'OTHER')
+                    if category:
+                        category_counts[category] += 1
+                
+                if category_counts:
+                    labels = []
+                    values = []
+                    colors_map = {
+                        'OFFICIAL': '#546e7a',
+                        'BLUE': '#1565c0',
+                        'GREEN': '#2e7d32',
+                        'INDIE': '#fbc02d',
+                        'INTL': '#f57c00',
+                        'CHINA': '#d32f2f',
+                        'FARM': '#ef6c00',
+                        'SOCIAL': '#607d8b',
+                        'OTHER': '#9e9e9e'
+                    }
+                    
+                    colors = []
+                    for cat, count in category_counts.most_common():
+                        labels.append(get_category_meta(cat)[0])
+                        values.append(count)
+                        colors.append(colors_map.get(cat, '#9e9e9e'))
+                    
+                    fig = go.Figure(data=[go.Pie(
+                        labels=labels,
+                        values=values,
+                        marker=dict(colors=colors),
+                        hole=0.4
+                    )])
+                    fig.update_layout(
+                        title='媒體立場分佈',
+                        template='plotly_white'
+                    )
+                    st.plotly_chart(fig, width='stretch')
+                else:
+                    st.info("無媒體分類資料")
+            
+            with tab3:
+                # 證據強度分佈直方圖
+                evidence_counts = Counter()
+                for source in sources:
+                    level = source.get('evidence_level', '中等')
+                    evidence_counts[level] += 1
+                
+                if evidence_counts:
+                    levels = ['強', '中等', '弱']
+                    counts = [evidence_counts.get(level, 0) for level in levels]
+                    colors = ['#4caf50', '#ffc107', '#f44336']
+                    
+                    fig = go.Figure(data=[go.Bar(
+                        x=levels,
+                        y=counts,
+                        marker_color=colors,
+                        text=counts,
+                        textposition='auto'
+                    )])
+                    fig.update_layout(
+                        title='證據強度分佈',
+                        xaxis_title='證據強度',
+                        yaxis_title='報導數量',
+                        template='plotly_white'
+                    )
+                    st.plotly_chart(fig, width='stretch')
+                else:
+                    st.info("無證據強度資料")
 
     st.markdown("---")
     st.markdown("### 📝 平衡報導分析")
@@ -1058,7 +3935,7 @@ if st.session_state.result:
         cleaned_lines = []
         for line in lines:
             # 保留表格分隔符（|:---:| 格式）
-            if re.match(r'^\|[\s:---]+\|', line):
+            if re.match(r'^\|[\s:-]+\|', line):
                 cleaned_lines.append(line)
             # 跳過只有破折號的行（超過 5 個）
             elif re.match(r'^-{5,}\s*$', line):
@@ -1091,7 +3968,7 @@ if st.session_state.scenario_result:
 if st.session_state.sources:
     st.markdown("---")
     st.markdown("### 📚 引用文獻列表")
-    md_table = "| 編號 | 媒體/網域 | 標題摘要 | 連結 |\n|:---:|:---|:---|:---|\n"
+    md_table = "| 編號 | 媒體/網域 | 標題摘要 | 證據強度 | 連結 |\n|:---:|:---|:---|:---|:---|\n"
     for i, s in enumerate(st.session_state.sources):
         domain = get_domain_name(s.get('url'))
         
@@ -1102,7 +3979,12 @@ if st.session_state.sources:
         if blind_mode: media_name = "*****"
         
         title = s.get('title', 'No Title')
-        if len(title) > 60: title = title[:60] + "..."
+        if len(title) > TITLE_TRUNCATE_LENGTH: title = title[:TITLE_TRUNCATE_LENGTH] + "..."
+        
+        # 顯示證據強度標記
+        evidence_level = s.get('evidence_level', '中等')
+        evidence_emoji = "🟢" if evidence_level == "強" else "🟡" if evidence_level == "中等" else "🔴"
         url = s.get('url')
-        md_table += f"| **{i+1}** | `{media_name}` | {title} | [點擊]({url}) |\n"
+        evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
+        md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
     st.markdown(md_table)
