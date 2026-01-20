@@ -2666,7 +2666,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False) -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 重視正確度：不使用快速模式，保持完整 context
@@ -4046,7 +4046,15 @@ if st.session_state.result:
         if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
             with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
                 current_report = data.get("report_text", "")
-                raw_text = run_strategic_analysis(query, current_report, model_name, google_key, mode="DEEP_SCENARIO")
+                # 獲取 OpenAI API Key（如果有的話）
+                openai_api_key = st.session_state.get('openai_api_key', None)
+                openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
+                
+                raw_text = run_strategic_analysis(
+                    query, current_report, model_name, google_key, 
+                    mode="DEEP_SCENARIO",
+                    openai_api_key=openai_api_key, openai_model=openai_model
+                )
                 st.session_state.scenario_result = parse_gemini_data(raw_text) 
                 st.rerun()
 
