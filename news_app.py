@@ -32,6 +32,13 @@ from langchain_core.prompts import ChatPromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tavily import TavilyClient
 try:
+    from langchain_openai import ChatOpenAI
+    from openai import OpenAIError
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    # logger 尚未定義，使用 print 或稍後記錄
+try:
     import plotly.graph_objects as go
     import plotly.express as px
     PLOTLY_AVAILABLE = True
@@ -2346,7 +2353,7 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         cached_results = None
         if use_cache:
             cached_results = get_cached_results(query, search_params)
-        
+
         is_strict_mode = bool(selected_regions)
         
         if cached_results:
@@ -2464,8 +2471,8 @@ def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
         except Exception as e:
             logger.error(f"Gemini API 驗證失敗: {str(e)}")
             return False, f"Gemini API Key 無效：{str(e)[:100]}"
-    else:
-        return False, "未提供 Gemini API Key"
+        else:
+            return False, "未提供 Gemini API Key"
     
     # 驗證 Tavily API
     if tavily_key:
@@ -2482,10 +2489,52 @@ def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
     
     return True, "✅ 所有 API Key 驗證通過"
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=False)
-def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str) -> str:
+def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mini", api_key: str = None) -> str:
     """
-    呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型
+    呼叫 OpenAI API（降級方案）
+    
+    Args:
+        system_prompt: 系統提示
+        user_text: 用戶輸入
+        model_name: OpenAI 模型名稱（預設：gpt-4o-mini）
+        api_key: OpenAI API Key
+    
+    Returns:
+        str: AI 生成的文本
+    """
+    if not OPENAI_AVAILABLE:
+        raise ImportError("OpenAI 套件未安裝，請執行: pip install langchain-openai")
+    
+    if not api_key:
+        raise ValueError("未提供 OpenAI API Key")
+    
+    try:
+        llm = ChatOpenAI(model=model_name, temperature=0.0, openai_api_key=api_key)
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        result = chain.invoke({"input": user_text}).content
+        logger.info(f"成功使用 OpenAI {model_name} 生成回應")
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"OpenAI API 調用失敗: {error_msg}")
+        raise Exception(f"OpenAI API 調用失敗: {error_msg[:200]}") from e
+
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=False)
+def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
+    """
+    呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
+    
+    Args:
+        system_prompt: 系統提示
+        user_text: 用戶輸入
+        model_name: Gemini 模型名稱
+        api_key: Google Gemini API Key
+        openai_api_key: OpenAI API Key（可選，用於降級）
+        openai_model: OpenAI 模型名稱（預設：gpt-4o-mini）
+    
+    Returns:
+        str: AI 生成的文本
     """
     os.environ["GOOGLE_API_KEY"] = api_key
     
@@ -2512,7 +2561,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 # Gemini 2.5 Pro -> 2.5 Flash
                 fallback_models = ["gemini-2.5-flash"]
             
-            # 如果是 pro 模型，嘗試降級
+            # 如果是 pro 模型，嘗試降級到其他 Gemini 模型
             if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
                 for fallback_model in fallback_models:
                     try:
@@ -2526,20 +2575,41 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                     except Exception as e2:
                         logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個降級選項")
                         continue
-                
-                # 所有降級都失敗，拋出錯誤
-                raise ChatGoogleGenerativeAIError(
-                    f"❌ API 配額已耗盡\n\n"
-                    f"**錯誤詳情：**\n"
-                    f"- 嘗試使用模型：{model_name}\n"
-                    f"- 降級嘗試：{', '.join(fallback_models)} 都失敗\n\n"
-                    f"**解決方案：**\n"
-                    f"1. 檢查您的 Google AI Studio 配額：https://ai.dev/rate-limit\n"
-                    f"2. 等待配額重置（通常每分鐘/每天重置）\n"
-                    f"3. 升級到付費方案以獲得更高配額\n"
-                    f"4. 嘗試使用 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
-                    f"原始錯誤：{error_msg[:200]}"
-                ) from e
+            
+            # 如果所有 Gemini 降級都失敗，嘗試使用 OpenAI（如果提供了 OpenAI API Key）
+            if openai_api_key and OPENAI_AVAILABLE:
+                try:
+                    logger.info(f"所有 Gemini 模型配額耗盡，嘗試降級到 OpenAI {openai_model}")
+                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
+                    logger.info(f"成功降級到 OpenAI {openai_model}")
+                    return result
+                except Exception as e3:
+                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
+                    # 繼續拋出原始錯誤
+            
+            # 所有降級都失敗，拋出錯誤
+            error_message = (
+                f"❌ Google Gemini API 配額已耗盡\n\n"
+                f"**錯誤詳情：**\n"
+                f"- 嘗試使用模型：{model_name}\n"
+            )
+            if fallback_models:
+                error_message += f"- Gemini 降級嘗試：{', '.join(fallback_models)} 都失敗\n"
+            if openai_api_key:
+                error_message += f"- OpenAI 降級嘗試：{openai_model} 也失敗\n"
+            else:
+                error_message += f"- 未提供 OpenAI API Key，無法使用 OpenAI 降級\n"
+            
+            error_message += (
+                f"\n**解決方案：**\n"
+                f"1. 檢查您的 Google AI Studio 配額：https://ai.dev/rate-limit\n"
+                f"2. 等待配額重置（通常每分鐘/每天重置）\n"
+                f"3. 升級到付費方案以獲得更高配額\n"
+                f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
+                f"5. 嘗試使用 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                f"原始錯誤：{error_msg[:200]}"
+            )
+            raise ChatGoogleGenerativeAIError(error_message) from e
             
             # 其他配額錯誤，直接拋出友善錯誤訊息
             raise ChatGoogleGenerativeAIError(
@@ -2551,7 +2621,8 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"1. 檢查配額使用情況：https://ai.dev/rate-limit\n"
                 f"2. 等待配額重置（每分鐘/每天限制）\n"
                 f"3. 升級到付費方案\n"
-                f"4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
+                f"5. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
                 f"建議：免費層對 pro 模型的限制較嚴格，建議使用 flash 版本（如 gemini-3.0-flash）"
             ) from e
         else:
@@ -2700,7 +2771,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
     else:
         system_prompt = f"請針對 {query} 進行分析。"
 
-    return call_gemini(system_prompt, context_text, model_name, api_key)
+    return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
 
 def parse_gemini_data(text: str) -> Dict[str, Any]:
     """
@@ -3663,8 +3734,16 @@ if search_btn and query and google_key and tavily_key:
         mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
         analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
 
+        # 獲取 OpenAI API Key（如果有的話）
+        openai_api_key = st.session_state.get('openai_api_key', None)
+        openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
+        
         try:
-            raw_report = run_strategic_analysis(query, analysis_context, model_name, google_key, mode=mode_code, fast_mode=False)
+            raw_report = run_strategic_analysis(
+                query, analysis_context, model_name, google_key, 
+                mode=mode_code, fast_mode=False,
+                openai_api_key=openai_api_key, openai_model=openai_model
+            )
         except Exception as e:
             error_msg = str(e)
             if "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg or "ChatGoogleGenerativeAIError" in str(type(e)):
