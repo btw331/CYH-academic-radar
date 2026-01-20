@@ -3046,6 +3046,20 @@ with st.sidebar:
         google_key = st.text_input("Gemini Key", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
         tavily_key = st.text_input("Tavily Key", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         
+        st.markdown("---")
+        st.markdown("**🔄 降級方案（可選）**")
+        openai_key = st.text_input("OpenAI Key (可選)", type="password", help="當 Gemini 配額用完時自動使用 OpenAI API")
+        if openai_key:
+            st.session_state['openai_api_key'] = openai_key
+            openai_model_options = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+            selected_openai_model = st.selectbox("OpenAI 模型", openai_model_options, index=0, help="降級時使用的 OpenAI 模型")
+            st.session_state['openai_model'] = selected_openai_model
+            st.info("✅ 已設定 OpenAI 降級方案：當 Gemini 配額用完時會自動切換")
+        else:
+            st.session_state['openai_api_key'] = None
+            st.session_state['openai_model'] = 'gpt-4o-mini'
+            st.caption("💡 提示：提供 OpenAI Key 可在 Gemini 配額用完時自動切換")
+        
         # API Key 驗證按鈕
         if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
             if google_key and tavily_key:
