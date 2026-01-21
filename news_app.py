@@ -1025,6 +1025,12 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
         """
         resp = llm.invoke(prompt).content
         
+        # 處理 resp 可能是 list 的情況（Gemini API 有時返回 list）
+        if isinstance(resp, list):
+            resp = "".join([str(item) for item in resp])
+        elif not isinstance(resp, str):
+            resp = str(resp)
+        
         # 嘗試解析 JSON
         json_match = re.search(r'\{.*\}', resp, re.DOTALL)
         if json_match:
@@ -2678,6 +2684,16 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                     "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
                 }
             
+            # 確保 balanced_queries 是字典類型
+            if not isinstance(balanced_queries, dict):
+                logger.warning(f"balanced_queries 不是字典類型: {type(balanced_queries).__name__}，使用降級策略")
+                balanced_queries = {
+                    "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+                    "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+                    "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+                    "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+                }
+            
             # 合併到擴展查詢列表
             balanced_expanded = []
             for q in balanced_queries.get("pro_arguments", [])[:3]:
@@ -2824,7 +2840,15 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
         llm = ChatOpenAI(model=model_name, temperature=0.0, openai_api_key=api_key)
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
-        result = chain.invoke({"input": user_text}).content
+        response = chain.invoke({"input": user_text})
+        result = response.content
+        
+        # 處理 response.content 可能是 list 的情況
+        if isinstance(result, list):
+            result = "".join([str(item) for item in result])
+        elif not isinstance(result, str):
+            result = str(result)
+        
         logger.info(f"成功使用 OpenAI {model_name} 生成回應")
         return result
     except Exception as e:
@@ -2854,7 +2878,16 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
         llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
-        return chain.invoke({"input": user_text}).content
+        response = chain.invoke({"input": user_text})
+        result = response.content
+        
+        # 處理 response.content 可能是 list 的情況（Gemini API 有時返回 list）
+        if isinstance(result, list):
+            result = "".join([str(item) for item in result])
+        elif not isinstance(result, str):
+            result = str(result)
+        
+        return result
     except Exception as e:
         error_msg = str(e)
         error_type = type(e).__name__
@@ -2870,7 +2903,15 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                     llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
                     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                     chain = prompt | llm
-                    result = chain.invoke({"input": user_text}).content
+                    response = chain.invoke({"input": user_text})
+                    result = response.content
+                    
+                    # 處理 response.content 可能是 list 的情況
+                    if isinstance(result, list):
+                        result = "".join([str(item) for item in result])
+                    elif not isinstance(result, str):
+                        result = str(result)
+                    
                     logger.info(f"成功使用 {fallback_model}")
                     return result
                 except Exception as e2:
@@ -2927,7 +2968,15 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                         llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
                         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                         chain = prompt | llm
-                        result = chain.invoke({"input": user_text}).content
+                        response = chain.invoke({"input": user_text})
+                        result = response.content
+                        
+                        # 處理 response.content 可能是 list 的情況
+                        if isinstance(result, list):
+                            result = "".join([str(item) for item in result])
+                        elif not isinstance(result, str):
+                            result = str(result)
+                        
                         logger.info(f"成功降級到 {fallback_model}")
                         return result
                     except Exception as e2:
@@ -3190,7 +3239,11 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
     if not isinstance(text, str):
         logger.warning(f"parse_gemini_data: 收到非字符串類型 ({type(text).__name__})，嘗試轉換")
         try:
-            text = str(text)
+            # 處理 list 類型（Gemini API 有時返回 list）
+            if isinstance(text, list):
+                text = "".join([str(item) for item in text])
+            else:
+                text = str(text)
         except Exception as e:
             logger.error(f"parse_gemini_data: 無法轉換為字符串: {str(e)}")
             return data
