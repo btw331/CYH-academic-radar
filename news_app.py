@@ -2332,7 +2332,7 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
         for future in concurrent.futures.as_completed(futures):
             t_name = futures[future]
             try:
-            results_map[t_name] = future.result()
+                results_map[t_name] = future.result()
             except Exception as e:
                 logger.error(f"任務 {t_name} 執行失敗: {str(e)}")
                 results_map[t_name] = []
@@ -2656,7 +2656,7 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                 results = [r for r in processed_results if r is not None]
         else:
             # 少量來源時使用串行處理
-        for i, res in enumerate(results):
+            for i, res in enumerate(results):
                 context_line, processed_res = process_source_item(res, i)
                 context_lines.append(context_line)
                 results[i] = processed_res
@@ -2705,7 +2705,7 @@ def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
         except Exception as e:
             logger.error(f"Gemini API 驗證失敗: {str(e)}")
             return False, f"Gemini API Key 無效：{str(e)[:100]}"
-            else:
+    else:
         return False, "未提供 Gemini API Key"
     
     # 驗證 Tavily API
@@ -2773,10 +2773,10 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
     
     # 嘗試使用指定的模型
     try:
-    llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
-    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-    chain = prompt | llm
-    return chain.invoke({"input": user_text}).content
+        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        return chain.invoke({"input": user_text}).content
     except Exception as e:
         error_msg = str(e)
         error_type = type(e).__name__
