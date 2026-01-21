@@ -3053,13 +3053,30 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
     解析 Gemini AI 返回的文本，提取時間軸和報告內容
     
     Args:
-        text: AI 返回的原始文本
+        text: AI 返回的原始文本（可能是字符串、None 或其他類型）
         
     Returns:
         包含 timeline 和 report_text 的字典
     """
     data = {"timeline": [], "report_text": ""}
-    if not text or not text.strip():
+    
+    # 確保 text 是字符串類型
+    if text is None:
+        logger.warning("parse_gemini_data: 收到 None 值，返回空數據")
+        return data
+    
+    # 如果不是字符串，嘗試轉換為字符串
+    if not isinstance(text, str):
+        logger.warning(f"parse_gemini_data: 收到非字符串類型 ({type(text).__name__})，嘗試轉換")
+        try:
+            text = str(text)
+        except Exception as e:
+            logger.error(f"parse_gemini_data: 無法轉換為字符串: {str(e)}")
+            return data
+    
+    # 檢查字符串是否為空
+    if not text.strip():
+        logger.warning("parse_gemini_data: 收到空字符串，返回空數據")
         return data
 
     # 先提取時間軸數據（從 [DATA_TIMELINE] 區塊）
@@ -4181,7 +4198,13 @@ if search_btn and query and google_key and tavily_key:
             if not validation['has_report']:
                 st.warning("⚠️ 未檢測到報告文本區塊")
         
-        # 解析報告數據
+        # 解析報告數據（確保 raw_report 不為 None）
+        if raw_report is None:
+            logger.error("raw_report 為 None，無法解析")
+            st.error("❌ AI 分析返回空結果，請重試")
+            status.update(label="❌ 分析失敗：返回空結果", state="error", expanded=False)
+            st.stop()
+        
         parsed_data = parse_gemini_data(raw_report)
         parsed_data['validation'] = validation  # 保存驗證結果
         
