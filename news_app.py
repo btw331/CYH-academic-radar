@@ -2802,11 +2802,17 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
     Args:
         system_prompt: 系統提示
         user_text: 用戶輸入
-        model_name: OpenAI 模型名稱（預設：gpt-4o-mini）
+        model_name: OpenAI 模型名稱（預設：gpt-4o-mini，建議使用 gpt-4o-mini 或 gpt-4o）
         api_key: OpenAI API Key
     
     Returns:
         str: AI 生成的文本
+    
+    注意：根據 OpenAI 文檔（2025），推薦使用的模型：
+    - gpt-4o-mini：成本效益高，適合一般任務（預設）
+    - gpt-4o：更強能力，適合複雜任務
+    - gpt-4-turbo：已棄用，建議遷移到 gpt-4o
+    - gpt-3.5-turbo：已棄用，建議遷移到 gpt-4o-mini
     """
     if not OPENAI_AVAILABLE:
         raise ImportError("OpenAI 套件未安裝，請執行: pip install langchain-openai")
@@ -2929,6 +2935,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                         continue
             
             # 如果所有 Gemini 降級都失敗，嘗試使用 OpenAI（如果提供了 OpenAI API Key）
+            openai_error = None
             if openai_api_key and OPENAI_AVAILABLE:
                 try:
                     logger.info(f"所有 Gemini 模型配額耗盡，嘗試降級到 OpenAI {openai_model}")
@@ -2936,7 +2943,8 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                     logger.info(f"成功降級到 OpenAI {openai_model}")
                     return result
                 except Exception as e3:
-                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
+                    openai_error = str(e3)
+                    logger.warning(f"降級到 OpenAI 失敗: {openai_error}")
                     # 繼續拋出原始錯誤
             
             # 所有降級都失敗，拋出錯誤
@@ -2946,20 +2954,35 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"- 嘗試使用模型：{model_name}\n"
             )
             if fallback_models:
-                error_message += f"- Gemini 降級嘗試：{', '.join(fallback_models)} 都失敗\n"
+                error_message += f"- Gemini 降級嘗試：{', '.join(fallback_models)} 都失敗（全部配額耗盡）\n"
             if openai_api_key:
-                error_message += f"- OpenAI 降級嘗試：{openai_model} 也失敗\n"
+                if openai_error:
+                    error_message += f"- OpenAI 降級嘗試：{openai_model} 失敗\n"
+                    error_message += f"  - OpenAI 錯誤詳情：{openai_error[:300]}\n"
+                else:
+                    error_message += f"- OpenAI 降級嘗試：未執行（檢查 OPENAI_AVAILABLE 狀態）\n"
             else:
                 error_message += f"- 未提供 OpenAI API Key，無法使用 OpenAI 降級\n"
             
             error_message += (
                 f"\n**解決方案：**\n"
-                f"1. 檢查您的 Google AI Studio 配額：https://ai.dev/rate-limit\n"
-                f"2. 等待配額重置（通常每分鐘/每天重置）\n"
-                f"3. 升級到付費方案以獲得更高配額\n"
-                f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
-                f"5. 嘗試使用 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
-                f"原始錯誤：{error_msg[:200]}"
+                f"1. **檢查 Google AI Studio 配額狀態**：\n"
+                f"   - 訪問：https://ai.dev/rate-limit\n"
+                f"   - 檢查狀態頁：https://status.airo.google/（從圖片中看到 API 狀態正常）\n"
+                f"   - 確認是否真的配額耗盡，可能是臨時限制\n"
+                f"2. **等待配額重置**：\n"
+                f"   - 免費方案通常每分鐘/每天有配額限制\n"
+                f"   - 等待幾分鐘後再試\n"
+                f"3. **使用 OpenAI 作為降級方案**（如果已設定）：\n"
+                f"   - 確認 OpenAI API Key 是否正確且有效\n"
+                f"   - 檢查 OpenAI API Key 是否有足夠配額\n"
+                f"   - 確認模型名稱是否正確（預設：gpt-4o-mini）\n"
+                f"4. **升級方案**：\n"
+                f"   - 升級到 Google AI Studio 付費方案以獲得更高配額\n"
+                f"5. **其他建議**：\n"
+                f"   - 嘗試使用 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n"
+                f"   - 減少單次請求的 token 數量\n\n"
+                f"**原始錯誤**：{error_msg[:200]}"
             )
             raise ChatGoogleGenerativeAIError(error_message) from e
         else:
@@ -2971,8 +2994,19 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                     logger.info(f"成功降級到 OpenAI {openai_model}")
                     return result
                 except Exception as e3:
-                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
-                    # 繼續拋出原始錯誤
+                    openai_error = str(e3)
+                    logger.warning(f"降級到 OpenAI 失敗: {openai_error}")
+                    # 如果 OpenAI 降級也失敗，提供更詳細的錯誤訊息
+                    enhanced_error = (
+                        f"❌ Gemini API 錯誤，且 OpenAI 降級也失敗\n\n"
+                        f"**Gemini 錯誤**：{error_msg[:200]}\n\n"
+                        f"**OpenAI 降級錯誤**：{openai_error[:300]}\n\n"
+                        f"**建議**：\n"
+                        f"1. 檢查 OpenAI API Key 是否正確且有效\n"
+                        f"2. 確認 OpenAI API Key 是否有足夠配額\n"
+                        f"3. 檢查模型名稱是否正確（嘗試使用 gpt-4o-mini）\n"
+                    )
+                    raise Exception(enhanced_error) from e3
             # 沒有 OpenAI 降級選項或降級失敗，直接拋出原始錯誤
             raise
 
@@ -3465,8 +3499,21 @@ with st.sidebar:
         openai_key = st.text_input("OpenAI Key (可選)", type="password", help="當 Gemini 配額用完時自動使用 OpenAI API")
         if openai_key:
             st.session_state['openai_api_key'] = openai_key
-            openai_model_options = ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
-            selected_openai_model = st.selectbox("OpenAI 模型", openai_model_options, index=0, help="降級時使用的 OpenAI 模型")
+            # 根據 OpenAI 文檔（2025）更新模型選項
+            # 推薦模型：gpt-4o-mini（成本效益高）、gpt-4o（更強能力）
+            # 已棄用但保留作為向後相容：gpt-4-turbo, gpt-3.5-turbo
+            openai_model_options = [
+                "gpt-4o-mini",      # 推薦：成本效益高，適合一般任務
+                "gpt-4o",           # 推薦：更強能力，適合複雜任務
+                "gpt-4-turbo",      # 已棄用，但保留作為向後相容
+                "gpt-3.5-turbo"     # 已棄用，但保留作為向後相容
+            ]
+            selected_openai_model = st.selectbox(
+                "OpenAI 模型", 
+                openai_model_options, 
+                index=0, 
+                help="降級時使用的 OpenAI 模型。推薦使用 gpt-4o-mini（成本效益高）或 gpt-4o（更強能力）"
+            )
             st.session_state['openai_model'] = selected_openai_model
             st.info("✅ 已設定 OpenAI 降級方案：當 Gemini 配額用完時會自動切換")
         else:
