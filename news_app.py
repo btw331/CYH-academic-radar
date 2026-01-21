@@ -266,40 +266,274 @@ st.markdown(CSS_STYLE, unsafe_allow_html=True)
 # ==========================================
 # 2. 資料庫與共用常數 (Config)
 # ==========================================
-BLUE_WHITELIST = ["udn.com", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", "nownews.com", "ctee.com.tw", "storm.mg"]
-GREEN_WHITELIST = ["ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", "newtalk.tw", "mirrormedia.mg", "upmedia.mg"]
-OFFICIAL_WHITELIST = ["cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", "tfc-taiwan.org.tw", "gov.tw"]
-FULL_TAIWAN_WHITELIST = BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw"]
+# ==========================================
+# 擴展媒體資料庫（優化：增加搜尋覆蓋率）
+# ==========================================
 
-INDIE_WHITELIST = ["twreporter.org", "theinitium.com", "thenewslens.com", "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me"]
-INTL_ASIA_WHITELIST = ["bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "nikkei.com", "nhk.or.jp", "scmp.com", "asia.nikkei.com", "channelnewsasia.com"]
-INTL_EUROPE_WHITELIST = ["bbc.com", "dw.com", "euronews.com", "theguardian.com", "lemonde.fr", "elpais.com", "spiegel.de", "ft.com", "politico.eu"]
-INTL_AMERICAS_WHITELIST = ["cnn.com", "bbc.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com", "washingtonpost.com", "latimes.com", "nbcnews.com", "abcnews.go.com", "cbsnews.com"]
-INTL_WHITELIST = INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST
+# 藍營媒體白名單（大幅擴展）
+BLUE_WHITELIST = [
+    # 主要藍營媒體
+    "udn.com", "udn.com.tw", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", 
+    "nownews.com", "ctee.com.tw", "storm.mg",
+    # 擴展藍營媒體
+    "want-daily.com", "want-china.com", "coolloud.org.tw", "kmt.org.tw",
+    "appledaily.com.tw", "nexttv.com.tw", "ebc.net.tw", "ctwant.com",
+    "wealth.com.tw", "bwnet.com.tw", "cmmedia.com.tw", "cmoney.tw",
+    "technews.tw", "techbang.com", "digitimes.com.tw", "ithome.com.tw",
+    # 地方媒體
+    "merit-times.com.tw", "taiwanhot.net", "taiwannews.com.tw"
+]
 
+# 綠營媒體白名單（大幅擴展）
+GREEN_WHITELIST = [
+    # 主要綠營媒體
+    "ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", 
+    "newtalk.tw", "mirrormedia.mg", "upmedia.mg",
+    # 擴展綠營媒體
+    "peoplenews.tw", "dpp.org.tw", "taiwanhot.net", "taiwannews.com.tw",
+    "watchout.tw", "taisounds.com", "taiwanjustice.net", "taiwanjustice.org",
+    # 獨立媒體（偏綠）
+    "twreporter.org", "theinitium.com", "thenewslens.com"
+]
+
+# 官方媒體白名單（大幅擴展）
+OFFICIAL_WHITELIST = [
+    # 主要官方媒體
+    "cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", 
+    "tfc-taiwan.org.tw", "gov.tw",
+    # 擴展官方機構
+    "ey.gov.tw", "moea.gov.tw", "mofa.gov.tw", "moc.gov.tw",
+    "mohw.gov.tw", "moj.gov.tw", "moe.gov.tw", "mnd.gov.tw",
+    "judicial.gov.tw", "taipei.gov.tw", "newtaipei.gov.tw",
+    "taichung.gov.tw", "tainan.gov.tw", "khcc.gov.tw",
+    # 事實查核機構
+    "mygopen.com", "cofacts.tw", "tfc-taiwan.org.tw", "tfc.org.tw",
+    # 學術機構
+    "nccu.edu.tw", "ntu.edu.tw", "sinica.edu.tw", "nctu.edu.tw"
+]
+
+# 完整台灣媒體白名單
+FULL_TAIWAN_WHITELIST = (
+    BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + 
+    ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw", 
+     "commonhealth.com.tw", "cw.com.tw", "managertoday.com.tw",
+     "bnext.com.tw", "inside.com.tw", "techorange.com"]
+)
+
+# 獨立媒體白名單（大幅擴展）
+INDIE_WHITELIST = [
+    # 主要獨立媒體
+    "twreporter.org", "theinitium.com", "thenewslens.com", 
+    "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me",
+    # 擴展獨立媒體
+    "readr.tw", "new7.com.tw", "watchout.tw", "taisounds.com",
+    "taiwanjustice.net", "taiwanjustice.org",
+    # 新媒體平台
+    "medium.com", "substack.com", "ghost.org", "wordpress.com",
+    # 學術媒體
+    "thinkingtaiwan.com", "taiwaninsight.com", "taiwaninsight.org"
+]
+
+# 亞洲國際媒體白名單（大幅擴展）
+INTL_ASIA_WHITELIST = [
+    # 主要亞洲媒體
+    "bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", 
+    "wsj.com", "nytimes.com", "nikkei.com", "nhk.or.jp", "scmp.com", 
+    "asia.nikkei.com", "channelnewsasia.com",
+    # 擴展亞洲媒體
+    "japantimes.co.jp", "asahi.com", "yomiuri.co.jp", "mainichi.jp",
+    "sankei.com", "koreaherald.com", "koreatimes.co.kr", "straitstimes.com",
+    "thejakartapost.com", "bangkokpost.com", "philstar.com", "manilatimes.net",
+    "vietnamnews.vn", "thehindu.com", "indiatimes.com", "dawn.com",
+    # 東南亞媒體
+    "channelnewsasia.com", "straitstimes.com", "todayonline.com",
+    "thestar.com.my", "malaysiakini.com", "thejakartapost.com"
+]
+
+# 歐洲國際媒體白名單（大幅擴展）
+INTL_EUROPE_WHITELIST = [
+    # 主要歐洲媒體
+    "bbc.com", "dw.com", "euronews.com", "theguardian.com", 
+    "lemonde.fr", "elpais.com", "spiegel.de", "ft.com", "politico.eu",
+    # 擴展歐洲媒體
+    "reuters.com", "apnews.com", "bloomberg.com", "wsj.com",
+    "nytimes.com", "washingtonpost.com", "latimes.com",
+    "faz.net", "welt.de", "zeit.de", "sueddeutsche.de",
+    "repubblica.it", "corriere.it", "ansa.it", "ilsole24ore.com",
+    "lefigaro.fr", "liberation.fr", "france24.com", "rfi.fr",
+    "elmund.es", "abc.es", "elmundo.es", "elpais.com",
+    "telegraph.co.uk", "independent.co.uk", "dailymail.co.uk",
+    "express.co.uk", "mirror.co.uk", "standard.co.uk"
+]
+
+# 美洲國際媒體白名單（大幅擴展）
+INTL_AMERICAS_WHITELIST = [
+    # 主要美洲媒體
+    "cnn.com", "bbc.com", "reuters.com", "apnews.com", "bloomberg.com", 
+    "wsj.com", "nytimes.com", "washingtonpost.com", "latimes.com", 
+    "nbcnews.com", "abcnews.go.com", "cbsnews.com",
+    # 擴展美洲媒體
+    "usatoday.com", "usnews.com", "time.com", "newsweek.com",
+    "theatlantic.com", "newyorker.com", "wired.com", "techcrunch.com",
+    "theverge.com", "arstechnica.com", "engadget.com", "gizmodo.com",
+    "globeandmail.com", "cbc.ca", "nationalpost.com", "thestar.com",
+    "folha.uol.com.br", "oglobo.globo.com", "estadao.com.br",
+    "clarin.com", "lanacion.com.ar", "eluniversal.com.mx",
+    "jornada.com.mx", "reforma.com", "milenio.com"
+]
+
+# 完整國際媒體白名單（去重）
+INTL_WHITELIST = sorted(list(set(INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST)))
+
+# 擴展域名中文名稱映射（用於顯示）
 DOMAIN_NAME_MAP = {
-    "udn.com": "聯合報", "chinatimes.com": "中國時報", "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞",
-    "nownews.com": "NOWnews", "ctee.com.tw": "工商時報", "storm.mg": "風傳媒",
-    "ltn.com.tw": "自由時報", "ftvnews.com.tw": "民視新聞", "setn.com": "三立新聞", "rti.org.tw": "央廣",
-    "newtalk.tw": "新頭殼", "mirrormedia.mg": "鏡週刊", "upmedia.mg": "上報",
-    "cna.com.tw": "中央社", "pts.org.tw": "公視", "twreporter.org": "報導者",
-    "theinitium.com": "端傳媒", "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
-    "vocus.cc": "方格子", "ptt.cc": "PTT", "dcard.tw": "Dcard",
-    "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", "apnews.com": "美聯社",
-    "bloomberg.com": "彭博", "wsj.com": "華爾街日報", "nytimes.com": "紐約時報",
-    "mobile01.com": "Mobile01", "yahoo.com": "Yahoo新聞", "ettoday.net": "ETtoday",
-    "businessweekly.com.tw": "商業周刊", "mygopen.com": "MyGoPen"
+    # 藍營媒體
+    "udn.com": "聯合報", "udn.com.tw": "聯合報", "chinatimes.com": "中國時報", 
+    "tvbs.com.tw": "TVBS", "cti.com.tw": "中天新聞", "nownews.com": "NOWnews",
+    "ctee.com.tw": "工商時報", "storm.mg": "風傳媒", "want-daily.com": "旺報",
+    "coolloud.org.tw": "苦勞網", "kmt.org.tw": "國民黨", "appledaily.com.tw": "蘋果日報",
+    "nexttv.com.tw": "壹電視", "ebc.net.tw": "東森新聞", "ctwant.com": "CTWANT",
+    "wealth.com.tw": "今周刊", "bwnet.com.tw": "商業周刊", "cmmedia.com.tw": "遠見",
+    "cmoney.tw": "CMoney", "technews.tw": "科技新報", "techbang.com": "T客邦",
+    "digitimes.com.tw": "電子時報", "ithome.com.tw": "iThome",
+    # 綠營媒體
+    "ltn.com.tw": "自由時報", "ftvnews.com.tw": "民視新聞", "setn.com": "三立新聞",
+    "rti.org.tw": "央廣", "newtalk.tw": "新頭殼", "mirrormedia.mg": "鏡週刊",
+    "upmedia.mg": "上報", "peoplenews.tw": "民報", "dpp.org.tw": "民進黨",
+    "taiwanhot.net": "台灣好新聞", "taiwannews.com.tw": "台灣英文新聞",
+    "watchout.tw": "沃草", "taisounds.com": "台灣聲音",
+    # 官方媒體
+    "cna.com.tw": "中央社", "pts.org.tw": "公視", "mnd.gov.tw": "國防部",
+    "mac.gov.tw": "陸委會", "tfc-taiwan.org.tw": "台灣事實查核中心",
+    "gov.tw": "政府網站", "ey.gov.tw": "行政院", "moea.gov.tw": "經濟部",
+    "mofa.gov.tw": "外交部", "moc.gov.tw": "文化部", "mohw.gov.tw": "衛福部",
+    "moj.gov.tw": "法務部", "moe.gov.tw": "教育部", "judicial.gov.tw": "司法院",
+    "taipei.gov.tw": "台北市政府", "newtaipei.gov.tw": "新北市政府",
+    "taichung.gov.tw": "台中市政府", "tainan.gov.tw": "台南市政府",
+    "khcc.gov.tw": "高雄市政府",
+    # 獨立媒體
+    "twreporter.org": "報導者", "theinitium.com": "端傳媒", 
+    "thenewslens.com": "關鍵評論網", "mindiworldnews.com": "敏迪選讀",
+    "vocus.cc": "方格子", "matters.town": "Matters", "plainlaw.me": "法律白話文",
+    "readr.tw": "READr", "new7.com.tw": "新新聞", "watchout.tw": "沃草",
+    "thinkingtaiwan.com": "思想坦克", "taiwaninsight.com": "台灣智庫",
+    # 國際媒體
+    "bbc.com": "BBC", "cnn.com": "CNN", "reuters.com": "路透社", 
+    "apnews.com": "美聯社", "bloomberg.com": "彭博", "wsj.com": "華爾街日報",
+    "nytimes.com": "紐約時報", "washingtonpost.com": "華盛頓郵報",
+    "theguardian.com": "衛報", "dw.com": "德國之聲", "france24.com": "France 24",
+    "aljazeera.com": "半島電視台", "scmp.com": "南華早報",
+    "channelnewsasia.com": "亞洲新聞台", "straitstimes.com": "海峽時報",
+    "japantimes.co.jp": "日本時報", "asahi.com": "朝日新聞",
+    "yomiuri.co.jp": "讀賣新聞", "mainichi.jp": "每日新聞", "nhk.or.jp": "NHK",
+    "nikkei.com": "日經新聞", "asia.nikkei.com": "日經亞洲",
+    "koreaherald.com": "韓國先驅報", "koreatimes.co.kr": "韓國時報",
+    # 社群媒體
+    "ptt.cc": "PTT", "dcard.tw": "Dcard", "mobile01.com": "Mobile01",
+    "facebook.com": "Facebook", "youtube.com": "YouTube", "twitter.com": "Twitter",
+    "instagram.com": "Instagram", "tiktok.com": "TikTok",
+    # 聚合平台
+    "yahoo.com": "Yahoo新聞", "yahoo.com.tw": "Yahoo奇摩", 
+    "ettoday.net": "ETtoday", "businessweekly.com.tw": "商業周刊",
+    "commonhealth.com.tw": "康健", "cw.com.tw": "天下雜誌",
+    "managertoday.com.tw": "經理人", "bnext.com.tw": "數位時代",
+    "inside.com.tw": "Inside", "techorange.com": "科技報橘",
+    # 事實查核
+    "mygopen.com": "MyGoPen", "cofacts.tw": "Cofacts", "tfc.org.tw": "台灣事實查核中心"
 }
 
+# 擴展媒體資料庫映射（用於來源分類）
 DB_MAP = {
-    "CHINA": ["xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", "taiwan.cn", "gwytb", "guancha"],
-    "GREEN": ["ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia"],
-    "BLUE": ["udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt", "storm"],
-    "OFFICIAL": ["cna.com", "pts.org", "mnd.gov", "mac.gov", "tfc-taiwan", "gov.tw"],
-    "INDIE": ["twreporter", "theinitium", "thenewslens", "mindiworld", "vocus", "matters", "plainlaw"],
-    "INTL": ["bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", "dw.com", "voanews", "rfi"],
-    "FARM": ["kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", "inf.news", "toutiao"],
-    "SOCIAL": ["ptt.cc", "dcard", "mobile01", "facebook", "youtube"]
+    "CHINA": [
+        # 主要中國媒體
+        "xinhuanet", "people.com.cn", "huanqiu", "cctv", "chinadaily", 
+        "taiwan.cn", "gwytb", "guancha",
+        # 擴展中國媒體
+        "thepaper.cn", "sina.com.cn", "163.com", "sohu.com", "ifeng.com",
+        "crntt.com", "hk01.com", "wenweipo.com", "takungpao.com",
+        "rthk.hk", "singtao.com", "mingpao.com", "appledaily.com.hk"
+    ],
+    "GREEN": [
+        # 主要綠營媒體
+        "ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia",
+        # 擴展綠營媒體
+        "peoplenews", "taiwanhot", "taiwannews", "watchout", "taisounds",
+        "taiwanjustice", "twreporter", "theinitium", "thenewslens"
+    ],
+    "BLUE": [
+        # 主要藍營媒體
+        "udn", "chinatimes", "tvbs", "cti", "nownews", "ctee", "kmt", "storm",
+        # 擴展藍營媒體
+        "want-daily", "want-china", "coolloud", "appledaily", "nexttv",
+        "ebc", "ctwant", "wealth", "bwnet", "cmmedia", "cmoney",
+        "technews", "techbang", "digitimes", "ithome", "merit-times"
+    ],
+    "OFFICIAL": [
+        # 主要官方媒體
+        "cna.com", "pts.org", "mnd.gov", "mac.gov", "tfc-taiwan", "gov.tw",
+        # 擴展官方機構
+        "ey.gov", "moea.gov", "mofa.gov", "moc.gov", "mohw.gov", "moj.gov",
+        "moe.gov", "judicial.gov", "taipei.gov", "newtaipei.gov",
+        "taichung.gov", "tainan.gov", "khcc.gov",
+        # 事實查核機構
+        "mygopen", "cofacts", "tfc.org",
+        # 學術機構
+        "nccu.edu", "ntu.edu", "sinica.edu", "nctu.edu"
+    ],
+    "INDIE": [
+        # 主要獨立媒體
+        "twreporter", "theinitium", "thenewslens", "mindiworld", 
+        "vocus", "matters", "plainlaw",
+        # 擴展獨立媒體
+        "readr", "new7", "watchout", "taisounds", "taiwanjustice",
+        "thinkingtaiwan", "taiwaninsight"
+    ],
+    "INTL": [
+        # 主要國際媒體
+        "bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", 
+        "dw.com", "voanews", "rfi",
+        # 擴展國際媒體
+        "theguardian", "washingtonpost", "latimes", "usatoday", "time",
+        "newsweek", "theatlantic", "newyorker", "ft.com", "economist",
+        "aljazeera", "france24", "euronews", "spiegel", "faz",
+        "lemonde", "elpais", "repubblica", "corriere", "telegraph",
+        "independent", "scmp", "channelnewsasia", "straitstimes",
+        "japantimes", "asahi", "yomiuri", "mainichi", "nhk",
+        "nikkei", "asia.nikkei", "koreaherald", "koreatimes"
+    ],
+    "FARM": [
+        # 內容農場
+        "kknews", "read01", "ppfocus", "buzzhand", "bomb01", "qiqi", 
+        "inf.news", "toutiao",
+        # 擴展內容農場
+        "lackk", "mission-tw", "hottopic", "xuehua", "baidu", "sina",
+        "163", "sohu", "ifeng", "thepaper"
+    ],
+    "SOCIAL": [
+        # 社群媒體
+        "ptt.cc", "dcard", "mobile01", "facebook", "youtube",
+        # 擴展社群媒體
+        "twitter.com", "x.com", "instagram.com", "tiktok.com",
+        "weibo.com", "douyin.com", "bilibili.com", "reddit.com",
+        "linkedin.com", "pinterest.com"
+    ],
+    "VIDEO": [
+        # 影音平台
+        "youtube.com", "youtu.be", "tiktok.com", "douyin.com",
+        "bilibili.com", "ixigua.com", "vimeo.com", "dailymotion.com"
+    ],
+    "AGGREGATOR": [
+        # 聚合平台
+        "yahoo.com", "msn.com", "linetoday.com", "google.com", 
+        "ettoday.net", "yahoo.com.tw", "msn.com.tw"
+    ],
+    "ACADEMIC": [
+        # 學術來源
+        ".edu", ".ac.uk", ".ac.jp", ".ac.tw", ".edu.tw",
+        "nccu.edu", "ntu.edu", "sinica.edu", "nctu.edu",
+        "harvard.edu", "mit.edu", "stanford.edu", "oxford.ac.uk",
+        "cambridge.ac.uk", "tokyo.ac.jp", "kyoto-u.ac.jp"
+    ]
 }
 
 NOISE_BLACKLIST = ["zhihu.com", "baidu.com", "pinterest.com", "instagram.com", "tiktok.com", "tmall.com", "taobao.com", "163.com", "sohu.com"]
@@ -2036,7 +2270,7 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
     if "美洲" in selected_str: general_domains.extend(INTL_AMERICAS_WHITELIST)
     
     general_params = optimized_params.copy()
-    general_params['max_results'] = 10  # 重視正確度，確保足夠結果
+    general_params['max_results'] = 15  # 擴展通用搜尋結果數量（從 10 增加到 15），提升覆蓋率
     if is_strict_mode and general_domains:
         general_params['include_domains'] = list(set(general_domains))
     
@@ -2068,7 +2302,7 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
     
     # 2. 分眾保底搜尋 (Hybrid Weighted - Standard Guard)
     if "台灣" in selected_str:
-        guard_max = 5  # 重視正確度，確保足夠的保底來源
+        guard_max = 8  # 擴展保底數量，確保足夠的搜尋覆蓋率（從 5 增加到 8）
         
         blue_params = optimized_params.copy()
         blue_params['max_results'] = guard_max 
@@ -2520,7 +2754,6 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
         logger.error(f"OpenAI API 調用失敗: {error_msg}")
         raise Exception(f"OpenAI API 調用失敗: {error_msg[:200]}") from e
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5), reraise=False)
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
     """
     呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
@@ -2610,23 +2843,18 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"原始錯誤：{error_msg[:200]}"
             )
             raise ChatGoogleGenerativeAIError(error_message) from e
-            
-            # 其他配額錯誤，直接拋出友善錯誤訊息
-            raise ChatGoogleGenerativeAIError(
-                f"❌ API 配額已耗盡\n\n"
-                f"**錯誤詳情：**\n"
-                f"- 模型：{model_name}\n"
-                f"- 錯誤：免費層配額已用盡\n\n"
-                f"**解決方案：**\n"
-                f"1. 檢查配額使用情況：https://ai.dev/rate-limit\n"
-                f"2. 等待配額重置（每分鐘/每天限制）\n"
-                f"3. 升級到付費方案\n"
-                f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
-                f"5. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
-                f"建議：免費層對 pro 模型的限制較嚴格，建議使用 flash 版本（如 gemini-3.0-flash）"
-            ) from e
         else:
-            # 其他錯誤，直接拋出
+            # 其他錯誤（非配額相關），嘗試降級到 OpenAI（如果提供了 Key）
+            if openai_api_key and OPENAI_AVAILABLE:
+                try:
+                    logger.info(f"Gemini API 錯誤（非配額），嘗試降級到 OpenAI {openai_model}")
+                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
+                    logger.info(f"成功降級到 OpenAI {openai_model}")
+                    return result
+                except Exception as e3:
+                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
+                    # 繼續拋出原始錯誤
+            # 沒有 OpenAI 降級選項或降級失敗，直接拋出原始錯誤
             raise
 
 def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
@@ -3758,33 +3986,142 @@ if search_btn and query and google_key and tavily_key:
                 mode=mode_code, fast_mode=False,
                 openai_api_key=openai_api_key, openai_model=openai_model
             )
-        except Exception as e:
+        except ChatGoogleGenerativeAIError as e:
+            # Gemini API 特定錯誤（通常是配額相關）
             error_msg = str(e)
-            if "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg or "ChatGoogleGenerativeAIError" in str(type(e)):
-                st.error("""
+            st.error(f"""
+            ❌ **API 錯誤**
+            
+            {error_msg}
+            
+            **額外建議：**
+            1. 如果已提供 OpenAI API Key，系統應該已自動嘗試降級
+            2. 檢查側邊欄是否已正確設定 OpenAI API Key
+            3. 確認 OpenAI API Key 是否有效
+            """)
+            status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+            logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
+            st.stop()
+        except Exception as e:
+            # 其他錯誤（包括 RetryError）
+            from tenacity import RetryError
+            error_msg = str(e)
+            error_type = type(e).__name__
+            
+            # 檢查是否為重試錯誤
+            if isinstance(e, RetryError) or "RetryError" in error_type:
+                # 提取原始錯誤
+                last_attempt = None
+                original_error = None
+                if hasattr(e, 'last_attempt') and e.last_attempt:
+                    try:
+                        if hasattr(e.last_attempt, 'exception'):
+                            original_error = e.last_attempt.exception()
+                            last_attempt = str(original_error) if original_error else None
+                        elif hasattr(e.last_attempt, 'result'):
+                            # 某些版本的 tenacity
+                            original_error = e.last_attempt.result()
+                            last_attempt = str(original_error) if original_error else None
+                    except:
+                        pass
+                
+                original_error_msg = last_attempt if last_attempt else error_msg
+                
+                # 檢查是否為配額相關錯誤，如果是且提供了 OpenAI API Key，嘗試降級
+                is_quota_error = (
+                    "RESOURCE_EXHAUSTED" in original_error_msg or 
+                    "quota" in original_error_msg.lower() or 
+                    "429" in original_error_msg or
+                    isinstance(original_error, ChatGoogleGenerativeAIError) and (
+                        "RESOURCE_EXHAUSTED" in str(original_error) or 
+                        "quota" in str(original_error).lower()
+                    )
+                )
+                
+                if is_quota_error and openai_api_key and OPENAI_AVAILABLE:
+                    try:
+                        status.update(label="🔄 Gemini 配額耗盡，自動切換到 OpenAI...", state="running")
+                        logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
+                        # 直接使用 OpenAI 完成分析
+                        raw_report = run_strategic_analysis(
+                            query, analysis_context, model_name, google_key, 
+                            mode=mode_code, fast_mode=False,
+                            openai_api_key=openai_api_key, openai_model=openai_model
+                        )
+                        # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
+                        status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
+                        logger.info(f"成功降級到 OpenAI {openai_model} 並完成分析")
+                        # 繼續執行後續邏輯
+                    except Exception as e2:
+                        logger.error(f"降級到 OpenAI 失敗: {str(e2)}")
+                        st.error(f"""
+                        ❌ **API 調用失敗（重試後仍失敗）**
+                        
+                        **錯誤類型**：{error_type}
+                        
+                        **配額錯誤檢測**：已檢測到 Gemini API 配額耗盡
+                        
+                        **自動降級嘗試**：嘗試使用 OpenAI {openai_model} 降級，但失敗
+                        
+                        **降級錯誤**：{str(e2)[:300]}
+                        
+                        **解決方案：**
+                        1. 檢查 OpenAI API Key 是否正確
+                        2. 檢查 OpenAI 配額使用情況
+                        3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
+                        4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）
+                        
+                        **原始錯誤**：{original_error_msg[:500]}
+                        """)
+                        status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                        st.stop()
+                else:
+                    # 不是配額錯誤，或沒有提供 OpenAI API Key
+                    error_display = f"""
+                    ❌ **API 調用失敗（重試後仍失敗）**
+                    
+                    **錯誤類型**：{error_type}
+                    
+                    **可能的原因：**
+                    1. API 配額已耗盡
+                    2. API Key 無效
+                    3. 網路連接問題
+                    4. API 服務暫時不可用
+                    
+                    **解決方案：**
+                    1. 檢查 API Key 是否正確
+                    2. 檢查配額使用情況：https://ai.dev/rate-limit
+                    3. 等待一段時間後重試
+                    """
+                    if not openai_api_key:
+                        error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
+                    error_display += f"5. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                    error_display += f"**原始錯誤**：{original_error_msg[:500]}"
+                    
+                    st.error(error_display)
+                    status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                    logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
+                    st.stop()
+            elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
+                st.error(f"""
                 ❌ **API 配額已耗盡**
                 
-                **可能的原因：**
-                - 免費層配額已用盡（每分鐘/每天限制）
-                - 使用的模型（gemini-2.5-pro）配額限制較嚴格
+                **錯誤詳情**：{error_msg[:300]}
                 
                 **解決方案：**
-                1. **切換模型**：在側邊欄切換到 `gemini-3.0-flash` 或 `gemini-2.5-flash`（配額限制較寬鬆）
-                2. **檢查配額**：前往 https://ai.dev/rate-limit 查看使用情況
-                3. **等待重置**：配額通常每分鐘或每天重置
-                4. **升級方案**：考慮升級到付費方案
-                
-                **建議**：免費層建議使用 `gemini-3.0-flash` 或 `gemini-2.5-flash`，功能相似但配額更寬鬆。
+                1. 檢查配額：https://ai.dev/rate-limit
+                2. 等待配額重置（通常每分鐘/每天重置）
+                3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
+                4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash
                 """)
-                status.update(label="❌ 分析失敗：API 配額耗盡", state="error", expanded=False)
-                st.stop()
             else:
                 st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
-                status.update(label="❌ 分析失敗", state="error", expanded=False)
-                logger.error(f"AI 分析失敗: {error_msg}")
-                with st.expander("🔍 錯誤詳情", expanded=False):
-                    st.code(error_msg)
-                st.stop()
+            
+            status.update(label="❌ 分析失敗", state="error", expanded=False)
+            logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
+            with st.expander("🔍 錯誤詳情", expanded=False):
+                st.code(f"錯誤類型: {error_type}\n錯誤訊息: {error_msg}")
+            st.stop()
         
         # 驗證 AI 輸出格式
         validation = validate_ai_output_format(raw_report, mode_code)
