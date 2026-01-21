@@ -3295,22 +3295,57 @@ def render_html_timeline(timeline_data, sources, blind_mode):
     st.markdown(full_html, unsafe_allow_html=True)
 
 def export_full_state():
+    """匯出完整狀態為 JSON 格式
+    
+    安全地處理可能為 None 或非字典類型的 session_state 變數。
+    
+    Returns:
+        str: JSON 格式的字串
+    """
     data = {
-        "result": st.session_state.result,
-        "scenario_result": st.session_state.scenario_result,
-        "sources": st.session_state.sources
+        "result": st.session_state.result if isinstance(st.session_state.get('result'), dict) else None,
+        "scenario_result": st.session_state.scenario_result if isinstance(st.session_state.get('scenario_result'), dict) else None,
+        "sources": st.session_state.sources if isinstance(st.session_state.get('sources'), list) else []
     }
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 def convert_data_to_md(data):
-    timeline_df = pd.DataFrame(data.get('timeline', []))
+    """將資料轉換為 Markdown 格式
+    
+    安全地處理可能為 None 或非字典類型的輸入。
+    
+    Args:
+        data: 要轉換的資料（預期為字典，但可能是 None 或字串）
+    
+    Returns:
+        str: Markdown 格式的字串
+    """
+    # 檢查輸入類型
+    if data is None:
+        return "# 全域觀點分析報告 (V38.0)\n\n❌ 錯誤：無資料可匯出"
+    
+    if not isinstance(data, dict):
+        logger.warning(f"convert_data_to_md 收到非字典類型輸入: {type(data)}")
+        return f"# 全域觀點分析報告 (V38.0)\n\n❌ 錯誤：資料格式不正確（收到 {type(data).__name__} 類型）"
+    
+    # 安全地取得 timeline 和 report_text
+    timeline = data.get('timeline', [])
+    if not isinstance(timeline, list):
+        timeline = []
+    
+    report_text = data.get('report_text', '')
+    if not isinstance(report_text, str):
+        report_text = str(report_text) if report_text else ''
+    
+    timeline_df = pd.DataFrame(timeline)
     timeline_md = timeline_df.to_markdown(index=False) if not timeline_df.empty else "無時間軸資料"
+    
     return f"""
 # 全域觀點分析報告 (V38.0)
 產生時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## 1. 平衡報導分析
-{data.get('report_text', '')}
+{report_text}
 
 ## 2. 時間軸
 {timeline_md}
@@ -3928,10 +3963,22 @@ with st.sidebar:
         full_state_json = export_full_state()
         st.download_button("📥 完整狀態 (JSON)", full_state_json, "Full_State.json", "application/json")
         
-        export_data = st.session_state.get('result').copy()
-        if st.session_state.get('scenario_result'):
-            export_data['report_text'] += "\n\n# 未來發展推演報告\n" + st.session_state.get('scenario_result')['report_text']
-        st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
+        result = st.session_state.get('result')
+        export_data = None
+        if result and isinstance(result, dict):
+            export_data = result.copy()
+            scenario_result = st.session_state.get('scenario_result')
+            if scenario_result and isinstance(scenario_result, dict):
+                report_text = export_data.get('report_text', '')
+                scenario_text = scenario_result.get('report_text', '')
+                if scenario_text:
+                    export_data['report_text'] = report_text + "\n\n# 未來發展推演報告\n" + scenario_text
+        else:
+            st.error("❌ 無法匯出：結果資料格式錯誤")
+        
+        # 只有在 export_data 有效時才顯示下載按鈕
+        if export_data is not None:
+            st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
 st.title(f"{analysis_mode.split(' ')[0]}")
 query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
@@ -4292,8 +4339,16 @@ if st.session_state.get('volume_analysis') and st.session_state.get('sources'):
                     st.caption(f"... 還有 {len(group)-5} 篇相似報導")
 
 if st.session_state.result:
-    data = st.session_state.result
-    render_html_timeline(data.get("timeline"), st.session_state.sources, blind_mode)
+    # 確保 result 是字典類型
+    result = st.session_state.result
+    if isinstance(result, dict):
+        data = result
+    else:
+        logger.error(f"st.session_state.result 不是字典類型: {type(result).__name__}")
+        st.error(f"❌ 資料格式錯誤：預期字典類型，但收到 {type(result).__name__}")
+        st.stop()
+    
+    render_html_timeline(data.get("timeline", []), st.session_state.sources, blind_mode)
     
     # 視覺化圖表區塊
     if PLOTLY_AVAILABLE and st.session_state.get('sources'):
