@@ -2779,16 +2779,63 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
         return chain.invoke({"input": user_text}).content
     except Exception as e:
         error_msg = str(e)
+        error_type = type(e).__name__
+        
+        # 檢查是否為模型不存在錯誤（NOT_FOUND）
+        if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
+            logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用模型")
+            # 直接降級到穩定版本
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+            for fallback_model in fallback_models:
+                try:
+                    logger.info(f"模型 {model_name} 不可用，嘗試使用 {fallback_model}")
+                    llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+                    chain = prompt | llm
+                    result = chain.invoke({"input": user_text}).content
+                    logger.info(f"成功使用 {fallback_model}")
+                    return result
+                except Exception as e2:
+                    logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個")
+                    continue
+            
+            # 如果所有 Gemini 降級都失敗，嘗試使用 OpenAI
+            if openai_api_key and OPENAI_AVAILABLE:
+                try:
+                    logger.info(f"所有 Gemini 模型都不可用，嘗試降級到 OpenAI {openai_model}")
+                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
+                    logger.info(f"成功降級到 OpenAI {openai_model}")
+                    return result
+                except Exception as e3:
+                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
+            
+            # 所有降級都失敗，拋出錯誤
+            error_message = (
+                f"❌ 模型 {model_name} 不存在或不可用\n\n"
+                f"**錯誤詳情：**\n"
+                f"- 嘗試使用的模型：{model_name}\n"
+                f"- 錯誤類型：{error_type}\n"
+                f"- 錯誤訊息：{error_msg[:200]}\n\n"
+                f"**解決方案：**\n"
+                f"1. 檢查模型名稱是否正確（應使用 gemini-3-flash-preview 而非 gemini-3.0-flash）\n"
+                f"2. 切換到穩定的模型版本（如 gemini-2.5-flash）\n"
+                f"3. 檢查 Google AI Studio 中的可用模型列表\n"
+            )
+            if openai_api_key:
+                error_message += f"4. 已嘗試降級到 OpenAI，但失敗\n"
+            else:
+                error_message += f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
+            raise ChatGoogleGenerativeAIError(error_message) from e
         
         # 檢查是否為配額耗盡錯誤
         if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
             # 決定降級策略：根據模型版本選擇適當的降級目標
             fallback_models = []
-            if "3.0-pro" in model_name.lower():
-                # Gemini 3.0 Pro -> 3.0 Flash -> 2.5 Flash
-                fallback_models = ["gemini-3.0-flash", "gemini-2.5-flash"]
-            elif "3.0-flash" in model_name.lower():
-                # Gemini 3.0 Flash -> 2.5 Flash
+            if "3-pro" in model_name.lower() or "3-pro-preview" in model_name.lower():
+                # Gemini 3 Pro -> 3 Flash -> 2.5 Flash
+                fallback_models = ["gemini-3-flash-preview", "gemini-2.5-flash"]
+            elif "3-flash" in model_name.lower() or "3-flash-preview" in model_name.lower():
+                # Gemini 3 Flash -> 2.5 Flash
                 fallback_models = ["gemini-2.5-flash"]
             elif "2.5-pro" in model_name.lower():
                 # Gemini 2.5 Pro -> 2.5 Flash
@@ -2839,7 +2886,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"2. 等待配額重置（通常每分鐘/每天重置）\n"
                 f"3. 升級到付費方案以獲得更高配額\n"
                 f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
-                f"5. 嘗試使用 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                f"5. 嘗試使用 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
                 f"原始錯誤：{error_msg[:200]}"
             )
             raise ChatGoogleGenerativeAIError(error_message) from e
@@ -3309,18 +3356,18 @@ with st.sidebar:
         model_name = st.selectbox(
             "模型選擇 (Gemini Series)", 
             [
-                "gemini-3.0-pro",
-                "gemini-3.0-flash",
+                "gemini-3-pro-preview",
+                "gemini-3-flash-preview",
                 "gemini-2.5-pro",
                 "gemini-2.5-flash",
                 "gemini-2.5-flash-lite"
             ], 
-            index=1,  # 預設使用 gemini-3.0-flash（配額限制較寬鬆）
+            index=1,  # 預設使用 gemini-3-flash-preview（配額限制較寬鬆）
             help="選擇用於分析的 Gemini 模型版本\n\n"
-                 "**Gemini 3.0 系列（推薦）**：\n"
-                 "• gemini-3.0-pro：最強性能，適合複雜分析\n"
-                 "• gemini-3.0-flash：平衡性能與速度，推薦使用\n\n"
-                 "**Gemini 2.5 系列**：\n"
+                 "**Gemini 3 系列（Preview，推薦）**：\n"
+                 "• gemini-3-pro-preview：最強性能，適合複雜分析\n"
+                 "• gemini-3-flash-preview：平衡性能與速度，推薦使用\n\n"
+                 "**Gemini 2.5 系列（穩定版）**：\n"
                  "• gemini-2.5-pro：高性能，配額限制嚴格\n"
                  "• gemini-2.5-flash：速度與配額平衡\n"
                  "• gemini-2.5-flash-lite：最輕量級\n\n"
@@ -3328,12 +3375,12 @@ with st.sidebar:
         )
         
         # 顯示模型特性提示
-        if "3.0-pro" in model_name:
-            st.info("🚀 **Gemini 3.0 Pro**：最新最強模型，具備 1M token 上下文窗口、Deep Think 模式和增強的多模態理解能力，適合複雜分析任務")
-        elif "3.0-flash" in model_name:
-            st.info("⚡ **Gemini 3.0 Flash**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
+        if "3-pro" in model_name:
+            st.info("🚀 **Gemini 3 Pro Preview**：最新最強模型，具備增強的多模態理解能力，適合複雜分析任務")
+        elif "3-flash" in model_name:
+            st.info("⚡ **Gemini 3 Flash Preview**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
         elif "2.5-pro" in model_name:
-            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議升級到 gemini-3.0-flash 或使用 gemini-2.5-flash。")
+            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議使用 gemini-3-flash-preview 或 gemini-2.5-flash。")
         
         st.markdown("---")
         st.markdown("#### 🔍 Tavily 搜尋設定")
@@ -4069,7 +4116,7 @@ if search_btn and query and google_key and tavily_key:
                         1. 檢查 OpenAI API Key 是否正確
                         2. 檢查 OpenAI 配額使用情況
                         3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
-                        4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）
+                        4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）
                         
                         **原始錯誤**：{original_error_msg[:500]}
                         """)
@@ -4095,7 +4142,7 @@ if search_btn and query and google_key and tavily_key:
                     """
                     if not openai_api_key:
                         error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
-                    error_display += f"5. 切換到 gemini-3.0-flash 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                    error_display += f"5. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
                     error_display += f"**原始錯誤**：{original_error_msg[:500]}"
                     
                     st.error(error_display)
@@ -4112,7 +4159,7 @@ if search_btn and query and google_key and tavily_key:
                 1. 檢查配額：https://ai.dev/rate-limit
                 2. 等待配額重置（通常每分鐘/每天重置）
                 3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
-                4. 切換到 gemini-3.0-flash 或 gemini-2.5-flash
+                4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash
                 """)
             else:
                 st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
