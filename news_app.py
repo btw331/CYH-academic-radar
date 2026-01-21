@@ -1054,9 +1054,11 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
             cache_query_expansion(query, [], fallback)
     return fallback
 
-def analyze_consensus(all_sources: Dict[str, List[Dict]]) -> Dict[str, Any]:
+def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:
     """
-    分析不同立場間的共識與分歧（方案 3.3 - 共識分析）
+    分析不同立場間的共識與分歧（方案 3.3 - 共識分析，LLM 增強版）
+    
+    使用 LLM 深度分析共同事實和分歧點，提升共識分析的準確性和深度。
     
     Args:
         all_sources: {
@@ -1065,11 +1067,13 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]]) -> Dict[str, Any]:
             "neutral_sources": [...],
             "factual_sources": [...]
         }
+        api_key: Google Gemini API Key（可選，用於 LLM 分析）
+        query: 查詢關鍵字（可選，用於 LLM 分析）
     
     Returns:
         Dict: {
-            "common_facts": [...],  # 各方都認同的事實
-            "divergence_points": [...],  # 分歧點
+            "common_facts": List[Dict],  # 各方都認同的事實（LLM 分析結果）
+            "divergence_points": List[Dict],  # 分歧點（LLM 分析結果）
             "consensus_score": 0.0-1.0,  # 共識度分數
             "perspective_balance": {...}  # 立場平衡度
         }
@@ -1077,6 +1081,7 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]]) -> Dict[str, Any]:
     pro_sources = all_sources.get("pro_sources", [])
     con_sources = all_sources.get("con_sources", [])
     neutral_sources = all_sources.get("neutral_sources", [])
+    all_sources_list = pro_sources + con_sources + neutral_sources
     
     # 簡單的共識分析（可以進一步用 LLM 優化）
     total_sources = len(pro_sources) + len(con_sources) + len(neutral_sources)
@@ -1093,9 +1098,75 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]]) -> Dict[str, Any]:
         perspective_balance["pro_ratio"], perspective_balance["con_ratio"]
     ) if max(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) > 0 else 0
     
+    # 使用 LLM 分析共同事實和分歧點（如果提供了 API Key 且有足夠來源）
+    common_facts = []
+    divergence_points = []
+    
+    if api_key and all_sources_list and len(all_sources_list) >= 3:
+        try:
+            # 準備來源摘要（限制長度以節省 token）
+            sources_summary = []
+            for i, source in enumerate(all_sources_list[:20]):  # 最多分析 20 個來源
+                source_id = i + 1
+                title = source.get('title', '')[:100]
+                content = source.get('content', '')[:300]
+                category = source.get('source_category', 'OTHER')
+                sources_summary.append(f"Source {source_id} ({category}): {title}\n內容摘要: {content[:200]}...")
+            
+            sources_text = "\n\n".join(sources_summary)
+            
+            # 使用 LLM 分析共同事實和分歧點
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
+            
+            analysis_prompt = f"""
+針對議題「{query or '相關議題'}」，以下是一系列不同立場的來源報導：
+
+{sources_text}
+
+請分析這些來源，識別：
+1. **共同事實**：所有或大多數來源都認同的事實（至少列出 2-3 項）
+2. **分歧點**：不同立場間的主要分歧（至少列出 2-3 項）
+
+請以 JSON 格式輸出：
+{{
+    "common_facts": [
+        {{
+            "fact": "事實描述",
+            "supporting_sources": ["Source 1", "Source 3"],
+            "confidence": "高/中/低"
+        }}
+    ],
+    "divergence_points": [
+        {{
+            "point": "分歧點描述",
+            "pro_position": "支持方的立場",
+            "con_position": "反對方的立場",
+            "pro_sources": ["Source 2"],
+            "con_sources": ["Source 5"]
+        }}
+    ]
+}}
+"""
+            
+            response = llm.invoke(analysis_prompt).content
+            
+            # 嘗試解析 JSON
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                analysis_result = json.loads(json_match.group())
+                common_facts = analysis_result.get("common_facts", [])
+                divergence_points = analysis_result.get("divergence_points", [])
+                logger.info(f"LLM 共識分析完成：識別 {len(common_facts)} 項共同事實，{len(divergence_points)} 個分歧點")
+            else:
+                logger.warning("LLM 共識分析：無法解析 JSON 格式，使用空列表")
+        
+        except Exception as e:
+            logger.warning(f"LLM 共識分析失敗: {str(e)}，使用空列表作為降級策略")
+            # 降級策略：如果 LLM 分析失敗，返回空列表
+    
     return {
-        "common_facts": [],  # 待 LLM 進一步分析
-        "divergence_points": [],  # 待 LLM 進一步分析
+        "common_facts": common_facts,
+        "divergence_points": divergence_points,
         "consensus_score": pro_con_balance,
         "perspective_balance": perspective_balance
     } 
@@ -2671,7 +2742,7 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         # === 立場平衡分析（方案 2.1）===
         stance_analysis = analyze_stance_balance(results)
         
-        # === 共識分析（方案 3.3）===
+        # === 共識分析（方案 3.3 - LLM 增強版）===
         # 分類來源為不同立場
         perspective_sources = {
             "pro_sources": [],
@@ -2679,7 +2750,8 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
             "neutral_sources": [],
             "factual_sources": results  # 所有來源都可作為事實來源
         }
-        consensus_analysis = analyze_consensus(perspective_sources)
+        # 傳遞 api_key 和 query 以啟用 LLM 分析
+        consensus_analysis = analyze_consensus(perspective_sources, api_key=google_api_key, query=query)
             
         return context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis
         
@@ -2997,6 +3069,15 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            - 中證據：權威媒體轉述、專業分析
            - 弱證據：評論、社論、單一來源、未經查證的轉述
            
+           **事實查核結果**（如果 Context 中包含事實查核資料）：
+           - 如果 Context 中包含「⚠️ 事實查核警告」，請在此列出已證偽的聲明和誤導性內容
+           - 如果 Context 中包含「Cofacts 查核資料庫」，請在此列出相關謠言和查核結果
+           - 以表格呈現：聲明類型 | 來源 (Source ID) | 聲明內容 | 查核結果 | 查核來源
+           - 格式範例：
+             | ❌ 已證偽 | Source 3 | "聲明內容摘要" | VERIFIED_FALSE | 查核機構名稱 |
+             | ⚠️ 誤導性 | Source 5 | "聲明內容摘要" | MISLEADING | 查核機構名稱 |
+             | 📋 謠言 | - | "謠言內容摘要" | NOT_ARTICLE / RUMOR | Cofacts 查核 |
+           
         3. **⚖️ 媒體框架光譜分析 (Entman Framing Analysis)**
            請針對主要媒體陣營，進行 Entman 框架的三維度分析：
            
@@ -3010,10 +3091,16 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            - 獨特觀點：特別標註與主流論述不同的長尾觀點（Source ID）
            - 話語權失衡評估：評估是否有特定陣營的聲音被過度放大或壓制
            
-        4. **🧠 深度識讀與利益分析 (Cui Bono)**
+        4. **🤝 共識與分歧分析 (Consensus & Divergence)**
+           請分析不同立場間的共識與分歧：
+           - **共同事實**：列出各方都認同的事實（如果 Context 中包含共識分析結果）
+           - **分歧點**：列出主要的分歧點和不同立場的觀點（如果 Context 中包含共識分析結果）
+           - 以表格或列表形式呈現，標註相關的 Source ID
+           
+        5. **🧠 深度識讀與利益分析 (Cui Bono)**
            分析利益相關者的動機與獲益
            
-        5. **🤔 結構性反思 (Structural Reflection)**
+        6. **🤔 結構性反思 (Structural Reflection)**
            深層結構問題與系統性思考
         """
         
