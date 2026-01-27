@@ -61,10 +61,14 @@ logger = logging.getLogger(__name__)
 # 常數定義
 # ==========================================
 MAX_WORKERS = 12  # 並行處理數
+MAX_SEARCH_WORKERS = 3  # 搜尋 API 並發數（大幅降低以避免超過 API 速率限制，從 6 降到 3）
 MAX_CONTENT_LENGTH = 3000  # 內容最大長度（重視正確度，不縮減）
 TITLE_TRUNCATE_LENGTH = 60
 TIMEOUT_COFACTS = 3
 TIMEOUT_FACT_CHECK = 5  # Fact Check API 超時時間
+SEARCH_REQUEST_DELAY = 1.0  # 搜尋請求之間的延遲（秒），大幅增加以避免 429 錯誤（從 0.2 增加到 1.0）
+SEARCH_RETRY_DELAY = 5.0  # 429 錯誤後的重試延遲（秒）
+MAX_SEARCH_RETRIES = 2  # 搜尋請求的最大重試次數
 SIMILARITY_THRESHOLD = 0.8  # 聲量權重校正：標題相似度閾值
 CACHE_EXPIRY_HOURS = 24  # 快取過期時間（小時）
 SUMMARY_THRESHOLD = 2000  # 超過此長度將進行摘要
@@ -312,15 +316,17 @@ OFFICIAL_WHITELIST = [
     "nccu.edu.tw", "ntu.edu.tw", "sinica.edu.tw", "nctu.edu.tw"
 ]
 
-# 完整台灣媒體白名單
+# 完整台灣媒體白名單（擴充：包含社群平台）
 FULL_TAIWAN_WHITELIST = (
     BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + 
     ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw", 
      "commonhealth.com.tw", "cw.com.tw", "managertoday.com.tw",
-     "bnext.com.tw", "inside.com.tw", "techorange.com"]
+     "bnext.com.tw", "inside.com.tw", "techorange.com",
+     # 社群平台（重要：許多議題討論發生在此）
+     "youtube.com", "youtu.be", "ptt.cc", "dcard.tw", "mobile01.com"]
 )
 
-# 獨立媒體白名單（大幅擴展）
+# 獨立媒體白名單（大幅擴展：包含自媒體平台）
 INDIE_WHITELIST = [
     # 主要獨立媒體
     "twreporter.org", "theinitium.com", "thenewslens.com", 
@@ -331,7 +337,9 @@ INDIE_WHITELIST = [
     # 新媒體平台
     "medium.com", "substack.com", "ghost.org", "wordpress.com",
     # 學術媒體
-    "thinkingtaiwan.com", "taiwaninsight.com", "taiwaninsight.org"
+    "thinkingtaiwan.com", "taiwaninsight.com", "taiwaninsight.org",
+    # 自媒體影音平台（重要：投資理財等議題主要討論場域）
+    "youtube.com", "youtu.be"
 ]
 
 # 亞洲國際媒體白名單（大幅擴展）
@@ -826,10 +834,39 @@ def get_cached_query_expansion(query: str) -> Optional[Dict[str, Any]]:
         if row:
             expanded_json, balanced_json, expiry_time = row
             if time.time() < expiry_time:
-                result = {
-                    "expanded_queries": json.loads(expanded_json) if expanded_json else None,
-                    "balanced_queries": json.loads(balanced_json) if balanced_json else None
-                }
+                result = {}
+                # 安全解析 expanded_queries
+                if expanded_json:
+                    try:
+                        result["expanded_queries"] = json.loads(expanded_json) if isinstance(expanded_json, str) else expanded_json
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"快取 expanded_queries 解析失敗: {str(e)}")
+                        result["expanded_queries"] = None
+                else:
+                    result["expanded_queries"] = None
+                
+                # 安全解析 balanced_queries，確保返回字典類型
+                if balanced_json:
+                    try:
+                        if isinstance(balanced_json, str):
+                            parsed = json.loads(balanced_json)
+                            # 確保解析結果是字典類型
+                            if isinstance(parsed, dict):
+                                result["balanced_queries"] = parsed
+                            else:
+                                logger.warning(f"快取 balanced_queries 不是字典類型: {type(parsed).__name__}，設為 None")
+                                result["balanced_queries"] = None
+                        elif isinstance(balanced_json, dict):
+                            result["balanced_queries"] = balanced_json
+                        else:
+                            logger.warning(f"快取 balanced_queries 類型不正確: {type(balanced_json).__name__}，設為 None")
+                            result["balanced_queries"] = None
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"快取 balanced_queries 解析失敗: {str(e)}")
+                        result["balanced_queries"] = None
+                else:
+                    result["balanced_queries"] = None
+                
                 conn.close()
                 logger.info(f"查詢擴展快取命中: {query[:50]}")
                 return result
@@ -985,7 +1022,6 @@ def generate_dynamic_keywords(query: str, api_key: str, use_cache: bool = True) 
     expanded = generate_expanded_queries(query, api_key, max_expansions=3, use_cache=use_cache)
     return [q["query"] for q in expanded[:3]]
 
-@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
 def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) -> Dict[str, List[str]]:
     """
     生成多維度平衡檢索查詢（方案 3）
@@ -998,23 +1034,40 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
             "factual_timeline": ["事實時序查詢1", ...]
         }
     """
+    # 檢查快取（優先使用快取，避免 API 調用）
+    if use_cache:
+        cached = get_cached_query_expansion(query)
+        if cached and cached.get("balanced_queries"):
+            balanced_queries = cached.get("balanced_queries")
+            # 確保返回的是字典類型
+            if isinstance(balanced_queries, dict):
+                logger.info(f"使用快取的平衡查詢: {query[:50]}")
+                return balanced_queries
+            else:
+                logger.warning(f"快取中的 balanced_queries 不是字典類型: {type(balanced_queries).__name__}，重新生成")
+    
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
         
         prompt = f"""
-針對議題「{query}」，請生成三組搜尋查詢：
+針對爭議議題「{query}」，請生成三組「對抗性」搜尋查詢，使用情感導向詞彙以確保捕捉不同立場：
 
-1. 【正方觀點查詢】：
-   - 生成 3-4 個支持該議題的觀點/論述的搜尋查詢
-   - 範例：針對「核電」→ "核電優點 支持 效益"
+1. 【正方/支持觀點查詢】（3-4個）：
+   - 使用正面詞彙：成功、有效、優勢、證實、支持、贊成、好處、效益
+   - 範例：「核電」→ "核電 成功案例"、"核能 有效降低碳排放"、"核電優勢 證據"
+   - 範例：「主動投資」→ "主動投資 超越大盤 成功"、"技術分析 有效性 證實"
 
-2. 【反方觀點查詢】：
-   - 生成 3-4 個反對該議題的觀點/論述的搜尋查詢
-   - 範例：針對「核電」→ "核電缺點 反對 風險"
+2. 【反方/反對觀點查詢】（3-4個）：
+   - 使用負面詞彙：失敗、無效、風險、質疑、反對、批評、缺點、危害
+   - 範例：「核電」→ "核電 事故風險"、"核能 安全疑慮"、"核電缺點 證據"
+   - 範例：「主動投資」→ "主動投資 失敗率"、"擇時交易 無效 研究"、"技術分析 被質疑"
 
-3. 【中立學術分析查詢】：
-   - 生成 3-4 個中立的學術研究、數據分析查詢
-   - 範例：針對「核電」→ "核電研究 數據分析 學術論文"
+3. 【中立/學術分析查詢】（3-4個）：
+   - 使用客觀詞彙：研究、數據、分析、比較、實證、學術、統計
+   - 範例：「核電」→ "核電研究 學術論文"、"核能 成本效益分析"
+   - 範例：「主動投資」→ "主動vs被動投資 實證研究"、"投資策略 績效比較"
+
+**重要**：必須使用強烈的情感詞彙（成功/失敗、有效/無效、優勢/風險），避免中性描述。
 
 請以 JSON 格式輸出：
 {{
@@ -1034,30 +1087,75 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
         # 嘗試解析 JSON
         json_match = re.search(r'\{.*\}', resp, re.DOTALL)
         if json_match:
-            result = json.loads(json_match.group())
-            return {
-                "pro_arguments": result.get("pro", [f"{query} 支持 優點", f"{query} 贊成"]),
-                "con_arguments": result.get("con", [f"{query} 反對 缺點", f"{query} 批評"]),
-                "neutral_analysis": result.get("neutral", [f"{query} 研究", f"{query} 數據分析"]),
-                "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
-            }
+            try:
+                result = json.loads(json_match.group())
+                # 確保 result 是字典類型
+                if isinstance(result, dict):
+                    return {
+                        "pro_arguments": result.get("pro", [f"{query} 支持 優點", f"{query} 贊成"]),
+                        "con_arguments": result.get("con", [f"{query} 反對 缺點", f"{query} 批評"]),
+                        "neutral_analysis": result.get("neutral", [f"{query} 研究", f"{query} 數據分析"]),
+                        "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+                    }
+                else:
+                    logger.warning(f"JSON 解析結果不是字典類型: {type(result).__name__}")
+            except json.JSONDecodeError as json_error:
+                logger.warning(f"JSON 解析失敗: {str(json_error)}")
+            except Exception as parse_error:
+                logger.warning(f"解析結果時發生錯誤: {str(parse_error)}")
+        else:
+            logger.warning(f"未找到 JSON 格式，回應內容: {resp[:200]}")
+    except ChatGoogleGenerativeAIError as gemini_error:
+        error_str = str(gemini_error)
+        # 檢查是否為配額耗盡錯誤
+        if "RESOURCE_EXHAUSTED" in error_str or "429" in error_str or "quota" in error_str.lower():
+            logger.warning(f"Gemini API 配額已耗盡，使用降級策略: {error_str[:100]}")
+        else:
+            logger.warning(f"平衡查詢生成失敗: {error_str[:100]}")
     except Exception as e:
-        logger.warning(f"平衡查詢生成失敗: {str(e)}")
+        error_str = str(e)
+        logger.warning(f"平衡查詢生成失敗: {error_str[:100]}")
     
     # 降級策略（使用共用函數）
+    # 確保總是返回字典類型
     fallback = {
         "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
         "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
         "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
         "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
     }
+    
+    # 確保 fallback 是字典類型（防禦性編程）
+    if not isinstance(fallback, dict):
+        logger.error(f"fallback 不是字典類型: {type(fallback).__name__}，強制轉換為字典")
+        fallback = {
+            "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+            "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+            "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+            "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+        }
+    
     # 即使失敗也快取降級結果
     if use_cache:
-        cached = get_cached_query_expansion(query)
-        if cached:
-            cache_query_expansion(query, cached.get("expanded_queries", []), fallback)
-        else:
-            cache_query_expansion(query, [], fallback)
+        try:
+            cached = get_cached_query_expansion(query)
+            if cached:
+                cache_query_expansion(query, cached.get("expanded_queries", []), fallback)
+            else:
+                cache_query_expansion(query, [], fallback)
+        except Exception as cache_error:
+            logger.warning(f"快取操作失敗: {str(cache_error)}")
+    
+    # 最終確認返回的是字典類型
+    if not isinstance(fallback, dict):
+        logger.error(f"fallback 仍然不是字典類型: {type(fallback).__name__}，強制創建新字典")
+        fallback = {
+            "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+            "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+            "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+            "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+        }
+    
     return fallback
 
 def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:
@@ -2096,6 +2194,11 @@ def apply_fact_check_tags(sources: List[Dict], fact_check_results: Dict[str, Lis
     Returns:
         List[Dict]: 更新後的來源列表
     """
+    # 確保 fact_check_results 是字典類型
+    if not isinstance(fact_check_results, dict):
+        logger.warning(f"fact_check_results 不是字典類型: {type(fact_check_results).__name__}，跳過事實查核標籤")
+        return sources
+    
     # 建立 source_id 到查核結果的映射
     false_map = {c['source_id']: c for c in fact_check_results.get('false_claims', [])}
     misleading_map = {c['source_id']: c for c in fact_check_results.get('misleading_claims', [])}
@@ -2133,6 +2236,11 @@ def generate_fact_check_warning(fact_check_results: Dict[str, List[Dict]]) -> st
     """
     生成事實查核警告文字（用於 context）
     """
+    # 確保 fact_check_results 是字典類型
+    if not isinstance(fact_check_results, dict):
+        logger.warning(f"generate_fact_check_warning: fact_check_results 不是字典類型: {type(fact_check_results).__name__}")
+    return ""
+
     warning_text = "\n【⚠️ 事實查核警告】\n"
     
     false_claims = fact_check_results.get('false_claims', [])
@@ -2324,7 +2432,13 @@ def analyze_volume_weight(sources: List[Dict], progress_callback=None) -> Dict[s
 
 def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, is_strict_mode: bool, dynamic_keywords: List, selected_regions: List[str]) -> List[Dict]:
     """
-    執行混和搜尋（完整版 - 重視正確度）
+    執行混和搜尋（完整版 - 基於 Tavily 最佳實踐）
+    
+    基於 Tavily API 官方最佳實踐：
+    1. 查詢優化：保持查詢少於 400 字元，拆分複雜查詢
+    2. 搜尋深度：通用搜尋使用 basic，保底搜尋使用 advanced
+    3. 結果過濾：使用 topic: "news" 和網域過濾
+    4. 平衡報導：多視角查詢 + 分眾保底機制
     
     Args:
         dynamic_keywords: 可以是 List[str] 或 List[Dict] (擴展查詢格式)
@@ -2333,9 +2447,21 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
     seen_urls = set()
     tasks = []
     
-    # === Tavily API 參數優化策略（方案 1.2）===
-    optimized_params = search_params.copy()
-    optimized_params['search_depth'] = "advanced"  # 重視正確度，始終使用 advanced
+    # === Tavily API 參數優化策略（基於官方最佳實踐）===
+    # 從 search_params 複製，但只保留 Tavily API 支持的參數
+    optimized_params = {
+        "search_depth": search_params.get("search_depth", "basic"),  # 預設使用 basic
+        "max_results": search_params.get("max_results", 10),
+        "topic": "general",  # 改回 general：因為 news 模式會排除 YouTube/PTT 等社群媒體，導致某些議題搜尋不到
+    }
+    
+    # 條件性添加 exclude_domains
+    if "exclude_domains" in search_params and search_params["exclude_domains"]:
+        optimized_params["exclude_domains"] = search_params["exclude_domains"]
+    
+    # 條件性添加 country（如果選定了台灣）
+    if selected_regions and any("台灣" in str(r) for r in selected_regions):
+        optimized_params["country"] = "taiwan"  # 優先台灣來源
     
     # 1. 通用熱度搜尋
     general_domains = []
@@ -2346,97 +2472,417 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
     if "歐洲" in selected_str: general_domains.extend(INTL_EUROPE_WHITELIST)
     if "美洲" in selected_str: general_domains.extend(INTL_AMERICAS_WHITELIST)
     
+    # === 通用搜尋參數（基於 Tavily 最佳實踐）===
     general_params = optimized_params.copy()
-    general_params['max_results'] = 15  # 擴展通用搜尋結果數量（從 10 增加到 15），提升覆蓋率
-    if is_strict_mode and general_domains:
-        general_params['include_domains'] = list(set(general_domains))
+    general_params['max_results'] = 15  # Tavily 建議：不要設定過高，避免低品質結果
+    general_params['search_depth'] = 'basic'  # 通用搜尋使用 basic（平衡速度與品質）
     
-    # === 查詢擴展機制（方案 1.1 + 方案 3）===
+    # 改進：通用搜尋完全不使用 include_domains，讓搜尋範圍最大化
+    # 域名過濾只在保底搜尋中使用（確保立場平衡）
+    if is_strict_mode and general_domains:
+        logger.info(f"通用搜尋：檢測到嚴格模式，但不使用域名過濾（共 {len(set(general_domains))} 個候選域名可用於保底搜尋）")
+        logger.info(f"域名過濾僅用於保底搜尋（藍/綠/官方），確保立場平衡的同時，通用搜尋仍能獲取廣泛結果")
+    # 不設置 general_params['include_domains']，讓通用搜尋範圍最大化
+    
+    # === 查詢擴展機制（基於 Tavily 最佳實踐：拆分複雜查詢）===
+    # Tavily 建議：將複雜查詢拆分為多個子查詢，每個查詢少於 400 字元
+    
+    def validate_query_length(q: str, max_length: int = 400) -> str:
+        """確保查詢長度符合 Tavily 建議（少於 400 字元）"""
+        if len(q) <= max_length:
+            return q
+        # 如果超過，截斷並添加省略號
+        logger.warning(f"查詢過長 ({len(q)} 字元)，截斷至 {max_length} 字元: {q[:50]}...")
+        return q[:max_length-3] + "..."
+    
     # 處理擴展查詢列表
     if isinstance(dynamic_keywords, list) and len(dynamic_keywords) > 0:
         if all(isinstance(k, str) for k in dynamic_keywords):
-            # 字串列表，轉換為 Dict 格式
+            # 字串列表，轉換為 Dict 格式並驗證長度
             expanded_queries = [
-                {"query": k, "type": f"查詢{i+1}", "priority": 1}
+                {"query": validate_query_length(k), "type": f"查詢{i+1}", "priority": 1}
                 for i, k in enumerate(dynamic_keywords)
             ]
         else:
-            # 已經是 Dict 列表
-            expanded_queries = dynamic_keywords
+            # 已經是 Dict 列表，驗證查詢長度
+            expanded_queries = []
+            for i, q in enumerate(dynamic_keywords):
+                if isinstance(q, dict) and 'query' in q:
+                    q_copy = q.copy()
+                    q_copy['query'] = validate_query_length(q['query'])
+                    expanded_queries.append(q_copy)
+                elif isinstance(q, str):
+                    # 如果是字串，轉換為 dict 格式
+                    expanded_queries.append({
+                        "query": validate_query_length(q),
+                        "type": f"查詢{i+1}",
+                        "priority": 1
+                    })
+                else:
+                    # 其他類型，嘗試轉換為 dict
+                    logger.warning(f"動態關鍵字項目既不是 dict 也不是 str，類型: {type(q).__name__}，跳過")
     else:
-        # 預設查詢
+        # 預設查詢（三軌查詢法：事實軌、觀點軌、深度軌）
+        base_query = validate_query_length(query)
         expanded_queries = [
-            {"query": query, "type": "主查詢", "priority": 1},
-            {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
-            {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
-            {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+            {"query": base_query, "type": "主查詢", "priority": 1},
+            {"query": validate_query_length(f"{query} 新聞 事件"), "type": "事實軌", "priority": 1},
+            {"query": validate_query_length(f"{query} 爭議 評論"), "type": "觀點軌", "priority": 1},
+            {"query": validate_query_length(f"{query} 懶人包 分析"), "type": "深度軌", "priority": 1}
         ]
     
-    # 使用所有高優先級查詢（重視正確度，不減少任務）
+    # 使用所有高優先級查詢（優化：減少請求數量以避免超過 API 負荷）
     priority_queries = [q for q in expanded_queries if q.get("priority", 3) <= 2]
-    for q in priority_queries[:10]:  # 最多 10 個查詢
+    logger.info(f"處理擴展查詢: 總數={len(expanded_queries)}, 優先級查詢={len(priority_queries)}")
+    
+    # 大幅減少到最多 5 個通用查詢，避免 429 錯誤
+    for q in priority_queries[:5]:
+        # 通用查詢不限制 topic，以便包含新聞和社群內容
         tasks.append({"name": f"General_{q['type']}", "query": q["query"], "params": general_params})
     
-    # 2. 分眾保底搜尋 (Hybrid Weighted - Standard Guard)
+    logger.info(f"已建立 {len(tasks)} 個通用搜尋任務（已優化以避免 429 錯誤）")
+    
+    # === 分眾保底搜尋（平衡報導策略：確保立場多樣化）===
+    # Tavily 建議：使用 include_domains 限制到特定網域，但保持列表簡短
     if "台灣" in selected_str:
-        guard_max = 8  # 擴展保底數量，確保足夠的搜尋覆蓋率（從 5 增加到 8）
+        guard_max = 8  # Tavily 建議：不要設定過高，避免低品質結果
         
+        # 藍營保底搜尋（使用 advanced 深度以確保品質）
         blue_params = optimized_params.copy()
-        blue_params['max_results'] = guard_max 
-        blue_params['include_domains'] = BLUE_WHITELIST
-        tasks.append({"name": "Blue_Guard", "query": f"{query}", "params": blue_params})
+        blue_params['max_results'] = guard_max
+        blue_params['search_depth'] = 'advanced'  # 保底搜尋使用 advanced（最高相關性）
+        if BLUE_WHITELIST and len(BLUE_WHITELIST) > 0:
+            # Tavily 建議：保持網域列表簡短（< 50 個）
+            blue_domains = BLUE_WHITELIST[:50] if len(BLUE_WHITELIST) > 50 else BLUE_WHITELIST
+            blue_params['include_domains'] = blue_domains
+            logger.debug(f"藍營保底搜尋: {len(blue_domains)} 個網域（已限制在 50 個以內）")
+        tasks.append({"name": "Blue_Guard", "query": validate_query_length(query), "params": blue_params})
         
+        # 綠營保底搜尋
         green_params = optimized_params.copy()
-        green_params['max_results'] = guard_max 
-        green_params['include_domains'] = GREEN_WHITELIST
-        tasks.append({"name": "Green_Guard", "query": f"{query}", "params": green_params})
+        green_params['max_results'] = guard_max
+        green_params['search_depth'] = 'advanced'
+        if GREEN_WHITELIST and len(GREEN_WHITELIST) > 0:
+            green_domains = GREEN_WHITELIST[:50] if len(GREEN_WHITELIST) > 50 else GREEN_WHITELIST
+            green_params['include_domains'] = green_domains
+            logger.debug(f"綠營保底搜尋: {len(green_domains)} 個網域（已限制在 50 個以內）")
+        tasks.append({"name": "Green_Guard", "query": validate_query_length(query), "params": green_params})
         
+        # 官方保底搜尋
         official_params = optimized_params.copy()
         official_params['max_results'] = guard_max
-        official_params['include_domains'] = OFFICIAL_WHITELIST
-        tasks.append({"name": "Official_Guard", "query": f"{query} 聲明 新聞稿", "params": official_params})
+        official_params['search_depth'] = 'advanced'
+        if OFFICIAL_WHITELIST and len(OFFICIAL_WHITELIST) > 0:
+            official_domains = OFFICIAL_WHITELIST[:50] if len(OFFICIAL_WHITELIST) > 50 else OFFICIAL_WHITELIST
+            official_params['include_domains'] = official_domains
+            logger.debug(f"官方保底搜尋: {len(official_domains)} 個網域（已限制在 50 個以內）")
+        tasks.append({"name": "Official_Guard", "query": validate_query_length(f"{query} 聲明 新聞稿"), "params": official_params})
 
-    def fetch(task):
+        logger.info(f"已建立 3 個保底搜尋任務（藍/綠/官方），總任務數: {len(tasks)}")
+
+    def fetch(task, retry_count=0):
         try:
-            return tavily.search(query=task['query'], **task['params']).get('results', [])
+            # 添加延遲以避免超過 API 速率限制
+            if SEARCH_REQUEST_DELAY > 0:
+                time.sleep(SEARCH_REQUEST_DELAY)
+            
+            # 清理參數：只保留 Tavily API 支持的參數
+            clean_params = {}
+            tavily_supported_params = [
+                'search_depth', 'max_results', 'include_domains', 'exclude_domains',
+                'include_answer', 'topic', 'days', 'include_raw_content', 'include_images', 'include_image_descriptions'
+            ]
+            
+            for key, value in task['params'].items():
+                if key in tavily_supported_params and value is not None:
+                    # 特別處理 include_domains 和 exclude_domains，確保是列表
+                    if key in ['include_domains', 'exclude_domains']:
+                        if isinstance(value, list) and len(value) > 0:
+                            clean_params[key] = value
+                        elif isinstance(value, (str, tuple)) and len(value) > 0:
+                            clean_params[key] = list(value) if isinstance(value, tuple) else [value]
+                    else:
+                        clean_params[key] = value
+            
+            # 記錄清理後的參數（用於調試）
+            param_summary = {}
+            for k, v in clean_params.items():
+                if k in ['include_domains', 'exclude_domains']:
+                    param_summary[k] = f"列表({len(v)}個網域)" if isinstance(v, list) else str(v)[:50]
+                else:
+                    param_summary[k] = str(v)[:50]
+            
+            logger.info(f"執行搜尋任務: {task['name']}, 查詢: {task['query'][:50]}, 參數: {param_summary}, 重試次數: {retry_count}")
+            
+            # 執行搜尋
+            search_response = tavily.search(query=task['query'], **clean_params)
+            
+            # 確保 search_response 是字典類型
+            if not isinstance(search_response, dict):
+                logger.error(f"搜尋任務 {task['name']} 返回非字典類型: {type(search_response).__name__}，值: {str(search_response)[:500]}")
+                return []
+            
+            # 檢查是否有錯誤
+            if 'error' in search_response:
+                logger.error(f"搜尋任務 {task['name']} API 返回錯誤: {search_response.get('error', 'Unknown error')}")
+                return []
+            
+            results = search_response.get('results', [])
+            logger.info(f"搜尋任務 {task['name']} 完成: 找到 {len(results)} 筆結果")
+            
+            # 後處理：使用分數過濾（基於 Tavily 最佳實踐）
+            # Tavily 建議：使用 score 來過濾和排序結果
+            if results:
+                # 按分數排序（分數越高，相關性越高）
+                results.sort(key=lambda x: x.get('score', 0), reverse=True)
+                # 記錄分數範圍
+                scores = [r.get('score', 0) for r in results]
+                if scores:
+                    logger.debug(f"搜尋任務 {task['name']} 分數範圍: {min(scores):.3f} - {max(scores):.3f}")
+            
+            # 如果結果為空，記錄詳細資訊用於調試
+            if len(results) == 0:
+                logger.warning(f"搜尋任務 {task['name']} 返回 0 筆結果")
+                logger.warning(f"  - 查詢: {task['query'][:100]}")
+                logger.warning(f"  - 參數: {param_summary}")
+                logger.warning(f"  - API 回應 keys: {list(search_response.keys())}")
+                if 'query' in search_response:
+                    logger.warning(f"  - API 回應 query: {search_response.get('query', 'N/A')}")
+            
+            return results
         except Exception as e:
-            logger.warning(f"搜尋任務失敗: {task['name']}, 錯誤: {str(e)}")
+            error_str = str(e)
+            # 檢查是否為 429 錯誤（速率限制）
+            if "429" in error_str or "TooManyRequests" in error_str or "rate limit" in error_str.lower():
+                if retry_count < MAX_SEARCH_RETRIES:
+                    wait_time = SEARCH_RETRY_DELAY * (retry_count + 1)  # 指數退避
+                    logger.warning(f"搜尋任務 {task['name']} 遇到 429 錯誤，等待 {wait_time} 秒後重試 ({retry_count + 1}/{MAX_SEARCH_RETRIES})")
+                    time.sleep(wait_time)
+                    return fetch(task, retry_count + 1)  # 遞迴重試
+                else:
+                    logger.error(f"搜尋任務 {task['name']} 重試 {MAX_SEARCH_RETRIES} 次後仍失敗（429 錯誤）")
+            else:
+                logger.warning(f"搜尋任務失敗: {task['name']}, 查詢: {task['query'][:50]}, 錯誤: {error_str[:200]}")
             return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+    # 檢查是否有任務
+    if not tasks:
+        logger.warning(f"沒有搜尋任務，查詢: {query[:50]}")
+        return []
+    
+    logger.info(f"開始執行 {len(tasks)} 個搜尋任務")
+    
+    # 使用較少的並發數以避免超過 API 速率限制
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_SEARCH_WORKERS, len(tasks))) as executor:
         futures = {executor.submit(fetch, t): t['name'] for t in tasks}
         results_map = {}
+        success_count = 0
+        error_details = {}  # 記錄錯誤詳情
+        
         for future in concurrent.futures.as_completed(futures):
             t_name = futures[future]
             try:
-                results_map[t_name] = future.result()
-            except Exception as e:
-                logger.error(f"任務 {t_name} 執行失敗: {str(e)}")
+                task_results = future.result(timeout=30)  # 添加超時
+                results_map[t_name] = task_results
+                if len(task_results) > 0:
+                    success_count += 1
+                    logger.info(f"任務 {t_name} 成功: {len(task_results)} 筆結果")
+                else:
+                    logger.warning(f"任務 {t_name} 返回 0 筆結果")
+                    error_details[t_name] = "返回 0 筆結果"
+            except concurrent.futures.TimeoutError:
+                logger.error(f"任務 {t_name} 執行超時（30秒）")
                 results_map[t_name] = []
+                error_details[t_name] = "執行超時"
+            except Exception as e:
+                error_str = str(e)
+                logger.error(f"任務 {t_name} 執行失敗: {error_str[:300]}")
+                results_map[t_name] = []
+                error_details[t_name] = error_str[:200]
+        
+        logger.info(f"搜尋完成: {success_count}/{len(tasks)} 個任務成功取得結果")
+        if error_details:
+            logger.warning(f"失敗任務詳情: {error_details}")
             
     final_list = []
     
     # A. 優先加入保底
     guards = ["Blue_Guard", "Green_Guard", "Official_Guard"]
+    guard_count = 0
     for guard_name in guards:
         if guard_name in results_map:
-            for item in results_map[guard_name]:
-                if item['url'] not in seen_urls:
+            guard_results = results_map[guard_name]
+            logger.info(f"處理保底搜尋 {guard_name}: {len(guard_results)} 筆結果")
+            for item in guard_results:
+                # 確保 item 是字典類型
+                if not isinstance(item, dict):
+                    logger.warning(f"保底搜尋 {guard_name} 的結果項不是字典類型: {type(item).__name__}，跳過")
+                    continue
+                if item.get('url') and item['url'] not in seen_urls:
                     seen_urls.add(item['url'])
                     final_list.append(item)
+                    guard_count += 1
+    
+    logger.info(f"保底搜尋共加入 {guard_count} 筆結果")
+    
+    # 🔍 DEBUG: 檢查保底搜尋的原始資料
+    for guard_name in guards:
+        if guard_name in results_map:
+            raw_count = len(results_map[guard_name])
+            if raw_count > 0 and guard_count == 0:
+                logger.warning(f"⚠️ {guard_name} 有 {raw_count} 筆原始結果，但 0 筆被加入 final_list！")
+                # 取樣檢查第一筆資料
+                sample = results_map[guard_name][0]
+                logger.warning(f"   範例資料類型: {type(sample).__name__}")
+                if isinstance(sample, dict):
+                    logger.warning(f"   範例資料 keys: {list(sample.keys())[:10]}")
+                    logger.warning(f"   有 'url' 欄位: {'url' in sample}")
+                    if 'url' in sample:
+                        logger.warning(f"   URL 值: {sample.get('url', 'N/A')[:50]}")
     
     # B. 再加入通用搜尋結果（重視正確度，使用所有查詢）
     # 收集所有 General_ 開頭的任務結果
     general_keys = [k for k in results_map.keys() if k.startswith("General_")]
-    max_len = max([len(results_map.get(k, [])) for k in general_keys]) if general_keys else 0
+    if general_keys:
+        max_len = max([len(results_map.get(k, [])) for k in general_keys])
+        logger.info(f"處理通用搜尋: {len(general_keys)} 個任務，最大結果數: {max_len}")
+        
+        general_count = 0
+        for i in range(max_len):
+            for key in general_keys:
+                if key in results_map and i < len(results_map[key]):
+                    item = results_map[key][i]
+                    # 確保 item 是字典類型
+                    if not isinstance(item, dict):
+                        logger.warning(f"通用搜尋 {key} 的結果項不是字典類型: {type(item).__name__}，跳過")
+                        continue
+                    if item.get('url') and item['url'] not in seen_urls:
+                        seen_urls.add(item['url'])
+                        final_list.append(item)
+                        general_count += 1
+        
+        logger.info(f"通用搜尋共加入 {general_count} 筆結果")
+        
+        # 🔍 DEBUG: 檢查通用搜尋的原始資料
+        if max_len > 0 and general_count == 0:
+            logger.warning(f"⚠️ 通用搜尋有 {max_len} 筆原始結果（跨 {len(general_keys)} 個任務），但 0 筆被加入 final_list！")
+            # 取樣檢查第一個任務的第一筆資料
+            if general_keys and results_map.get(general_keys[0]):
+                sample = results_map[general_keys[0]][0]
+                logger.warning(f"   範例資料類型: {type(sample).__name__}")
+                if isinstance(sample, dict):
+                    logger.warning(f"   範例資料 keys: {list(sample.keys())[:10]}")
+                    logger.warning(f"   有 'url' 欄位: {'url' in sample}")
+                    if 'url' in sample:
+                        logger.warning(f"   URL 值: {sample.get('url', 'N/A')[:50]}")
+    else:
+        logger.warning("沒有通用搜尋任務結果")
     
-    for i in range(max_len):
-        for key in general_keys:
-            if key in results_map and i < len(results_map[key]):
-                item = results_map[key][i]
-                if item['url'] not in seen_urls:
-                    seen_urls.add(item['url'])
-                    final_list.append(item)
+    logger.info(f"搜尋總結果: {len(final_list)} 筆（去重後）")
+    
+    if len(final_list) == 0:
+        # 詳細記錄所有任務的結果
+        detailed_results = []
+        for task_name, task_results in results_map.items():
+            detailed_results.append(f"{task_name}: {len(task_results)} 筆")
+        
+        logger.error(f"⚠️ 搜尋結果為空！查詢: {query[:50]}, 任務數: {len(tasks)}, 詳細結果: {', '.join(detailed_results)}")
+        st.write(f"⚠️ 原始搜尋 (news 模式及網域限制) 為空，嘗試自動降級至全網通用模式...")
+        
+        # 降級策略：嘗試多個簡單的搜尋（逐步放寬條件）
+        logger.info("嘗試降級策略：執行簡單搜尋（無過濾條件）")
+        
+        # 策略1：完全無過濾的搜尋（使用原始查詢）
+        try:
+            simple_params = {
+                'query': query,
+                'max_results': 20,  # 增加結果數量
+                'search_depth': 'basic'  # 使用 basic 以加快速度
+            }
+            logger.info(f"降級搜尋（策略1）：查詢='{query[:50]}', 參數={simple_params}")
+            simple_response = tavily.search(**simple_params)
+            
+            if isinstance(simple_response, dict):
+                if 'error' in simple_response:
+                    logger.error(f"降級搜尋 API 錯誤: {simple_response.get('error')}")
+                else:
+                    simple_results = simple_response.get('results', [])
+                    logger.info(f"降級搜尋（策略1）找到 {len(simple_results)} 筆結果")
+                    
+                    if len(simple_results) > 0:
+                        # 加入降級搜尋的結果
+                        for item in simple_results:
+                            if isinstance(item, dict) and item.get('url') and item['url'] not in seen_urls:
+                                seen_urls.add(item['url'])
+                                final_list.append(item)
+                        logger.info(f"降級搜尋後總結果: {len(final_list)} 筆")
+                    else:
+                        logger.warning(f"降級搜尋（策略1）也返回 0 筆結果 - 查詢可能太特定")
+                        
+                        # 策略2：嘗試簡化查詢（改進版：處理中文無空格情況）
+                        try:
+                            # 1. 嘗試依標點符號或關鍵連詞拆分
+                            separators = [' ', ' 與 ', ' 和 ', ' 及 ', '、', '，', '。']
+                            simplified_query = query
+                            for sep in separators:
+                                if sep in query:
+                                    parts = [p.strip() for p in query.split(sep) if p.strip()]
+                                    if len(parts) >= 1:
+                                        simplified_query = parts[0]
+                                        break
+                            
+                            # 2. 如果還是太長且無分割，取前 6 個字（通常是主詞）
+                            if len(simplified_query) > 10 and simplified_query == query:
+                                simplified_query = query[:8]
+                                
+                            logger.info(f"降級搜尋（策略2）：簡化查詢 '{simplified_query}'")
+                            simple2_params = {
+                                'query': simplified_query,
+                                'max_results': 15,
+                                'search_depth': 'basic',
+                                'topic': 'general'  # 降級時使用 general 以跳過新聞時效限制
+                            }
+                            simple2_response = tavily.search(**simple2_params)
+                            if isinstance(simple2_response, dict) and 'results' in simple2_response:
+                                simple2_results = simple2_response.get('results', [])
+                                logger.info(f"降級搜尋（策略2）找到 {len(simple2_results)} 筆結果")
+                                if len(simple2_results) > 0:
+                                    for item in simple2_results:
+                                        if isinstance(item, dict) and item.get('url') and item['url'] not in seen_urls:
+                                            seen_urls.add(item['url'])
+                                            final_list.append(item)
+                                    logger.info(f"降級搜尋（策略2）後總結果: {len(final_list)} 筆")
+                        except Exception as e2:
+                            logger.warning(f"降級搜尋（策略2）失敗: {str(e2)[:200]}")
+                        
+                        # 策略3：嘗試通用測試查詢
+                        try:
+                            test_query = "台灣新聞" if "台灣" in str(selected_regions) else "news"
+                            logger.info(f"降級搜尋（策略3）：使用測試查詢 '{test_query}' 驗證 API")
+                            test_response = tavily.search(query=test_query, max_results=5, search_depth='basic')
+                            if isinstance(test_response, dict) and 'results' in test_response:
+                                test_results = test_response.get('results', [])
+                                logger.info(f"測試查詢 '{test_query}' 找到 {len(test_results)} 筆結果")
+                                if len(test_results) == 0:
+                                    logger.error("⚠️ 測試查詢也返回 0 筆結果，可能是 API 服務異常")
+                                else:
+                                    logger.info("✅ API 正常，問題可能是查詢關鍵字太特定或時間範圍內無相關內容")
+                        except Exception as e3:
+                            logger.error(f"測試查詢失敗: {str(e3)[:200]}")
+            else:
+                logger.error(f"降級搜尋返回非字典類型: {type(simple_response).__name__}, 值: {str(simple_response)[:200]}")
+        except Exception as e:
+            error_str = str(e)
+            logger.error(f"降級搜尋失敗: {error_str[:300]}")
+            # 記錄更詳細的錯誤資訊
+            if "401" in error_str or "Unauthorized" in error_str or "Invalid API key" in error_str:
+                logger.error("❌ API Key 認證失敗 - 請檢查 API Key 是否正確")
+            elif "429" in error_str or "rate limit" in error_str.lower():
+                logger.error("❌ API 配額用完或超過速率限制")
+            elif "400" in error_str or "Bad Request" in error_str:
+                logger.error("❌ 查詢參數格式錯誤")
+            else:
+                logger.error(f"❌ 未知錯誤: {error_str[:200]}")
                 
     return final_list
 
@@ -2557,12 +3003,6 @@ def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
     Returns:
         Tuple[str, Dict]: (context 文字行, 處理後的結果字典)
     """
-    """
-    並行處理單一來源項目
-    
-    Returns:
-        Tuple[str, Dict]: (context 文字行, 處理後的結果字典)
-    """
     title = res.get('title', 'No Title')
     url = res.get('url', '#')
     
@@ -2651,14 +3091,19 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
     try:
         active_blacklist = NOISE_BLACKLIST
 
+        # 只包含 Tavily API 支持的參數
         search_params = {
             "search_depth": "advanced",  # 重視正確度，始終使用 advanced
-            "topic": "general",
-            "days": days_back,
-            "exclude_domains": active_blacklist,
-            "selected_regions": selected_regions,
-            "max_results": max_results
+            "max_results": max_results,
+            "days": days_back,           # 正確傳遞時間範圍參數
         }
+        
+        # 條件性添加 exclude_domains（如果黑名單不為空）
+        if active_blacklist and len(active_blacklist) > 0:
+            search_params["exclude_domains"] = active_blacklist
+        
+        # 注意：Tavily API 不支持 "topic", "days", "selected_regions" 參數
+        # 這些參數會在 execute_hybrid_search 中通過 include_domains 來實現區域過濾
 
         # 嘗試從快取獲取
         cached_results = None
@@ -2684,9 +3129,9 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                     "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
                 }
             
-            # 確保 balanced_queries 是字典類型
+            # 確保 balanced_queries 是字典類型（加強檢查）
             if not isinstance(balanced_queries, dict):
-                logger.warning(f"balanced_queries 不是字典類型: {type(balanced_queries).__name__}，使用降級策略")
+                logger.warning(f"balanced_queries 不是字典類型: {type(balanced_queries).__name__}，值: {str(balanced_queries)[:100]}，使用降級策略")
                 balanced_queries = {
                     "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
                     "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
@@ -2694,19 +3139,63 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                     "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
                 }
             
-            # 合併到擴展查詢列表
+            # 再次確認（防禦性編程）
+            if not isinstance(balanced_queries, dict):
+                logger.error(f"balanced_queries 仍然不是字典類型，強制使用降級策略")
+                balanced_queries = {
+                    "pro_arguments": [f"{query} 支持 優點", f"{query} 贊成 好處"],
+                    "con_arguments": [f"{query} 反對 缺點", f"{query} 批評 風險"],
+                    "neutral_analysis": [f"{query} 研究", f"{query} 數據分析", f"{query} 學術"],
+                    "factual_timeline": [f"{query} 時間軸", f"{query} 發展歷程"]
+                }
+            
+            # 合併到擴展查詢列表（優化：大幅減少查詢數量以避免 429 錯誤）
             balanced_expanded = []
-            for q in balanced_queries.get("pro_arguments", [])[:3]:
+            pro_args = balanced_queries.get("pro_arguments", []) if isinstance(balanced_queries, dict) else []
+            # 大幅減少到最多 1 個查詢（從 2 減少到 1），避免 429 錯誤
+            for q in pro_args[:1]:
                 balanced_expanded.append({"query": q, "type": "正方觀點", "priority": 1, "perspective": "pro"})
-            for q in balanced_queries.get("con_arguments", [])[:3]:
+            con_args = balanced_queries.get("con_arguments", []) if isinstance(balanced_queries, dict) else []
+            for q in con_args[:1]:
                 balanced_expanded.append({"query": q, "type": "反方觀點", "priority": 1, "perspective": "con"})
-            for q in balanced_queries.get("neutral_analysis", [])[:3]:
+            neutral_args = balanced_queries.get("neutral_analysis", []) if isinstance(balanced_queries, dict) else []
+            for q in neutral_args[:1]:
                 balanced_expanded.append({"query": q, "type": "中立分析", "priority": 1, "perspective": "neutral"})
             
             # 合併原有查詢和平衡查詢
             all_queries = dynamic_keywords + balanced_expanded
+            logger.info(f"開始執行混和搜尋: 查詢={query[:50]}, 擴展查詢數={len(all_queries)}, strict_mode={is_strict_mode}, selected_regions={selected_regions}")
+            
+            # 如果 strict_mode 且選定了區域，先嘗試無網域過濾的測試搜尋
+            if is_strict_mode and selected_regions:
+                logger.info("檢測到嚴格模式，先執行無網域過濾的測試搜尋...")
+                try:
+                    test_tavily = TavilyClient(api_key=api_key_tavily)
+                    test_params = {
+                        'query': query,
+                        'max_results': 5,
+                        'search_depth': 'basic'
+                    }
+                    test_response = test_tavily.search(**test_params)
+                    if isinstance(test_response, dict):
+                        test_results = test_response.get('results', [])
+                        logger.info(f"無網域過濾測試搜尋: 找到 {len(test_results)} 筆結果")
+                        if len(test_results) == 0:
+                            logger.warning(f"⚠️ 即使無網域過濾，查詢 '{query[:50]}' 也返回 0 筆結果")
+                            logger.warning(f"   這可能表示：1) 查詢關鍵字太特定 2) 時間範圍內無相關內容 3) API 服務問題")
+                except Exception as e:
+                    logger.warning(f"測試搜尋失敗: {str(e)[:200]}")
             
             results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, all_queries, selected_regions)
+            
+            logger.info(f"混和搜尋完成: 取得 {len(results)} 筆結果")
+            
+            if len(results) == 0:
+                logger.error(f"⚠️ 混和搜尋返回 0 筆結果！")
+                logger.error(f"   查詢: {query[:50]}")
+                logger.error(f"   擴展查詢: {[q.get('query', q) if isinstance(q, dict) else q for q in all_queries[:5]]}")
+                logger.error(f"   嚴格模式: {is_strict_mode}, 選定區域: {selected_regions}")
+                logger.error(f"   API Key 前綴: {api_key_tavily[:10] if api_key_tavily else 'None'}...")
             
             # 存入快取
             if use_cache and results:
@@ -2758,6 +3247,117 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         # === 立場平衡分析（方案 2.1）===
         stance_analysis = analyze_stance_balance(results)
         
+        # === Phase 2: 主動補足機制（迭代式平衡搜尋）===
+        MAX_GAP_FILL_ITERATIONS = 2  # 最多補充 2 次，控制 API 成本
+        gap_fill_iteration = 0
+        
+        while gap_fill_iteration < MAX_GAP_FILL_ITERATIONS:
+            # 檢查是否有缺口需要補足
+            missing_stances = stance_analysis.get("missing_stances", [])
+            balance_score = stance_analysis.get("balance_score", 1.0)
+            
+            # 如果平衡度已達標或無缺口，停止迭代
+            if balance_score >= 0.7 or not missing_stances:
+                if gap_fill_iteration > 0:
+                    logger.info(f"經過 {gap_fill_iteration} 次補充搜尋後達到平衡（平衡度: {balance_score:.2f}）")
+                break
+            
+            gap_fill_iteration += 1
+            logger.info(f"檢測到立場缺口: {missing_stances}，執行第 {gap_fill_iteration} 次補充搜尋（平衡度: {balance_score:.2f}）")
+            
+            # 生成針對缺失立場的補充關鍵字
+            gap_fill_keywords = []
+            for stance in missing_stances:
+                if stance == "BLUE" and google_api_key:
+                    # 生成藍營觀點關鍵字
+                    gap_fill_keywords.extend([
+                        f"{query} 國民黨 觀點",
+                        f"{query} 保守派 看法",
+                        f"{query} 藍營 立場"
+                    ])
+                elif stance == "GREEN" and google_api_key:
+                    # 生成綠營觀點關鍵字
+                    gap_fill_keywords.extend([
+                        f"{query} 民進黨 觀點",
+                        f"{query} 進步派 看法",
+                        f"{query} 綠營 立場"
+                    ])
+                elif stance == "OFFICIAL":
+                    # 生成官方觀點關鍵字
+                    gap_fill_keywords.extend([
+                        f"{query} 政府 官方 聲明",
+                        f"{query} 官方 新聞稿"
+                    ])
+            
+            # 如果沒有 google_api_key，使用降級策略
+            if not gap_fill_keywords:
+                gap_fill_keywords = [f"{query} {stance}" for stance in missing_stances]
+            
+            logger.info(f"生成補充關鍵字: {gap_fill_keywords[:3]}...")
+            
+            # 執行補充搜尋
+            gap_fill_results = []
+            for kw in gap_fill_keywords[:3]:  # 限制最多 3 個補充查詢
+                try:
+                    tavily_client = TavilyClient(api_key=api_key_tavily)
+                    resp = tavily_client.search(
+                        query=kw,
+                        max_results=5,
+                        search_depth='basic',
+                        topic='general'
+                    )
+                    if isinstance(resp, dict) and 'results' in resp:
+                        gap_fill_results.extend(resp.get('results', []))
+                except Exception as e:
+                    logger.warning(f"補充搜尋失敗: {str(e)[:100]}")
+            
+            # 去重並整合補充結果
+            existing_urls = {r.get('url') for r in results}
+            new_results = [r for r in gap_fill_results if r.get('url') and r.get('url') not in existing_urls]
+            
+            if new_results:
+                logger.info(f"補充搜尋獲得 {len(new_results)} 筆新結果")
+                results.extend(new_results)
+                # 重新分析立場平衡
+                stance_analysis = analyze_stance_balance(results)
+            else:
+                logger.warning(f"補充搜尋未獲得新結果，停止迭代")
+                break
+        
+        # === 關鍵修復：如果經過補充搜尋，重新生成 context_text ===
+        # 修復原因：gap-filling 迭代會新增結果到 results，但 context_text 在迭代前已生成
+        # 導致 context_text 和 results 不同步，造成分析錯誤和重複資料
+        if gap_fill_iteration > 0:
+            logger.info(f"經過 {gap_fill_iteration} 次補充搜尋，重新生成完整 context_text")
+            # 重新處理所有來源（包含補充的新來源）
+            context_lines = []
+            if len(results) > 10:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(results))) as executor:
+                    futures = {executor.submit(process_source_item, res, i): i for i, res in enumerate(results)}
+                    processed_results = [None] * len(results)
+                    
+                    for future in concurrent.futures.as_completed(futures):
+                        idx = futures[future]
+                        try:
+                            context_line, processed_res = future.result()
+                            context_lines.append(context_line)
+                            processed_results[idx] = processed_res
+                        except Exception as e:
+                            logger.warning(f"處理來源 {idx} 失敗: {str(e)}")
+                            processed_results[idx] = results[idx]
+                            context_lines.append(f"Source {idx+1}: [Date: Missing] [Title: {results[idx].get('title', 'No Title')}] (URL: {results[idx].get('url', '#')})\n")
+                    
+                    results = [r for r in processed_results if r is not None]
+            else:
+                for i, res in enumerate(results):
+                    context_line, processed_res = process_source_item(res, i)
+                    context_lines.append(context_line)
+                    results[i] = processed_res
+            
+            # 重新生成 context_text
+            context_text = "".join(context_lines)
+            logger.info(f"已重新生成 context_text，包含 {len(results)} 筆完整來源")
+        
         # === 共識分析（方案 3.3 - LLM 增強版）===
         # 分類來源為不同立場
         perspective_sources = {
@@ -2800,12 +3400,27 @@ def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
     if tavily_key:
         try:
             tavily = TavilyClient(api_key=tavily_key)
-            test_results = tavily.search(query="test", max_results=1)
+            # 使用更常見的查詢來測試
+            test_results = tavily.search(query="台灣新聞", max_results=1, search_depth="basic")
             if not test_results:
-                return False, "Tavily API Key 無效：無法取得搜尋結果"
+                return False, "Tavily API Key 無效：API 返回空結果"
+            results = test_results.get('results', [])
+            if len(results) == 0:
+                # 可能是配額問題或服務問題，但不一定是 Key 無效
+                logger.warning("Tavily API 測試搜尋返回 0 筆結果，可能是配額問題")
+                return False, "Tavily API 測試搜尋無結果（可能是配額用完或服務異常）"
         except Exception as e:
-            logger.error(f"Tavily API 驗證失敗: {str(e)}")
-            return False, f"Tavily API Key 無效：{str(e)[:100]}"
+            error_str = str(e)
+            logger.error(f"Tavily API 驗證失敗: {error_str}")
+            # 檢查常見錯誤類型
+            if "401" in error_str or "Unauthorized" in error_str or "Invalid API key" in error_str:
+                return False, "Tavily API Key 無效：認證失敗"
+            elif "429" in error_str or "rate limit" in error_str.lower():
+                return False, "Tavily API 配額已用完或超過速率限制"
+            elif "500" in error_str or "Internal Server Error" in error_str:
+                return False, "Tavily API 服務暫時不可用（伺服器錯誤）"
+            else:
+                return False, f"Tavily API 驗證失敗：{error_str[:100]}"
     else:
         return False, "未提供 Tavily API Key"
     
@@ -3104,7 +3719,11 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
     
     tone_instruction = """
     【⚠️ 語氣風格指令】：
-    1. **極度審慎**：嚴禁臆測。若證據不足，請直接標示「目前資訊不足」。
+    1. **極度審慎**：嚴禁臆測。若證據不足，請明確說明：
+       - 哪些部分資訊不足
+       - 需要哪些類型的資料才能進行完整分析
+       - 基於現有資料可以得出哪些有限但可靠的結論
+       - 避免僅簡單標示「目前資訊不足」，應提供具體的資訊缺口分析
     2. **去軍事化**：嚴禁使用軍事隱喻。
     3. **中性專業**：使用社會科學術語。
     """
@@ -3120,10 +3739,20 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         【分析方法論】：
         1. **ACH 競爭假設分析 (Analysis of Competing Hypotheses)**：列出至少 3 個可能的解釋/假設，評估每個假設的支持與反對證據。
+           - 如果來源不足，請說明需要哪些額外證據才能評估特定假設
         2. **邏輯謬誤偵測**：系統性掃描文本，識別滑坡謬誤、稻草人論證、訴諸情感等邏輯謬誤。
+           - 如果來源不足，請說明可能存在的邏輯謬誤類型，但標註「需要更多資料驗證」
         3. **證據強度分級**：依據來源類型（第一手來源、官方聲明、轉述、評論）評估證據力（強/中/弱）。
+           - 明確標註哪些結論基於強證據，哪些基於弱證據或推測
         4. **Entman 框架分析**：針對不同媒體陣營，分析問題定義、歸因分析、道德評價三個維度。
+           - 如果來源不足，請說明現有資料能分析哪些陣營，哪些陣營需要更多資料
         5. **聲量權重校正**：識別重複論述（複讀機現象），特別標註獨特的長尾觀點。
+        
+        【⚠️ 資訊不足處理原則】：
+        - 如果 Context 中來源數量少於 3 篇，請在報告開頭明確標註「⚠️ 資訊不足警告」
+        - 列出具體的資訊缺口（例如：缺少官方立場、缺少反方觀點、缺少數據資料等）
+        - 基於現有資料提供有限但可靠的結論，避免過度推測
+        - 建議需要哪些類型的資料才能進行更完整的分析
         
         【輸出格式 (嚴格遵守)】：
         ### [DATA_TIMELINE]
@@ -3252,6 +3881,17 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
     if not text.strip():
         logger.warning("parse_gemini_data: 收到空字符串，返回空數據")
         return data
+
+    # === 關鍵修復：處理轉義字符問題 ===
+    # 如果文本包含字面上的 \n 或 \"，說明它被雙重轉義了
+    if "\\n" in text:
+        logger.info("檢測到字面上的 \\n，執行反轉義處理")
+        # 處理常見的轉義序列
+        text = text.replace("\\n", "\n")
+        text = text.replace("\\\"", "\"")
+        text = text.replace("\\\'", "\'")
+        text = text.replace("\\t", "\t")
+        text = text.replace("\\r", "\r")
 
     # 先提取時間軸數據（從 [DATA_TIMELINE] 區塊）
     timeline_section = ""
@@ -3544,8 +4184,8 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
-        tavily_key = st.text_input("Tavily Key", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
+        google_key = st.text_input("Gemini Key", value="AIzaSyDZysXvy2isA_P9sjbUk5EYYYWBd_hHPv4", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
+        tavily_key = st.text_input("Tavily Key", value="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", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         
         st.markdown("---")
         st.markdown("**🔄 降級方案（可選）**")
@@ -3681,7 +4321,7 @@ with st.sidebar:
     with st.expander("1. 資訊檢索：混和權重與多層次查詢擴展 (Hybrid Weighted Search)", expanded=False):
         st.markdown("""
         **核心機制：混和權重搜尋**
-        - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 5 篇代表性文章，保障弱勢觀點入場。
+        - **分眾保底 (Safety Net)**：強制開啟專用通道，確保藍營、綠營、官方至少各抓取 8 篇代表性文章，保障弱勢觀點入場。
         - **熱度補完 (Volume Fill)**：剩餘名額開放給全網熱度排序，反映真實輿論聲量。
         
         **三軌搜尋架構 (Tri-Track via Dynamic Keywords)**
@@ -3708,9 +4348,17 @@ with st.sidebar:
         - **反方觀點查詢**：生成 3-4 個反對該議題的觀點/論述查詢
         - **中立學術分析查詢**：生成 3-4 個中立的學術研究、數據分析查詢
         
+        **主動補足機制 (Active Gap-Filling)**
+        當初次搜尋後檢測到立場缺口（balance_score < 0.7），系統會主動進行補充搜尋：
+        - 最多執行 2 次補充迭代
+        - 針對缺失立場（BLUE/GREEN/OFFICIAL）生成專用查詢
+        - 每次補充最多 3 個查詢，每個查詢 5 筆結果
+        - 動態調整直到達到平衡（balance_score ≥ 0.7）或達最大迭代次數
+        
         **搜尋深度優化**
-        - 系統始終使用 `advanced` 搜尋深度，確保深度挖掘高質量內容
-        - 不使用快速模式，專注於正確度而非速度
+        - 通用搜尋使用 `basic` 深度（平衡速度與品質）
+        - 保底搜尋使用 `advanced` 深度（確保最高相關性）
+        - topic 設為 `general`（包含新聞、社群媒體如 YouTube/PTT/Dcard）
         """)
         
     with st.expander("2. 來源公信力評分系統 (Source Credibility Scoring)", expanded=False):
@@ -4206,7 +4854,34 @@ if search_btn and query and google_key and tavily_key:
         # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
         use_cache_enabled = st.session_state.get('use_cache', True)
         
+        # === 測試搜尋功能（診斷用）===
+        # 先執行一個簡單的測試搜尋，驗證 API 是否正常
+        st.write("🧪 執行 API 連接測試...")
+        try:
+            test_tavily = TavilyClient(api_key=tavily_key)
+            test_response = test_tavily.search(query="台灣新聞", max_results=3, search_depth="basic")
+            if isinstance(test_response, dict) and 'results' in test_response:
+                test_count = len(test_response.get('results', []))
+                if test_count > 0:
+                    st.success(f"✅ API 測試成功：找到 {test_count} 筆測試結果")
+                    logger.info(f"API 測試成功：找到 {test_count} 筆結果")
+                else:
+                    st.warning(f"⚠️ API 測試：查詢 '台灣新聞' 返回 0 筆結果（API 可能正常，但查詢無結果）")
+                    logger.warning(f"API 測試：查詢 '台灣新聞' 返回 0 筆結果")
+            else:
+                st.error(f"❌ API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+                logger.error(f"API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+        except Exception as e:
+            error_str = str(e)
+            st.error(f"❌ API 測試失敗：{error_str[:200]}")
+            logger.error(f"API 測試失敗：{error_str[:300]}")
+            if "401" in error_str or "Unauthorized" in error_str:
+                st.error("認證失敗：請檢查 API Key 是否正確")
+            elif "429" in error_str:
+                st.error("配額問題：API 配額可能已用完")
+        
         # 執行搜尋（整合所有功能）
+        st.write("🔍 開始執行完整搜尋...")
         search_result = get_search_context(
             query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords, 
             use_cache=use_cache_enabled, google_api_key=google_key
@@ -4228,9 +4903,9 @@ if search_btn and query and google_key and tavily_key:
         st.session_state.sources = sources
         
         # 顯示立場平衡分析結果
-        if stance_analysis and stance_analysis.get('missing_stances'):
+        if stance_analysis and isinstance(stance_analysis, dict) and stance_analysis.get('missing_stances'):
             st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
-            if stance_analysis.get('recommendations'):
+            if isinstance(stance_analysis, dict) and stance_analysis.get('recommendations'):
                 with st.expander("🔍 查看平衡性建議", expanded=False):
                     for rec in stance_analysis['recommendations']:
                         st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
@@ -4248,7 +4923,7 @@ if search_btn and query and google_key and tavily_key:
             st.session_state.cofacts_rumors = []
         
         # 事實查核結果顯示（方案 1）
-        if fact_check_results:
+        if fact_check_results and isinstance(fact_check_results, dict):
             false_count = len(fact_check_results.get('false_claims', []))
             misleading_count = len(fact_check_results.get('misleading_claims', []))
             if false_count > 0 or misleading_count > 0:
@@ -4264,10 +4939,93 @@ if search_btn and query and google_key and tavily_key:
             st.session_state.volume_analysis = None
         
         # 共識分析結果顯示（方案 3.3）
-        if consensus_analysis:
+        if consensus_analysis and isinstance(consensus_analysis, dict):
             consensus_score = consensus_analysis.get('consensus_score', 0)
             consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
             st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
+        
+        # === 檢查來源數量是否足夠進行分析 ===
+        MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
+        sources_count = len(sources) if sources else 0
+        context_length = len(context_text) if context_text else 0
+        
+        if sources_count < MIN_SOURCES_REQUIRED:
+            # 檢查日誌以獲取更詳細的錯誤資訊
+            debug_info = ""
+            if sources_count == 0:
+                # 檢查查詢關鍵字是否可能太特定
+                query_words = query.split()
+                is_specific_query = len(query_words) >= 3
+                
+                debug_info = f"""
+                
+                **🔍 調試資訊：**
+                - 所有 Tavily API 搜尋任務都未返回結果
+                - API 測試：✅ 成功（說明 API 本身正常）
+                - 查詢關鍵字：`{query}` ({len(query_words)} 個關鍵字)
+                - 這可能表示：
+                  * 查詢關鍵字過於特定（{len(query_words)} 個關鍵字），在指定時間範圍內找不到相關資料
+                  * 網域過濾條件過於嚴格（已選定：{', '.join(selected_regions) if selected_regions else '無'}），排除了所有結果
+                  * 搜尋時間範圍過短（目前：{search_days} 天），相關內容可能不在這個時間範圍內
+                
+                **🧪 診斷步驟：**
+                1. 📅 **擴大搜尋時間範圍**：將「搜尋天數」改為 90 或 180 天
+                2. 🌐 **放寬區域限制**：暫時取消「僅限台灣來源」選項
+                3. 🔍 **簡化查詢關鍵字**：嘗試只使用主要關鍵字（例如：「周冠男」或「巨人傑」）
+                4. 📋 **檢查終端機日誌**：查看詳細的搜尋任務執行情況
+                """
+            
+            st.error(f"""
+            ❌ **搜尋結果不足，無法進行深度分析**
+            
+            **目前狀況：**
+            - 搜尋到 {sources_count} 篇來源（最少需要 {MIN_SOURCES_REQUIRED} 篇）
+            - Context 長度：{context_length} 字元
+            {debug_info}
+            
+            **可能原因：**
+            1. 查詢關鍵字過於特定或冷門，找不到足夠的相關資料
+            2. Tavily API 搜尋結果不足或 API 服務異常
+            3. 搜尋時間範圍設定過短（目前：{search_days} 天）
+            4. 網域圍籬過於嚴格（已選定區域：{', '.join(selected_regions) if selected_regions else '無'}）
+            5. Tavily API Key 無效、配額用完或服務暫時不可用
+            
+            **建議解決方案：**
+            1. 🔍 **調整查詢關鍵字**：使用更廣泛的關鍵字或同義詞
+            2. 📅 **擴大搜尋時間範圍**：增加「搜尋天數」設定（例如：改為 90 天或 180 天）
+            3. 🌐 **放寬區域限制**：取消「僅限台灣來源」選項，或選擇更多區域
+            4. 🔑 **檢查 API Key**：
+               - 在側邊欄點擊「驗證 API Key」按鈕
+               - 確認 Tavily API Key 是否有效且有足夠配額
+               - 檢查 [Tavily Dashboard](https://app.tavily.com/) 查看配額使用情況
+            5. 🔄 **重新搜尋**：點擊「開始分析」按鈕重新執行搜尋
+            6. 🧪 **測試搜尋**：嘗試使用簡單的關鍵字（如「台灣新聞」）測試 API 是否正常
+            
+            **注意：** 即使來源不足，系統仍可嘗試分析，但結果可能不夠完整。
+            """)
+            
+            # 詢問用戶是否仍要繼續分析
+            continue_anyway = st.checkbox("⚠️ 我了解風險，仍要繼續分析（不建議）", value=False)
+            if not continue_anyway:
+                status.update(label="❌ 分析已取消：來源不足", state="error", expanded=False)
+                st.stop()
+            else:
+                st.warning("⚠️ 您選擇繼續分析，但結果可能不夠完整或準確。")
+        
+        elif context_length < 500:
+            st.warning(f"""
+            ⚠️ **Context 內容過短**
+            
+            **目前狀況：**
+            - Context 長度：{context_length} 字元（建議至少 500 字元）
+            - 來源數量：{sources_count} 篇
+            
+            **可能原因：**
+            - 來源內容過短或無法取得完整內容
+            - 搜尋結果品質不佳
+            
+            **建議：** 嘗試調整搜尋參數或使用不同的查詢關鍵字。
+            """)
         
         st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
         
@@ -4680,6 +5438,11 @@ if st.session_state.result:
         # 清理報告文本中的過多破折號
         cleaned_report = report_text
         
+        # === 關鍵修復：處理轉義字符問題 ===
+        # 確保內容中的字面量 \n 已經完全消失
+        cleaned_report = cleaned_report.replace('\\n', '\n')
+        cleaned_report = cleaned_report.replace('\\"', '"')
+        
         # 移除連續超過 10 個破折號的行
         cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
         
@@ -4696,6 +5459,11 @@ if st.session_state.result:
             else:
                 cleaned_lines.append(line)
         cleaned_report = '\n'.join(cleaned_lines)
+        
+        # === 增強：確保表格前後有換行 ===
+        # 尋找表格行並在其前後添加空行，以助於 markdown 解析器識別
+        cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
+        cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
         
         formatted_text = format_citation_style(cleaned_report)
         html_content = markdown.markdown(formatted_text, extensions=['tables'])
