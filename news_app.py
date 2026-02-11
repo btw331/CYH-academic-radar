@@ -4184,8 +4184,8 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", value="AIzaSyDZysXvy2isA_P9sjbUk5EYYYWBd_hHPv4", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
-        tavily_key = st.text_input("Tavily Key", value="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", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
+        google_key = st.text_input("Gemini Key", value="", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
+        tavily_key = st.text_input("Tavily Key", value="", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         
         st.markdown("---")
         st.markdown("**🔄 降級方案（可選）**")
@@ -5517,3 +5517,4 @@ if st.session_state.sources:
         evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
         md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
     st.markdown(md_table)
+
