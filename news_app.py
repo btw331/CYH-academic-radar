@@ -25,6 +25,13 @@ from difflib import SequenceMatcher
 from collections import Counter
 import math
 
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
 import streamlit as st
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
@@ -2562,6 +2569,260 @@ def detect_coordinated_behavior(sources: List[Dict]) -> Dict[str, Any]:
         "duplicate_ratio": duplicate_ratio
     }
 
+
+def _jaccard_similarity_ngram(text_a: str, text_b: str, n: int = 3) -> float:
+    """
+    計算兩段文字的字元 n-gram Jaccard 相似度（無 sklearn 時的降級方案）。
+    Jaccard(A, B) = |A ∩ B| / |A ∪ B|
+    """
+    if not text_a.strip() or not text_b.strip():
+        return 0.0
+    def ngrams(s: str, k: int) -> Set[str]:
+        s = re.sub(r'\s+', ' ', s.strip())
+        return set(s[i:i + k] for i in range(max(0, len(s) - k + 1)))
+    a, b = ngrams(text_a, n), ngrams(text_b, n)
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union > 0 else 0.0
+
+
+def _build_similarity_matrix(texts: List[str], similarity_threshold: float) -> Tuple[Any, List[List[int]]]:
+    """
+    建立正文相似度矩陣並回傳聚類（連通分量）。
+    若 SKLEARN_AVAILABLE 則用 TfidfVectorizer + cosine_similarity，否則用 n-gram Jaccard。
+    聚類邏輯：相似度 >= threshold 的兩兩合併（Union-Find）。
+    """
+    n = len(texts)
+    if n == 0:
+        return None, []
+    # 空白或過短補齊，避免 vectorizer 報錯
+    texts = [t.strip() or " " for t in texts]
+
+    if SKLEARN_AVAILABLE:
+        try:
+            vectorizer = TfidfVectorizer(
+                ngram_range=(1, 2),
+                max_features=5000,
+                sublinear_tf=True,
+                min_df=1,
+                token_pattern=r'(?u)\b\w+\b'
+            )
+            X = vectorizer.fit_transform(texts)
+            sim = cosine_similarity(X)
+        except Exception as e:
+            logger.warning(f"TfidfVectorizer/cosine_similarity 失敗，降級為 n-gram Jaccard: {e}")
+            sim = None
+    else:
+        sim = None
+
+    if sim is None:
+        # 降級：n-gram Jaccard 兩兩計算（純 Python 二維 list）
+        sim = [[0.0] * n for _ in range(n)]
+        for i in range(n):
+            sim[i][i] = 1.0
+            for j in range(i + 1, n):
+                s = _jaccard_similarity_ngram(texts[i], texts[j], n=3)
+                sim[i][j] = sim[j][i] = s
+
+    # Union-Find 聚類
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        if parent[x] != x:
+            parent[x] = find(parent[x])
+        return parent[x]
+
+    def union(x: int, y: int) -> None:
+        px, py = find(x), find(y)
+        if px != py:
+            parent[px] = py
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if sim[i, j] >= similarity_threshold:
+                union(i, j)
+
+    # 依 root 分組
+    clusters_by_root: Dict[int, List[int]] = {}
+    for i in range(n):
+        r = find(i)
+        clusters_by_root.setdefault(r, []).append(i)
+    clusters = [sorted(indices) for indices in clusters_by_root.values() if len(indices) > 1]
+    return sim, clusters
+
+
+def detect_cross_domain_syndication(
+    sources: List[Dict],
+    similarity_threshold: float = 0.75
+) -> List[Dict]:
+    """
+    偵測跨網域聯播／複製內容（Syndication Network / PR 推送）。
+    
+    僅依標題相似度無法辨識「同一正文、多站發布」的協調行為。本函數以正文為準，
+    計算成對相似度後聚類，並**只保留橫跨至少 2 個不同網域**的群組，以區分：
+    - 單站內多篇重複（如 Yahoo 分頁）→ 不計入
+    - 多個獨立網站出現高度雷同正文 → 視為聯播網／協調推送
+    
+    數學與邏輯：
+    - 正文表示：TfidfVectorizer(ngram_range=(1,2)) 或字元 3-gram Jaccard（降級）
+    - 相似度：cosine_similarity 或 Jaccard
+    - 聚類：相似度 >= similarity_threshold 的節點做 Union-Find 連通分量
+    - 篩選：每個群組取 url 的 get_domain_name，僅保留 unique_domain_count >= 2 的群組
+    
+    Args:
+        sources: 來源列表，每項需含 'content'（可選 'title'），'url'
+        similarity_threshold: 正文相似度閾值，預設 0.75
+    
+    Returns:
+        List[Dict]: 每個元素為一跨網域群組，格式：
+        {
+            "source_indices": List[int],
+            "domains": List[str],
+            "unique_domain_count": int,
+            "mean_similarity": float,
+        }
+    """
+    if not sources:
+        return []
+
+    # 1. 萃取正文（標題 + 內容前段，避免過長）
+    texts: List[str] = []
+    for s in sources:
+        title = s.get("title") or ""
+        content = (s.get("content") or "")[:3000]
+        text = f"{title} {content}".strip()
+        texts.append(text)
+
+    try:
+        sim_matrix, clusters = _build_similarity_matrix(texts, similarity_threshold)
+    except Exception as e:
+        logger.warning(f"detect_cross_domain_syndication 相似度矩陣失敗: {e}")
+        return []
+
+    # 2. 只保留跨多網域的群組
+    result: List[Dict] = []
+    for indices in clusters:
+        domains = [get_domain_name(sources[i].get("url") or "") for i in indices]
+        unique_domains = [d for d in domains if d]
+        unique_domain_set = set(unique_domains)
+        if len(unique_domain_set) < 2:
+            continue
+
+        # 群組內平均相似度（上三角）
+        if sim_matrix is not None and len(indices) > 1:
+            total, cnt = 0.0, 0
+            for ii in range(len(indices)):
+                for jj in range(ii + 1, len(indices)):
+                    i_idx, j_idx = indices[ii], indices[jj]
+                    val = sim_matrix[i_idx][j_idx] if isinstance(sim_matrix, list) else sim_matrix[i_idx, j_idx]
+                    total += val
+                    cnt += 1
+            mean_sim = total / cnt if cnt else 0.0
+        else:
+            mean_sim = float(similarity_threshold)
+
+        result.append({
+            "source_indices": indices,
+            "domains": list(unique_domain_set),
+            "unique_domain_count": len(unique_domain_set),
+            "mean_similarity": round(mean_sim, 4),
+        })
+
+    return result
+
+
+def _parse_source_datetime(source: Dict) -> Optional[datetime]:
+    """從來源取得可解析的發布時間，支援 YYYY-MM-DD 或帶時間字串。"""
+    for key in ("published_date", "final_date", "date"):
+        raw = source.get(key)
+        if not raw or not isinstance(raw, str):
+            continue
+        raw = raw.strip()[:19]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(raw[:len(fmt)], fmt)
+            except ValueError:
+                continue
+        if len(raw) >= 10:
+            try:
+                return datetime.strptime(raw[:10], "%Y-%m-%d")
+            except ValueError:
+                pass
+    return None
+
+
+def track_narrative_diffusion(
+    syndication_clusters: List[Dict],
+    sources: List[Dict]
+) -> List[Dict]:
+    """
+    依跨網域聯播群組計算「敘事擴散速度」，標記高風險協調敘事。
+    
+    同一敘事在極短時間內出現在多個獨立網域，常與 Astroturfing / CIB 相關。
+    定義：velocity = unique_domain_count / time_span_hours，其中 time_span 為群組內
+    最早與最晚發布時間差（小時）；若無有效時間則以 time_span = 1 小時避免除零。
+    
+    高 velocity 表示「多站、短時」擴散，可標記為 High-Risk Coordinated Narrative。
+    
+    Args:
+        syndication_clusters: detect_cross_domain_syndication 的輸出
+        sources: 與當時分析對應的來源列表（依 index 對應）
+    
+    Returns:
+        List[Dict]: 每個群組一筆，新增欄位：
+        - time_span_hours: float
+        - velocity: float (domains per hour)
+        - risk_level: "high" | "medium" | "low"
+        - is_high_risk_coordinated: bool
+    """
+    if not syndication_clusters or not sources:
+        return []
+
+    # 高風險門檻：每小時 0.5 個以上網域 且 至少 2 網域
+    VELOCITY_HIGH = 0.5
+    VELOCITY_MEDIUM = 0.2
+
+    result: List[Dict] = []
+    for cluster in syndication_clusters:
+        indices = cluster.get("source_indices", [])
+        unique_domain_count = cluster.get("unique_domain_count", 0)
+        out = dict(cluster)
+
+        datetimes: List[datetime] = []
+        for i in indices:
+            if 0 <= i < len(sources):
+                dt = _parse_source_datetime(sources[i])
+                if dt is not None:
+                    datetimes.append(dt)
+
+        if len(datetimes) < 2:
+            time_span_hours = 1.0
+        else:
+            min_dt = min(datetimes)
+            max_dt = max(datetimes)
+            time_span_hours = max(0.01, (max_dt - min_dt).total_seconds() / 3600.0)
+
+        velocity = unique_domain_count / time_span_hours
+        out["time_span_hours"] = round(time_span_hours, 4)
+        out["velocity"] = round(velocity, 4)
+
+        if velocity >= VELOCITY_HIGH and unique_domain_count >= 2:
+            risk_level = "high"
+            is_high_risk = True
+        elif velocity >= VELOCITY_MEDIUM and unique_domain_count >= 2:
+            risk_level = "medium"
+            is_high_risk = False
+        else:
+            risk_level = "low"
+            is_high_risk = False
+
+        out["risk_level"] = risk_level
+        out["is_high_risk_coordinated"] = is_high_risk
+        result.append(out)
+
+    return result
+
+
 def analyze_volume_weight(sources: List[Dict], progress_callback=None) -> Dict[str, Any]:
     """
     聲量權重校正：識別重複論述和獨特觀點（優化版）
@@ -3597,12 +3858,37 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         }
         # 傳遞 api_key 和 query 以啟用 LLM 分析
         consensus_analysis = analyze_consensus(perspective_sources, api_key=google_api_key, query=query)
+        
+        # === Phase 2：跨網域聯播與敘事擴散偵測（CIB / 洗稿）===
+        manipulation_signals_text = ""
+        try:
+            syndication_clusters = detect_cross_domain_syndication(results)
+            diffusion_metrics = track_narrative_diffusion(syndication_clusters, results)
+            if diffusion_metrics:
+                parts = []
+                for i, m in enumerate(diffusion_metrics, 1):
+                    n_articles = len(m.get("source_indices", []))
+                    n_domains = m.get("unique_domain_count", 0)
+                    velocity = m.get("velocity", 0)
+                    risk = m.get("risk_level", "low")
+                    risk_label = "高" if risk == "high" else "中" if risk == "medium" else "低"
+                    flag = "🚨" if m.get("is_high_risk_coordinated") else "⚠️"
+                    parts.append(
+                        f"{flag} 群組 {i}：{n_articles} 篇高度相似文章，橫跨 {n_domains} 個不同網域，"
+                        f"擴散速度 {velocity:.2f} 網域/小時。風險等級：{risk_label}。"
+                    )
+                manipulation_signals_text = "【MANIPULATION_SIGNALS】\n" + "偵測到跨網域洗稿網路：\n" + "\n".join(parts)
+            else:
+                manipulation_signals_text = "【MANIPULATION_SIGNALS】\n本輪未偵測到跨網域聯播群組（無高風險協調敘事信號）。"
+        except Exception as e:
+            logger.warning(f"跨網域聯播/擴散偵測失敗，不注入操作信號: {e}")
+            manipulation_signals_text = "【MANIPULATION_SIGNALS】\n（本輪操作信號因技術原因未產生，請依既有來源分析。）"
             
-        return context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis
+        return context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text
         
     except Exception as e:
         logger.error(f"搜尋上下文獲取失敗: {str(e)}")
-        return f"Error: {str(e)}", [], "Error", False, None, None, None
+        return f"Error: {str(e)}", [], "Error", False, None, None, None, ""
 
 def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
     """
@@ -3916,7 +4202,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 重視正確度：不使用快速模式，保持完整 context
@@ -3949,9 +4235,10 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            - 如果來源不足，請說明可能存在的邏輯謬誤類型，但標註「需要更多資料驗證」
         3. **證據強度分級**：依據來源類型（第一手來源、官方聲明、轉述、評論）評估證據力（強/中/弱）。
            - 明確標註哪些結論基於強證據，哪些基於弱證據或推測
-        4. **Entman 框架分析**：針對不同媒體陣營，分析問題定義、歸因分析、道德評價三個維度。
+        4. **Entman 框架分析**：針對主要利益相關陣營 (如：親美/親中/在地保守/國際自由派 等，請依議題動態判斷)，分析問題定義、歸因分析、道德評價三個維度。
            - 如果來源不足，請說明現有資料能分析哪些陣營，哪些陣營需要更多資料
         5. **聲量權重校正**：識別重複論述（複讀機現象），特別標註獨特的長尾觀點。
+        6. **資訊操作與洗稿偵測 (CIB Detection)**：分析下方 [MANIPULATION_SIGNALS]。若偵測到高風險協調行為，請指出被推送的敘事與涉及的網域。
         
         【⚠️ 資訊不足處理原則】：
         - 如果 Context 中來源數量少於 3 篇，請在報告開頭明確標註「⚠️ 資訊不足警告」
@@ -4000,7 +4287,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
              | 📋 謠言 | - | "謠言內容摘要" | NOT_ARTICLE / RUMOR | Cofacts 查核 |
            
         3. **⚖️ 媒體框架光譜分析 (Entman Framing Analysis)**
-           請針對主要媒體陣營，進行 Entman 框架的三維度分析：
+           請針對主要利益相關陣營 (如：親美/親中/在地保守/國際自由派 等，依議題動態判斷)，進行 Entman 框架的三維度分析：
            
            **框架對照表**：
            | 媒體陣營 | 問題定義 | 歸因分析 | 道德評價 | 典型用語範例 |
@@ -4023,6 +4310,11 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            
         6. **🤔 結構性反思 (Structural Reflection)**
            深層結構問題與系統性思考
+           
+        7. **🛡️ 敘事操縱與資訊操作風險 (Narrative Manipulation Analysis)**
+           - **協同行為特徵**：說明是否有跨網域洗稿、異常擴散速度（請參照 [MANIPULATION_SIGNALS]）。
+           - **語義旋轉 (Semantic Spin)**：分析是否有特定陣營刻意扭曲同一事實。
+           - **風險評估**：高/中/低，並說明理由。
         """
         
     elif mode == "DEEP_SCENARIO":
@@ -4053,6 +4345,11 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         """
     else:
         system_prompt = f"請針對 {query} 進行分析。"
+
+    # 將操作信號注入 FUSION 模式提示（替換 [MANIPULATION_SIGNALS]）
+    if mode == "FUSION" and "[MANIPULATION_SIGNALS]" in system_prompt:
+        replacement = (manipulation_signals or "").strip() or "（本輪未提供操作信號資料。）"
+        system_prompt = system_prompt.replace("[MANIPULATION_SIGNALS]", replacement)
 
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
 
@@ -5103,14 +5400,18 @@ if search_btn and query and google_key and tavily_key:
             use_cache=use_cache_enabled, google_api_key=google_key
         )
         
-        if len(search_result) == 7:
+        if len(search_result) >= 8:
+            context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text = search_result[:8]
+        elif len(search_result) == 7:
             context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
+            manipulation_signals_text = ""
         else:
             # 向後相容
             context_text, sources, actual_query, is_strict_tw = search_result[:4]
             stance_analysis = None
             fact_check_results = None
             consensus_analysis = None
+            manipulation_signals_text = ""
         
         st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
         if is_strict_tw:
@@ -5254,9 +5555,10 @@ if search_btn and query and google_key and tavily_key:
         
         try:
             raw_report = run_strategic_analysis(
-                query, analysis_context, model_name, google_key, 
+                query, analysis_context, model_name, google_key,
                 mode=mode_code, fast_mode=False,
-                openai_api_key=openai_api_key, openai_model=openai_model
+                openai_api_key=openai_api_key, openai_model=openai_model,
+                manipulation_signals=manipulation_signals_text
             )
         except ChatGoogleGenerativeAIError as e:
             # Gemini API 特定錯誤（通常是配額相關）
@@ -5316,9 +5618,10 @@ if search_btn and query and google_key and tavily_key:
                         logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
                         # 直接使用 OpenAI 完成分析
                         raw_report = run_strategic_analysis(
-                            query, analysis_context, model_name, google_key, 
+                            query, analysis_context, model_name, google_key,
                             mode=mode_code, fast_mode=False,
-                            openai_api_key=openai_api_key, openai_model=openai_model
+                            openai_api_key=openai_api_key, openai_model=openai_model,
+                            manipulation_signals=manipulation_signals_text
                         )
                         # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
                         status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
