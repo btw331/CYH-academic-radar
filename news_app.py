@@ -175,6 +175,51 @@ REQUIRED_SECTIONS_SCENARIO = [
     "綜合發展與因應建議"
 ]
 
+
+def _extract_text_from_llm_content(content: Any) -> str:
+    """
+    從 LLM 回應的 content 正確萃取純文字，過濾 signature 等非文字元數據。
+    
+    Gemini API 有時回傳 content 為 list，其中可能包含：
+    - str：純文字內容
+    - dict 含 'text' 鍵：實際文字
+    - dict 僅含 'signature' 鍵：元數據，不應顯示給使用者
+    
+    Args:
+        content: LLM 回應的 content（可能為 str、list、或 dict）
+    
+    Returns:
+        str: 萃取後的純文字字串
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item:
+                    parts.append(str(item["text"]))
+                # 跳過僅含 signature 或其他元數據的 dict，不加入輸出
+            else:
+                # 其他類型（如 AIMessageChunk）：嘗試取得字串內容
+                if hasattr(item, "content") and item.content:
+                    parts.append(_extract_text_from_llm_content(item.content))
+                else:
+                    text = str(item)
+                    # 排除明顯為 metadata 的輸出（如 {'signature': '...'}）
+                    if "'signature'" in text and text.startswith("{"):
+                        continue
+                    parts.append(text)
+        return "".join(parts)
+    if isinstance(content, dict):
+        return str(content.get("text", ""))
+    return str(content)
+
+
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
@@ -945,7 +990,7 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
         第二部分：台積電海外投資, 半導體產業外移, 科技供應鏈重組, 美國製造業回流, 晶圓廠建置, 地緣政治影響
         """
         
-        combined_resp = llm.invoke(combined_prompt).content
+        combined_resp = _extract_text_from_llm_content(llm.invoke(combined_prompt).content)
         
         # 解析第一部分（基礎三軌）
         part1_match = re.search(r'第一部分[：:]\s*(.+?)(?=第二部分|$)', combined_resp, re.DOTALL)
@@ -1076,12 +1121,10 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
     "neutral": ["查詢1", "查詢2", "查詢3", "查詢4"]
 }}
         """
-        resp = llm.invoke(prompt).content
+        resp = _extract_text_from_llm_content(llm.invoke(prompt).content)
         
-        # 處理 resp 可能是 list 的情況（Gemini API 有時返回 list）
-        if isinstance(resp, list):
-            resp = "".join([str(item) for item in resp])
-        elif not isinstance(resp, str):
+        # 確保 resp 為字串
+        if not isinstance(resp, str):
             resp = str(resp)
         
         # 嘗試解析 JSON
@@ -1252,7 +1295,7 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str]
 }}
 """
             
-            response = llm.invoke(analysis_prompt).content
+            response = _extract_text_from_llm_content(llm.invoke(analysis_prompt).content)
             
             # 嘗試解析 JSON
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
@@ -2006,7 +2049,7 @@ def extract_claims_from_sources(sources: List[Dict], api_key: str) -> List[Dict[
             """
             
             try:
-                resp = llm.invoke(prompt).content
+                resp = _extract_text_from_llm_content(llm.invoke(prompt).content)
                 # 嘗試解析 JSON
                 json_match = re.search(r'\[.*\]', resp, re.DOTALL)
                 if json_match:
@@ -3456,13 +3499,7 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
         response = chain.invoke({"input": user_text})
-        result = response.content
-        
-        # 處理 response.content 可能是 list 的情況
-        if isinstance(result, list):
-            result = "".join([str(item) for item in result])
-        elif not isinstance(result, str):
-            result = str(result)
+        result = _extract_text_from_llm_content(response.content)
         
         logger.info(f"成功使用 OpenAI {model_name} 生成回應")
         return result
@@ -3494,13 +3531,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
         response = chain.invoke({"input": user_text})
-        result = response.content
-        
-        # 處理 response.content 可能是 list 的情況（Gemini API 有時返回 list）
-        if isinstance(result, list):
-            result = "".join([str(item) for item in result])
-        elif not isinstance(result, str):
-            result = str(result)
+        result = _extract_text_from_llm_content(response.content)
         
         return result
     except Exception as e:
@@ -3519,13 +3550,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                     chain = prompt | llm
                     response = chain.invoke({"input": user_text})
-                    result = response.content
-                    
-                    # 處理 response.content 可能是 list 的情況
-                    if isinstance(result, list):
-                        result = "".join([str(item) for item in result])
-                    elif not isinstance(result, str):
-                        result = str(result)
+                    result = _extract_text_from_llm_content(response.content)
                     
                     logger.info(f"成功使用 {fallback_model}")
                     return result
@@ -3584,13 +3609,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                         chain = prompt | llm
                         response = chain.invoke({"input": user_text})
-                        result = response.content
-                        
-                        # 處理 response.content 可能是 list 的情況
-                        if isinstance(result, list):
-                            result = "".join([str(item) for item in result])
-                        elif not isinstance(result, str):
-                            result = str(result)
+                        result = _extract_text_from_llm_content(response.content)
                         
                         logger.info(f"成功降級到 {fallback_model}")
                         return result
@@ -3868,9 +3887,9 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
     if not isinstance(text, str):
         logger.warning(f"parse_gemini_data: 收到非字符串類型 ({type(text).__name__})，嘗試轉換")
         try:
-            # 處理 list 類型（Gemini API 有時返回 list）
+            # 處理 list 類型（Gemini API 有時返回 list，可能含 signature 等元數據）
             if isinstance(text, list):
-                text = "".join([str(item) for item in text])
+                text = _extract_text_from_llm_content(text)
             else:
                 text = str(text)
         except Exception as e:
@@ -5517,4 +5536,3 @@ if st.session_state.sources:
         evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
         md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
     st.markdown(md_table)
-
