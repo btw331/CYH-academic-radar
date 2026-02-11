@@ -2823,6 +2823,116 @@ def track_narrative_diffusion(
     return result
 
 
+def detect_semantic_spin(
+    syndication_clusters: List[Dict],
+    sources: List[Dict],
+    api_key: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    語義旋轉偵測：對比聯播群組中的「主推敘事」(Source A) 與一篇非群組來源 (Source B)，
+    以 LLM 辨識同一事實下的對立框架 (Spin)。若 api_key 缺失或為 None 則回傳 None。
+    
+    Args:
+        syndication_clusters: detect_cross_domain_syndication 的輸出（每項含 source_indices）
+        sources: 與當時分析對應的來源列表（依 index 對應）
+        api_key: Google Gemini API Key（無則跳過，回傳 None）
+    
+    Returns:
+        Optional[Dict]: 成功時為 {"shared_fact", "spin_a", "spin_b", "spin_score"}；失敗或無群組時為 None
+    """
+    if not syndication_clusters or not sources or not api_key:
+        return None
+
+    # 1. Source A (The Narrative Push): 最大群組的第一個有效來源
+    largest = max(syndication_clusters, key=lambda c: len(c.get("source_indices", [])))
+    cluster_indices = set(largest.get("source_indices", []))
+    if not cluster_indices:
+        return None
+
+    idx_a = largest["source_indices"][0]
+    if idx_a < 0 or idx_a >= len(sources):
+        return None
+    source_a = sources[idx_a]
+    cat_a = source_a.get("source_category") or "OTHER"
+
+    # 2. Source B (The Counter-Narrative): 不在群組內，優先不同 source_category
+    preferred_other = (
+        {"GREEN", "INTL", "CHINA", "OFFICIAL", "NEUTRAL", "INDIE"} if cat_a == "BLUE"
+        else {"BLUE", "INTL", "CHINA", "OFFICIAL", "NEUTRAL", "INDIE"} if cat_a == "GREEN"
+        else {"BLUE", "GREEN", "INTL", "CHINA"}
+    )
+    idx_b = None
+    for i in range(len(sources)):
+        if i in cluster_indices:
+            continue
+        cat_b = (sources[i].get("source_category") or "OTHER")
+        if cat_b in preferred_other:
+            idx_b = i
+            break
+    if idx_b is None:
+        for i in range(len(sources)):
+            if i not in cluster_indices:
+                idx_b = i
+                break
+    if idx_b is None:
+        return None
+
+    source_b = sources[idx_b]
+    title_a = (source_a.get("title") or "")[:300]
+    title_b = (source_b.get("title") or "")[:300]
+    content_a = (source_a.get("content") or "")[:500]
+    content_b = (source_b.get("content") or "")[:500]
+
+    prompt_instruction = (
+        'Compare these two news excerpts. '
+        '1. Identify the shared objective fact. '
+        '2. Identify the \'Spin\' or \'Framing\' used by each side (e.g., emotional adjectives, omitted context, shifting blame). '
+        '3. Provide a Spin Score (0.0 to 1.0, where >0.6 means high manipulation). '
+        'Output JSON strictly: {"shared_fact": "...", "spin_a": "...", "spin_b": "...", "spin_score": 0.8}'
+    )
+    prompt = f"""{prompt_instruction}
+
+**Source A (Narrative Push):**
+Title: {title_a}
+Excerpt: {content_a}
+
+**Source B (Counter-Narrative):**
+Title: {title_b}
+Excerpt: {content_b}"""
+
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2)
+        raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
+        if not raw:
+            return None
+        obj = {}
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            start = raw.find("{")
+            if start >= 0:
+                depth = 0
+                for i, c in enumerate(raw[start:], start):
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                obj = json.loads(raw[start : i + 1])
+                            except json.JSONDecodeError:
+                                pass
+                            break
+        if isinstance(obj, dict) and "shared_fact" in obj and "spin_score" in obj:
+            score = obj.get("spin_score")
+            if isinstance(score, (int, float)):
+                obj["spin_score"] = float(score)
+            return obj
+    except Exception as e:
+        logger.warning(f"detect_semantic_spin LLM 失敗: {e}")
+    return None
+
+
 def analyze_volume_weight(sources: List[Dict], progress_callback=None) -> Dict[str, Any]:
     """
     聲量權重校正：識別重複論述和獨特觀點（優化版）
@@ -3408,82 +3518,200 @@ def summarize_content(content: str, max_length: int = 800) -> str:
     
     return summary
 
-def analyze_stance_balance(sources: List[Dict]) -> Dict[str, Any]:
+
+def determine_issue_category(query: str, api_key: Optional[str] = None) -> Dict[str, Any]:
     """
-    系統化立場分析框架（方案 2.1）
+    在搜尋前將查詢分類為議題類型，供後續立場平衡與 gap-fill 動態調整。
     
-    實作立場檢測和平衡評估：
-    1. 立場檢測：來源層 + 內容層
-    2. 平衡評估：自動識別缺失立場
-    3. Entman 框架：問題定義、歸因分析、道德評價
+    理論基礎：台灣國內議題適用藍/綠/官方平衡；國際議題應檢視地理/地緣多元性（INTL、CHINA 等）；
+    兩岸議題需同時涵蓋台灣陣營 + 中國視角 + 國際視角。
+    
+    Args:
+        query: 使用者查詢字串
+        api_key: Google Gemini API Key（可選；無則僅用 regex  fallback）
     
     Returns:
-        Dict: 包含立場分佈、平衡度評估、建議補充來源
+        Dict: {"issue_type": "TAIWAN_DOMESTIC"|"CROSS_STRAIT"|"INTERNATIONAL", "key_actors": ["US", "China", ...]}
     """
-    stance_analysis = {
+    out: Dict[str, Any] = {"issue_type": "TAIWAN_DOMESTIC", "key_actors": []}
+    q = (query or "").strip()
+    if not q:
+        return out
+
+    # --- LLM 分類（僅在有 api_key 時呼叫）---
+    if api_key:
+        try:
+            system_prompt = "Classify the query into one of three issue_types: 'TAIWAN_DOMESTIC', 'CROSS_STRAIT', or 'INTERNATIONAL'. Also extract key_actors. Output ONLY valid JSON: {\"issue_type\": \"...\", \"key_actors\": [\"...\"]}."
+            prompt = f"{system_prompt}\n\nQuery: {q[:300]}"
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.0)
+            raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
+            if raw:
+                obj: Dict[str, Any] = {}
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    start = raw.find("{")
+                    if start >= 0:
+                        depth = 0
+                        for i, c in enumerate(raw[start:], start):
+                            if c == "{":
+                                depth += 1
+                            elif c == "}":
+                                depth -= 1
+                                if depth == 0:
+                                    try:
+                                        obj = json.loads(raw[start : i + 1])
+                                    except json.JSONDecodeError:
+                                        pass
+                                    break
+                if isinstance(obj, dict):
+                    it = (obj.get("issue_type") or "").strip().upper()
+                    if it in ("TAIWAN_DOMESTIC", "CROSS_STRAIT", "INTERNATIONAL"):
+                        out["issue_type"] = it
+                    actors = obj.get("key_actors")
+                    if isinstance(actors, list):
+                        out["key_actors"] = [str(a).strip() for a in actors if a]
+        except Exception as e:
+            logger.debug(f"determine_issue_category LLM 失敗，改用 regex: {e}")
+
+    # --- Regex/Keyword fallback（無 API 或 LLM 失敗時）---
+    if out["issue_type"] == "TAIWAN_DOMESTIC":
+        q_lower = q.lower()
+        # INTERNATIONAL: us election, ukraine, russia, nato, 烏克蘭, 俄羅斯, 北約, 國際經濟, 中東, israel, gaza
+        intl_keywords = [
+            "us election", "ukraine", "russia", "nato", "烏克蘭", "俄羅斯", "北約",
+            "國際經濟", "中東", "israel", "gaza"
+        ]
+        for kw in intl_keywords:
+            if kw in q_lower:
+                out["issue_type"] = "INTERNATIONAL"
+                break
+        # CROSS_STRAIT: 兩岸, 台海, 美中, ecfa, 共機, 武統, 北京, 中國觀點
+        if out["issue_type"] == "TAIWAN_DOMESTIC":
+            cross_strait_keywords = ["兩岸", "台海", "美中", "ecfa", "共機", "武統", "北京", "中國觀點"]
+            if any(kw in q_lower for kw in cross_strait_keywords):
+                out["issue_type"] = "CROSS_STRAIT"
+            else:
+                # TAIWAN_DOMESTIC (default): 選舉, 立委, 藍綠, 民進黨, 國民黨, 柯文哲, 侯友宜, 賴清德
+                domestic_keywords = ["選舉", "立委", "藍綠", "民進黨", "國民黨", "柯文哲", "侯友宜", "賴清德"]
+                if any(kw in q_lower for kw in domestic_keywords):
+                    out["issue_type"] = "TAIWAN_DOMESTIC"
+
+    return out
+
+
+def analyze_stance_balance(sources: List[Dict], issue_type: str = "TAIWAN_DOMESTIC") -> Dict[str, Any]:
+    """
+    系統化立場分析框架（方案 2.1 + Phase 3 動態議題類型）。
+    
+    依 issue_type 動態決定平衡標準：
+    - TAIWAN_DOMESTIC：沿用藍/綠/官方門檻與缺失檢測。
+    - INTERNATIONAL：檢視地理/地緣多元性（INTL、CHINA、NEUTRAL）；若僅有台灣媒體則缺失 INTL_PERSPECTIVE。
+    - CROSS_STRAIT：要求藍/綠/官方 + 中國視角 + 國際視角之混合。
+    
+    Returns:
+        Dict: 包含立場分佈、平衡度評估、建議補充來源（missing_stances 依議題類型語意化）
+    """
+    stance_analysis: Dict[str, Any] = {
         "camp_distribution": {},
         "balance_score": 0.0,
         "missing_stances": [],
         "recommendations": []
     }
-    
-    # === 層次一：立場分佈統計 ===
+    if not sources:
+        return stance_analysis
+
     camp_counts = Counter()
     for source in sources:
-        category = source.get('source_category', 'OTHER')
+        category = source.get("source_category", "OTHER")
         camp_counts[category] += 1
-    
     stance_analysis["camp_distribution"] = dict(camp_counts)
-    
-    # === 層次二：平衡度評估 ===
+
+    it = (issue_type or "TAIWAN_DOMESTIC").strip().upper()
+    if it not in ("TAIWAN_DOMESTIC", "CROSS_STRAIT", "INTERNATIONAL"):
+        it = "TAIWAN_DOMESTIC"
+
     taiwan_camps = ["BLUE", "GREEN", "OFFICIAL"]
-    taiwan_counts = {camp: camp_counts.get(camp, 0) for camp in taiwan_camps}
-    
-    if sum(taiwan_counts.values()) > 0:
-        # 計算藍綠平衡度（理想狀態是接近 1:1）
-        blue_count = taiwan_counts.get("BLUE", 0)
-        green_count = taiwan_counts.get("GREEN", 0)
-        official_count = taiwan_counts.get("OFFICIAL", 0)
-        
-        total_political = blue_count + green_count
-        if total_political > 0:
-            blue_ratio = blue_count / total_political
-            green_ratio = green_count / total_political
-            balance_ratio = min(blue_ratio, green_ratio) / max(blue_ratio, green_ratio) if max(blue_ratio, green_ratio) > 0 else 0
-            
-            # 平衡度分數（0-1）
-            balance_score = balance_ratio * 0.6 + (1 if official_count > 0 else 0) * 0.4
-            stance_analysis["balance_score"] = balance_score
-            
-            # === 層次三：缺口檢測 ===
-            min_threshold = max(2, int(sum(taiwan_counts.values()) * 0.15))  # 至少 15% 或 2 篇
-            
+    taiwan_counts = {c: camp_counts.get(c, 0) for c in taiwan_camps}
+    intl_count = camp_counts.get("INTL", 0)
+    china_count = camp_counts.get("CHINA", 0)
+    taiwan_total = sum(taiwan_counts.values())
+
+    if it == "TAIWAN_DOMESTIC":
+        # 原有邏輯：藍綠官方平衡
+        if taiwan_total > 0:
+            blue_count = taiwan_counts.get("BLUE", 0)
+            green_count = taiwan_counts.get("GREEN", 0)
+            official_count = taiwan_counts.get("OFFICIAL", 0)
+            total_political = blue_count + green_count
+            if total_political > 0:
+                blue_ratio = blue_count / total_political
+                green_ratio = green_count / total_political
+                balance_ratio = min(blue_ratio, green_ratio) / max(blue_ratio, green_ratio) if max(blue_ratio, green_ratio) > 0 else 0
+                stance_analysis["balance_score"] = balance_ratio * 0.6 + (1 if official_count > 0 else 0) * 0.4
+            else:
+                stance_analysis["balance_score"] = 0.4 if official_count > 0 else 0.2
+            min_threshold = max(2, int(taiwan_total * 0.15))
             if blue_count < min_threshold and green_count >= blue_count * 2:
                 stance_analysis["missing_stances"].append("BLUE")
-                stance_analysis["recommendations"].append({
-                    "type": "BLUE",
-                    "reason": f"藍營觀點不足（僅 {blue_count} 篇，綠營 {green_count} 篇）",
-                    "priority": "高"
-                })
-            
+                stance_analysis["recommendations"].append({"type": "BLUE", "reason": f"藍營觀點不足（僅 {blue_count} 篇，綠營 {green_count} 篇）", "priority": "高"})
             if green_count < min_threshold and blue_count >= green_count * 2:
                 stance_analysis["missing_stances"].append("GREEN")
-                stance_analysis["recommendations"].append({
-                    "type": "GREEN",
-                    "reason": f"綠營觀點不足（僅 {green_count} 篇，藍營 {blue_count} 篇）",
-                    "priority": "高"
-                })
-            
+                stance_analysis["recommendations"].append({"type": "GREEN", "reason": f"綠營觀點不足（僅 {green_count} 篇，藍營 {blue_count} 篇）", "priority": "高"})
             if official_count == 0 and len(sources) > 5:
                 stance_analysis["missing_stances"].append("OFFICIAL")
-                stance_analysis["recommendations"].append({
-                    "type": "OFFICIAL",
-                    "reason": "缺少官方/中立觀點",
-                    "priority": "中"
-                })
+                stance_analysis["recommendations"].append({"type": "OFFICIAL", "reason": "缺少官方/中立觀點", "priority": "中"})
+        else:
+            stance_analysis["balance_score"] = 0.5
+
+    elif it == "INTERNATIONAL":
+        total = len(sources)
+        tw_media_count = taiwan_counts.get("BLUE", 0) + taiwan_counts.get("GREEN", 0) + taiwan_counts.get("OFFICIAL", 0) + camp_counts.get("NEUTRAL", 0)
+        tw_media_ratio = tw_media_count / total if total > 0 else 0.0
+        if total > 0:
+            if tw_media_ratio >= 0.8 and intl_count == 0:
+                stance_analysis["missing_stances"].append("INTL_PERSPECTIVE")
+                stance_analysis["recommendations"].append({"type": "INTL_PERSPECTIVE", "reason": "國際議題但多為台灣媒體，缺少國際視角", "priority": "高"})
+            # balance_score 依 INTL 來源是否存在
+            stance_analysis["balance_score"] = 0.7 if intl_count > 0 else 0.3
+        else:
+            stance_analysis["balance_score"] = 0.5
+
     else:
-        stance_analysis["balance_score"] = 0.5  # 非台灣議題，平衡度設為中等
-    
+        # CROSS_STRAIT：藍/綠/官方 + CHINA + INTL
+        score = 0.0
+        if taiwan_total > 0:
+            blue_count = taiwan_counts.get("BLUE", 0)
+            green_count = taiwan_counts.get("GREEN", 0)
+            official_count = taiwan_counts.get("OFFICIAL", 0)
+            total_political = blue_count + green_count
+            if total_political > 0:
+                balance_ratio = min(blue_count, green_count) / max(blue_count, green_count) if max(blue_count, green_count) > 0 else 0
+                score += balance_ratio * 0.3
+            if official_count > 0:
+                score += 0.2
+        if china_count > 0:
+            score += 0.25
+        else:
+            stance_analysis["missing_stances"].append("CHINA")
+            stance_analysis["recommendations"].append({"type": "CHINA", "reason": "兩岸議題缺少中國/北京視角", "priority": "高"})
+        if intl_count > 0:
+            score += 0.25
+        else:
+            stance_analysis["missing_stances"].append("INTL_PERSPECTIVE")
+            stance_analysis["recommendations"].append({"type": "INTL_PERSPECTIVE", "reason": "兩岸議題缺少國際第三方視角", "priority": "中"})
+        # 藍綠缺口（兩岸議題仍建議台灣內部平衡）
+        min_threshold = max(2, int(taiwan_total * 0.15))
+        blue_count = taiwan_counts.get("BLUE", 0)
+        green_count = taiwan_counts.get("GREEN", 0)
+        if blue_count < min_threshold and green_count >= blue_count * 2:
+            stance_analysis["missing_stances"].append("BLUE")
+            stance_analysis["recommendations"].append({"type": "BLUE", "reason": f"藍營觀點不足（僅 {blue_count} 篇）", "priority": "中"})
+        if green_count < min_threshold and blue_count >= green_count * 2:
+            stance_analysis["missing_stances"].append("GREEN")
+            stance_analysis["recommendations"].append({"type": "GREEN", "reason": f"綠營觀點不足（僅 {green_count} 篇）", "priority": "中"})
+        stance_analysis["balance_score"] = min(1.0, score + 0.2)
+
     return stance_analysis
 
 def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
@@ -3579,6 +3807,10 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         Tuple: (context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis)
     """
     try:
+        # === Phase 3：議題類型判定（用於後續立場平衡與 gap-fill 動態調整）===
+        issue_category = determine_issue_category(query, google_api_key)
+        current_issue_type = issue_category.get("issue_type", "TAIWAN_DOMESTIC")
+
         active_blacklist = NOISE_BLACKLIST
 
         # 只包含 Tavily API 支持的參數
@@ -3734,8 +3966,8 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
         fact_check_results = None
         # 注意：事實查核功能預設關閉，需要時可在 UI 中添加開關
         
-        # === 立場平衡分析（方案 2.1）===
-        stance_analysis = analyze_stance_balance(results)
+        # === 立場平衡分析（方案 2.1 + Phase 3 依議題類型動態評估）===
+        stance_analysis = analyze_stance_balance(results, issue_type=current_issue_type)
         
         # === Phase 2: 主動補足機制（迭代式平衡搜尋）===
         MAX_GAP_FILL_ITERATIONS = 2  # 最多補充 2 次，控制 API 成本
@@ -3755,31 +3987,40 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
             gap_fill_iteration += 1
             logger.info(f"檢測到立場缺口: {missing_stances}，執行第 {gap_fill_iteration} 次補充搜尋（平衡度: {balance_score:.2f}）")
             
-            # 生成針對缺失立場的補充關鍵字
+            # 生成針對缺失立場的補充關鍵字（Phase 3：依議題類型與 missing_stances 動態生成）
             gap_fill_keywords = []
             for stance in missing_stances:
                 if stance == "BLUE" and google_api_key:
-                    # 生成藍營觀點關鍵字
                     gap_fill_keywords.extend([
                         f"{query} 國民黨 觀點",
                         f"{query} 保守派 看法",
                         f"{query} 藍營 立場"
                     ])
                 elif stance == "GREEN" and google_api_key:
-                    # 生成綠營觀點關鍵字
                     gap_fill_keywords.extend([
                         f"{query} 民進黨 觀點",
                         f"{query} 進步派 看法",
                         f"{query} 綠營 立場"
                     ])
                 elif stance == "OFFICIAL":
-                    # 生成官方觀點關鍵字
                     gap_fill_keywords.extend([
                         f"{query} 政府 官方 聲明",
                         f"{query} 官方 新聞稿"
                     ])
+                elif stance == "INTL_PERSPECTIVE":
+                    gap_fill_keywords.extend([
+                        f"{query} global view",
+                        f"{query} international news",
+                        f"{query} 國際 觀點",
+                        f"{query} 外電"
+                    ])
+                elif stance == "CHINA":
+                    gap_fill_keywords.extend([
+                        f"{query} 中國 觀點",
+                        f"{query} 北京 立場",
+                        f"{query} 大陸 看法"
+                    ])
             
-            # 如果沒有 google_api_key，使用降級策略
             if not gap_fill_keywords:
                 gap_fill_keywords = [f"{query} {stance}" for stance in missing_stances]
             
@@ -3808,8 +4049,7 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
             if new_results:
                 logger.info(f"補充搜尋獲得 {len(new_results)} 筆新結果")
                 results.extend(new_results)
-                # 重新分析立場平衡
-                stance_analysis = analyze_stance_balance(results)
+                stance_analysis = analyze_stance_balance(results, issue_type=current_issue_type)
             else:
                 logger.warning(f"補充搜尋未獲得新結果，停止迭代")
                 break
@@ -3880,6 +4120,24 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                 manipulation_signals_text = "【MANIPULATION_SIGNALS】\n" + "偵測到跨網域洗稿網路：\n" + "\n".join(parts)
             else:
                 manipulation_signals_text = "【MANIPULATION_SIGNALS】\n本輪未偵測到跨網域聯播群組（無高風險協調敘事信號）。"
+            # Phase 4: 語義旋轉偵測（失敗不影響主流程）
+            try:
+                spin_analysis = detect_semantic_spin(syndication_clusters, results, google_api_key)
+                if spin_analysis and float(spin_analysis.get("spin_score", 0)) > 0.6:
+                    spin_score = spin_analysis.get("spin_score", 0)
+                    shared_fact = spin_analysis.get("shared_fact", "")
+                    spin_a = spin_analysis.get("spin_a", "")
+                    spin_b = spin_analysis.get("spin_b", "")
+                    spin_text = (
+                        f"\n\n【語義旋轉偵測 (Semantic Spin)】\n"
+                        f"⚠️ 偵測到高對立敘事框架 (Spin Score: {spin_score})。\n"
+                        f"- 共享事實：{shared_fact}\n"
+                        f"- 敘事 A 框架：{spin_a}\n"
+                        f"- 敘事 B 框架：{spin_b}"
+                    )
+                    manipulation_signals_text += spin_text
+            except Exception as e:
+                logger.warning(f"語義旋轉偵測跳過: {str(e)}")
         except Exception as e:
             logger.warning(f"跨網域聯播/擴散偵測失敗，不注入操作信號: {e}")
             manipulation_signals_text = "【MANIPULATION_SIGNALS】\n（本輪操作信號因技術原因未產生，請依既有來源分析。）"
