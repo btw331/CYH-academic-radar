@@ -233,28 +233,72 @@ CSS_STYLE = """
     .report-paper {
         background-color: #fdfbf7; 
         color: #2c3e50; 
-        padding: 40px; 
-        border-radius: 4px; 
+        padding: 32px 40px; 
+        border-radius: 8px; 
         margin-bottom: 15px; 
-        border: 1px solid #e0e0e0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        font-family: "Microsoft JhengHei", "Georgia", serif;
-        line-height: 1.8;
-        font-size: 1.05rem;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        font-family: "Microsoft JhengHei", "Segoe UI", "Georgia", sans-serif;
+        line-height: 1.75;
+        font-size: 1.02rem;
     }
+    .report-paper h1 { margin-top: 2em; margin-bottom: 0.6em; font-size: 1.5em; color: #1a1a2e; padding-bottom: 0.3em; border-bottom: 2px solid #e5e7eb; }
+    .report-paper h2 { margin-top: 1.8em; margin-bottom: 0.5em; font-size: 1.28em; color: #252550; }
+    .report-paper h3 { margin-top: 1.5em; margin-bottom: 0.4em; font-size: 1.15em; color: #2d3748; }
+    .report-paper h4 { margin-top: 1.2em; margin-bottom: 0.35em; font-size: 1.05em; }
+    .report-paper p { margin-bottom: 1em; }
+    
+    /* 報告內表格：卡片式區塊、提升可讀性 */
+    .report-paper table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        margin: 1.2em 0 1.8em 0;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        background: #fff;
+    }
+    .report-paper table thead th {
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        color: #334155;
+        font-weight: 600;
+        padding: 14px 18px;
+        text-align: left;
+        border-bottom: 2px solid #e2e8f0;
+        font-size: 0.95em;
+    }
+    .report-paper table tbody td {
+        padding: 16px 18px;
+        border-bottom: 1px solid #f1f5f9;
+        vertical-align: top;
+        line-height: 1.65;
+        word-wrap: break-word;
+        overflow-wrap: break-word;
+        color: #475569;
+    }
+    .report-paper table tbody tr {
+        transition: background-color 0.15s ease;
+    }
+    .report-paper table tbody tr:nth-child(even) { background-color: #fafbfc; }
+    .report-paper table tbody tr:hover { background-color: #f1f5f9; }
+    .report-paper table tbody tr:last-child td { border-bottom: none; }
+    /* 第一欄（假設名稱、日期）強調 */
+    .report-paper table tbody td:first-child { font-weight: 600; color: #1e293b; min-width: 100px; max-width: 200px; }
+    .report-paper table tbody td:nth-child(4), .report-paper table tbody td:nth-child(5) { font-size: 0.95em; color: #64748b; min-width: 70px; }
     
     .citation {
-        font-size: 0.75em;          
-        color: #777777;             
-        background-color: #f4f4f4;  
-        padding: 2px 6px;           
-        border-radius: 4px;         
-        margin: 0 4px;              
-        font-family: sans-serif; 
-        border: 1px solid #e0e0e0;  
-        font-weight: 400;           
-        vertical-align: 1px;        
-        display: inline-block;      
+        font-size: 0.78em;
+        color: #64748b;
+        background-color: #f1f5f9;
+        padding: 3px 8px;
+        border-radius: 4px;
+        margin: 0 2px;
+        font-family: ui-monospace, monospace;
+        border: 1px solid #e2e8f0;
+        font-weight: 500;
+        vertical-align: 1px;
+        display: inline-block;
     }
 
     .scrollable-table-container {
@@ -271,36 +315,11 @@ CSS_STYLE = """
         font-family: "Microsoft JhengHei", sans-serif;
         font-size: 0.95em;
     }
-    .custom-table th {
-        position: sticky;
-        top: 0;
-        background-color: #f1f3f4;
-        color: #333;
-        font-weight: bold;
-        padding: 12px 15px;
-        text-align: left;
-        border-bottom: 2px solid #ddd;
-        z-index: 2;
-    }
-    .custom-table td {
-        padding: 10px 15px;
-        border-bottom: 1px solid #f0f0f0;
-        vertical-align: middle;
-        color: #333;
-    }
-    .custom-table tr:hover {
-        background-color: #f8f9fa;
-    }
-    .custom-table a {
-        color: #1a73e8;
-        text-decoration: none;
-        font-weight: 500;
-        font-size: 1.05em;
-    }
-    .custom-table a:hover {
-        text-decoration: underline;
-        color: #1557b0;
-    }
+    .custom-table th { position: sticky; top: 0; background-color: #f1f3f4; color: #333; font-weight: bold; padding: 12px 15px; text-align: left; border-bottom: 2px solid #ddd; z-index: 2; }
+    .custom-table td { padding: 10px 15px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; color: #333; }
+    .custom-table tr:hover { background-color: #f8f9fa; }
+    .custom-table a { color: #1a73e8; text-decoration: none; font-weight: 500; font-size: 1.05em; }
+    .custom-table a:hover { text-decoration: underline; color: #1557b0; }
     
     @media print {
         .scrollable-table-container { height: auto; overflow: visible; }
@@ -1822,62 +1841,70 @@ def assess_website_quality(url: str, content: str) -> Dict[str, Any]:
     }
 
 def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
-    """評估內容品質"""
+    """
+    評估內容品質（內容導向篩選的核心）
+    
+    依據文章內文特徵評分，不依賴來源黑白名單：
+    - 長度、結構、事實密度、引用、 attribution、標題內容一致
+    """
     quality_score = 0.0
     indicators = {}
     
     if not content:
         return {'score': 0.0, 'indicators': indicators}
     
-    # 長度評估
+    # 長度評估（扎實報導通常較長）
     content_length = len(content)
     if content_length > CONTENT_QUALITY_LONG:
-        quality_score += 0.2
+        quality_score += 0.22
         indicators['length'] = '長'
     elif content_length > CONTENT_QUALITY_MEDIUM:
-        quality_score += 0.15
+        quality_score += 0.17
         indicators['length'] = '中'
     elif content_length > CONTENT_QUALITY_SHORT:
-        quality_score += 0.1
+        quality_score += 0.12
         indicators['length'] = '短'
     else:
         indicators['length'] = '極短'
     
-    # 完整性評估（檢查是否有結構化資訊）
+    # 完整性評估（結構化資訊）
     has_dates = bool(re.search(r'\d{4}[-年]\d{1,2}[-月]\d{1,2}', content))
     has_numbers = bool(re.search(r'\d+', content))
     has_quotes = bool('"' in content or '"' in content or "'" in content)
     
     if has_dates:
-        quality_score += 0.15
+        quality_score += 0.12
         indicators['has_dates'] = True
     if has_numbers:
-        quality_score += 0.1
+        quality_score += 0.08
         indicators['has_numbers'] = True
     if has_quotes:
-        quality_score += 0.1
+        quality_score += 0.10
         indicators['has_quotes'] = True
     
-    # 引用評估
-    citation_patterns = ['來源', '引用', '據', '指出', '表示', 'Source', 'reference']
+    # 引用與 attribution（記者、據、指出、來源、專家）
+    citation_patterns = ['來源', '引用', '據', '指出', '表示', 'Source', 'reference', '記者', '報導', '專家', '認為', '分析']
     citation_count = sum(1 for pattern in citation_patterns if pattern in content)
-    if citation_count > 2:
-        quality_score += 0.15
+    if citation_count > 3:
+        quality_score += 0.18
         indicators['citations'] = '多'
-    elif citation_count > 0:
-        quality_score += 0.1
+    elif citation_count > 1:
+        quality_score += 0.12
         indicators['citations'] = '有'
+    elif citation_count > 0:
+        quality_score += 0.06
+        indicators['citations'] = '少'
     
-    # 標題與內容相關性
+    # 標題與內容相關性（標題黨扣分已在 style_score）
     if title:
-        title_words = set(title.lower().split()[:5])  # 取標題前5個詞
-        content_words = set(content.lower().split()[:50])  # 取內容前50個詞
+        title_words = set(title.lower().split()[:5])
+        content_words = set(content.lower().split()[:50])
         overlap = len(title_words & content_words) / len(title_words) if title_words else 0
         if overlap > CONTENT_OVERLAP_HIGH:
-            quality_score += 0.15
+            quality_score += 0.12
             indicators['relevance'] = '高'
         elif overlap > CONTENT_OVERLAP_MEDIUM:
-            quality_score += 0.1
+            quality_score += 0.08
             indicators['relevance'] = '中'
         else:
             indicators['relevance'] = '低'
@@ -2034,16 +2061,22 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
     website_quality = assess_website_quality(url, content)
     details["website_quality"] = website_quality
     
-    # === 綜合評分（整合所有維度）===
+    # === 綜合評分（內容導向：以文章品質為主，來源為輔）===
+    # 設計理念：不過度依賴黑白名單，高品質內容可彌補來源評級不足
     final_score = (
-        source_score * 0.20 +  # 降低來源類型權重
-        credibility_score * 0.20 +
-        content_score * 0.20 +  # 降低內容品質權重
-        cross_validation_score * 0.20 +
-        conflict_score * 0.10 +
-        style_score * 0.10 +  # 新增語言風格權重（10%）
-        website_quality['quality_score'] * 0.05  # 新增網頁品質權重（5%）
+        source_score * 0.12 +      # 來源類型（降低，避免域名決定一切）
+        credibility_score * 0.12 + # 來源公信力（降低）
+        content_score * 0.38 +     # 內容品質（提高：長度、結構、引用、事實密度）
+        style_score * 0.18 +       # 語言風格（提高：非聳動、非標題黨）
+        cross_validation_score * 0.15 +
+        website_quality['quality_score'] * 0.05
     )
+    if conflict_score < 0:
+        final_score += conflict_score * 0.08  # 利益衝突扣分
+    # 內容品質加分：若內文明顯扎實，不受限於來源評級
+    if content_score >= 0.65 and style_score >= 0.65:
+        content_bonus = min(0.15, (content_score - 0.5) * 0.3)
+        final_score = max(final_score, 0.42 + content_bonus)  # 至少「中等」起跳
     final_score = max(0.0, min(1.0, final_score))
     
     # === 轉換為等級 ===
@@ -3935,12 +3968,16 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         (Markdown 報告 - 繁體中文)
         
         0. **🎯 ACH 競爭假設分析 (Analysis of Competing Hypotheses)**
-           請以表格呈現至少 3 個可能的解釋假設：
-           | 假設 | 支持證據 (Source ID) | 反對證據 (Source ID) | 可信度評估 | 備註 |
+           請以表格呈現至少 3 個可能的解釋假設。
+           **格式要求**：每格內容精簡，證據以「要點 + Source ID」列舉，避免整段長文。範例：
+           | 假設 | 支持證據 | 反對證據 | 可信度 | 備註 |
            |:---|:---|:---|:---|:---|
+           | H1 民意授權論 | • 內閣支持率 70% [Source 52] • 年輕選民支持 [Source 59] | • 49%不認同提前解散 [Source 59] | 高 | 跨年齡層支持 |
            
         1. **📊 全域現況摘要 (Situational Analysis)**
-           - 請以 **Markdown 表格** 呈現關鍵事件時間軸 (欄位包含：日期 | 事件摘要 | 關鍵影響 | 證據強度)。
+           請以 **Markdown 表格** 呈現關鍵事件時間軸。每格一至二句，勿過長。
+           | 日期 | 事件摘要 | 關鍵影響 | 證據強度 |
+           |:---|:---|:---|:---|
            
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
            **邏輯謬誤偵測表**（必須以表格呈現）：
@@ -4564,7 +4601,8 @@ with st.sidebar:
         
         **評分計算公式**
         ```
-        證據強度 = 來源類型 (25%) + 公信力評分 (20%) + 內容品質 (25%) + 交叉驗證 (20%) + 利益衝突 (10%)
+        證據強度 = 內容品質 (38%) + 語言風格 (18%) + 來源類型 (12%) + 公信力 (12%) + 交叉驗證 (15%) + 利益衝突 (扣分)
+        ※ 內容導向：高品質內文可彌補來源評級，不受限於黑白名單
         ```
         """)
         
@@ -4658,7 +4696,8 @@ with st.sidebar:
         
         **多維度評分系統**
         ```
-        證據強度 = f(來源類型, 來源公信力, 內容品質, 交叉驗證, 利益衝突)
+        證據強度 = f(內容品質, 語言風格, 來源類型, 來源公信力, 交叉驗證, 利益衝突)
+        ※ 以文章內容為主：長度、引用、事實密度、非聳動風格，高品質者可提升評級
         
         其中：
         - 來源類型權重：25%
@@ -5690,7 +5729,11 @@ if st.session_state.sources:
         
         # 顯示證據強度標記
         evidence_level = s.get('evidence_level', '中等')
-        evidence_emoji = "🟢" if evidence_level == "強" else "🟡" if evidence_level == "中等" else "🔴"
+        evidence_emoji = (
+            "🟢" if evidence_level in ("強", "極強") else
+            "🟡" if evidence_level in ("中等", "中強") else
+            "🟠" if evidence_level == "中弱" else "🔴"
+        )
         url = s.get('url')
         evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
         md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
