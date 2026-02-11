@@ -319,7 +319,7 @@ st.markdown(CSS_STYLE, unsafe_allow_html=True)
 # 擴展媒體資料庫（優化：增加搜尋覆蓋率）
 # ==========================================
 
-# 藍營媒體白名單（大幅擴展）
+# 藍營媒體白名單（大幅擴展；與 GREEN 互斥，無重複）
 BLUE_WHITELIST = [
     # 主要藍營媒體
     "udn.com", "udn.com.tw", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", 
@@ -329,20 +329,18 @@ BLUE_WHITELIST = [
     "appledaily.com.tw", "nexttv.com.tw", "ebc.net.tw", "ctwant.com",
     "wealth.com.tw", "bwnet.com.tw", "cmmedia.com.tw", "cmoney.tw",
     "technews.tw", "techbang.com", "digitimes.com.tw", "ithome.com.tw",
-    # 地方媒體
-    "merit-times.com.tw", "taiwanhot.net", "taiwannews.com.tw"
+    # 地方媒體（taiwanhot、taiwannews 已移至 NEUTRAL，避免藍綠重複）
+    "merit-times.com.tw"
 ]
 
-# 綠營媒體白名單（大幅擴展）
+# 綠營媒體白名單（大幅擴展；與 BLUE 互斥；獨立媒體歸 INDIE 不在此列）
 GREEN_WHITELIST = [
     # 主要綠營媒體
     "ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", 
     "newtalk.tw", "mirrormedia.mg", "upmedia.mg",
-    # 擴展綠營媒體
-    "peoplenews.tw", "dpp.org.tw", "taiwanhot.net", "taiwannews.com.tw",
-    "watchout.tw", "taisounds.com", "taiwanjustice.net", "taiwanjustice.org",
-    # 獨立媒體（偏綠）
-    "twreporter.org", "theinitium.com", "thenewslens.com"
+    # 擴展綠營媒體（twreporter/theinitium/thenewslens 為 INDIE，不計入綠營保底）
+    "peoplenews.tw", "dpp.org.tw",
+    "watchout.tw", "taisounds.com", "taiwanjustice.net", "taiwanjustice.org"
 ]
 
 # 官方媒體白名單（大幅擴展）
@@ -361,14 +359,18 @@ OFFICIAL_WHITELIST = [
     "nccu.edu.tw", "ntu.edu.tw", "sinica.edu.tw", "nctu.edu.tw"
 ]
 
-# 完整台灣媒體白名單（擴充：包含社群平台）
+# 中立商業媒體白名單（不參與藍綠保底，作為平衡參照）
+NEUTRAL_WHITELIST = [
+    "taiwanhot.net", "taiwannews.com.tw",
+    "yahoo.com.tw", "ettoday.net", "businessweekly.com.tw",
+    "commonhealth.com.tw", "cw.com.tw", "managertoday.com.tw",
+    "bnext.com.tw", "inside.com.tw", "techorange.com"
+]
+
+# 完整台灣媒體白名單（擴充：包含社群平台；用於通用搜尋範圍）
 FULL_TAIWAN_WHITELIST = (
-    BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + 
-    ["yahoo.com.tw", "ettoday.net", "businessweekly.com.tw", 
-     "commonhealth.com.tw", "cw.com.tw", "managertoday.com.tw",
-     "bnext.com.tw", "inside.com.tw", "techorange.com",
-     # 社群平台（重要：許多議題討論發生在此）
-     "youtube.com", "youtu.be", "ptt.cc", "dcard.tw", "mobile01.com"]
+    BLUE_WHITELIST + GREEN_WHITELIST + OFFICIAL_WHITELIST + NEUTRAL_WHITELIST +
+    ["youtube.com", "youtu.be", "ptt.cc", "dcard.tw", "mobile01.com"]
 )
 
 # 獨立媒體白名單（大幅擴展：包含自媒體平台）
@@ -387,44 +389,111 @@ INDIE_WHITELIST = [
     "youtube.com", "youtu.be"
 ]
 
-# 亞洲國際媒體白名單（大幅擴展）
+# 日本媒體白名單（專用於日本相關議題保底搜尋）
+INTL_JAPAN_WHITELIST = [
+    # 日本三大報
+    "asahi.com", "mainichi.jp", "yomiuri.co.jp",
+    # 經濟與產經
+    "nikkei.com", "asia.nikkei.com", "sankei.com",
+    # 通訊社
+    "kyodonews.com", "jiji.com",
+    # 廣電與綜合
+    "nhk.or.jp", "www3.nhk.or.jp",
+    # 英文日本媒體（國際讀者重要來源）
+    "japantimes.co.jp",
+    # 國際媒體日本報導（路透、美聯等常有日本分社）
+    "reuters.com", "apnews.com", "bloomberg.com"
+]
+
+# 國際通訊社／外電白名單（三大通訊社 + 區域主要通訊社）
+INTL_WIRES_WHITELIST = [
+    # 全球三大通訊社
+    "reuters.com", "apnews.com", "afp.com",
+    # 歐洲通訊社
+    "dpa.com", "efe.com", "ansa.it", "belga.be",
+    # 亞太通訊社
+    "kyodonews.com", "jiji.com", "yna.co.kr",
+    # 其他重要外電
+    "upi.com", "dpa-international.com"
+]
+
+# 國際智庫與政策研究機構白名單
+INTL_THINKTANKS_WHITELIST = [
+    # 美國智庫
+    "brookings.edu", "csis.org", "cfr.org", "rand.org",
+    "carnegieendowment.org", "heritage.org", "atlanticcouncil.org",
+    "piie.com", "cnas.org", "stimson.org", "wilsoncenter.org",
+    "fpri.org", "newamerica.org",
+    # 英國／歐洲智庫
+    "chathamhouse.org", "iiss.org", "rusi.org",
+    "sipri.org", "ecfr.eu", "ifri.org", "swp-berlin.org",
+    "clingendael.org", "bruegel.org",
+    # 亞太智庫
+    "aspi.org.au", "lowyinstitute.org",
+    # 政策分析期刊
+    "foreignaffairs.com", "foreignpolicy.com", "thediplomat.com"
+]
+
+# 亞洲國際媒體白名單（大幅擴展：含外電、智庫、日本、韓國、東南亞）
 INTL_ASIA_WHITELIST = [
     # 主要亞洲媒體
     "bbc.com", "cnn.com", "reuters.com", "apnews.com", "bloomberg.com", 
     "wsj.com", "nytimes.com", "nikkei.com", "nhk.or.jp", "scmp.com", 
     "asia.nikkei.com", "channelnewsasia.com",
-    # 擴展亞洲媒體
+    # 國際通訊社（外電）
+    "afp.com", "dpa.com", "efe.com", "kyodonews.com", "jiji.com", "yna.co.kr",
+    # 國際智庫
+    "brookings.edu", "csis.org", "cfr.org", "carnegieendowment.org",
+    "chathamhouse.org", "iiss.org", "aspi.org.au", "lowyinstitute.org",
+    "foreignaffairs.com", "foreignpolicy.com", "thediplomat.com",
+    # 日本媒體（與 INTL_JAPAN_WHITELIST 重疊）
     "japantimes.co.jp", "asahi.com", "yomiuri.co.jp", "mainichi.jp",
-    "sankei.com", "koreaherald.com", "koreatimes.co.kr", "straitstimes.com",
-    "thejakartapost.com", "bangkokpost.com", "philstar.com", "manilatimes.net",
-    "vietnamnews.vn", "thehindu.com", "indiatimes.com", "dawn.com",
+    "sankei.com", "www3.nhk.or.jp",
+    # 韓國媒體
+    "koreaherald.com", "koreatimes.co.kr",
     # 東南亞媒體
-    "channelnewsasia.com", "straitstimes.com", "todayonline.com",
-    "thestar.com.my", "malaysiakini.com", "thejakartapost.com"
+    "straitstimes.com", "todayonline.com", "thejakartapost.com",
+    "bangkokpost.com", "philstar.com", "manilatimes.net",
+    "vietnamnews.vn", "thestar.com.my", "malaysiakini.com",
+    # 南亞媒體
+    "thehindu.com", "indiatimes.com", "dawn.com"
 ]
 
-# 歐洲國際媒體白名單（大幅擴展）
+# 歐洲國際媒體白名單（大幅擴展：含外電、智庫）
 INTL_EUROPE_WHITELIST = [
     # 主要歐洲媒體
     "bbc.com", "dw.com", "euronews.com", "theguardian.com", 
     "lemonde.fr", "elpais.com", "spiegel.de", "ft.com", "politico.eu",
+    # 歐洲通訊社（外電）
+    "reuters.com", "apnews.com", "afp.com", "dpa.com", "efe.com", "ansa.it",
+    # 歐洲智庫
+    "chathamhouse.org", "iiss.org", "rusi.org", "ecfr.eu",
+    "sipri.org", "ifri.org", "swp-berlin.org", "bruegel.org", "clingendael.org",
     # 擴展歐洲媒體
-    "reuters.com", "apnews.com", "bloomberg.com", "wsj.com",
-    "nytimes.com", "washingtonpost.com", "latimes.com",
+    "bloomberg.com", "wsj.com", "nytimes.com", "washingtonpost.com", "latimes.com",
     "faz.net", "welt.de", "zeit.de", "sueddeutsche.de",
-    "repubblica.it", "corriere.it", "ansa.it", "ilsole24ore.com",
+    "repubblica.it", "corriere.it", "ilsole24ore.com",
     "lefigaro.fr", "liberation.fr", "france24.com", "rfi.fr",
-    "elmund.es", "abc.es", "elmundo.es", "elpais.com",
+    "elmund.es", "abc.es", "elmundo.es",
     "telegraph.co.uk", "independent.co.uk", "dailymail.co.uk",
     "express.co.uk", "mirror.co.uk", "standard.co.uk"
 ]
 
-# 美洲國際媒體白名單（大幅擴展）
+# 美洲國際媒體白名單（大幅擴展：含外電、智庫）
 INTL_AMERICAS_WHITELIST = [
     # 主要美洲媒體
     "cnn.com", "bbc.com", "reuters.com", "apnews.com", "bloomberg.com", 
     "wsj.com", "nytimes.com", "washingtonpost.com", "latimes.com", 
     "nbcnews.com", "abcnews.go.com", "cbsnews.com",
+    # 通訊社（外電）
+    "afp.com", "upi.com",
+    # 美國智庫
+    "brookings.edu", "csis.org", "cfr.org", "rand.org",
+    "carnegieendowment.org", "heritage.org", "atlanticcouncil.org",
+    "piie.com", "cnas.org", "stimson.org", "wilsoncenter.org",
+    "fpri.org", "newamerica.org",
+    # 政策分析期刊
+    "foreignaffairs.com", "foreignpolicy.com", "thediplomat.com",
     # 擴展美洲媒體
     "usatoday.com", "usnews.com", "time.com", "newsweek.com",
     "theatlantic.com", "newyorker.com", "wired.com", "techcrunch.com",
@@ -435,8 +504,11 @@ INTL_AMERICAS_WHITELIST = [
     "jornada.com.mx", "reforma.com", "milenio.com"
 ]
 
-# 完整國際媒體白名單（去重）
-INTL_WHITELIST = sorted(list(set(INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST)))
+# 完整國際媒體白名單（去重；含外電與智庫）
+INTL_WHITELIST = sorted(list(set(
+    INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST +
+    INTL_WIRES_WHITELIST + INTL_THINKTANKS_WHITELIST
+)))
 
 # 擴展域名中文名稱映射（用於顯示）
 DOMAIN_NAME_MAP = {
@@ -480,7 +552,20 @@ DOMAIN_NAME_MAP = {
     "japantimes.co.jp": "日本時報", "asahi.com": "朝日新聞",
     "yomiuri.co.jp": "讀賣新聞", "mainichi.jp": "每日新聞", "nhk.or.jp": "NHK",
     "nikkei.com": "日經新聞", "asia.nikkei.com": "日經亞洲",
+    "kyodonews.com": "共同社", "jiji.com": "時事通訊社",
     "koreaherald.com": "韓國先驅報", "koreatimes.co.kr": "韓國時報",
+    # 國際通訊社（外電）
+    "afp.com": "法新社", "dpa.com": "德新社", "efe.com": "埃菲社",
+    "ansa.it": "安莎通訊社", "upi.com": "合眾國際社",
+    # 國際智庫
+    "brookings.edu": "布魯金斯學會", "csis.org": "CSIS", "cfr.org": "外交關係協會",
+    "rand.org": "蘭德公司", "carnegieendowment.org": "卡內基國際和平基金會",
+    "heritage.org": "傳統基金會", "atlanticcouncil.org": "大西洋理事會",
+    "chathamhouse.org": "皇家國際事務研究所", "iiss.org": "國際戰略研究所",
+    "rusi.org": "皇家聯合服務研究所", "piie.com": "彼得森國際經濟研究所",
+    "sipri.org": "斯德哥爾摩國際和平研究所", "aspi.org.au": "澳洲戰略政策研究所",
+    "lowyinstitute.org": "羅伊研究所", "foreignaffairs.com": "外交事務",
+    "foreignpolicy.com": "外交政策", "thediplomat.com": "外交家",
     # 社群媒體
     "ptt.cc": "PTT", "dcard.tw": "Dcard", "mobile01.com": "Mobile01",
     "facebook.com": "Facebook", "youtube.com": "YouTube", "twitter.com": "Twitter",
@@ -509,9 +594,8 @@ DB_MAP = {
     "GREEN": [
         # 主要綠營媒體
         "ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia",
-        # 擴展綠營媒體
-        "peoplenews", "taiwanhot", "taiwannews", "watchout", "taisounds",
-        "taiwanjustice", "twreporter", "theinitium", "thenewslens"
+        # 擴展綠營媒體（taiwanhot/taiwannews→NEUTRAL；twreporter/theinitium/thenewslens→INDIE）
+        "peoplenews", "watchout", "taisounds", "taiwanjustice"
     ],
     "BLUE": [
         # 主要藍營媒體
@@ -533,6 +617,11 @@ DB_MAP = {
         # 學術機構
         "nccu.edu", "ntu.edu", "sinica.edu", "nctu.edu"
     ],
+    "NEUTRAL": [
+        # 中立商業/綜合媒體（不參與藍綠保底）
+        "taiwanhot", "taiwannews", "yahoo.com", "ettoday", "businessweekly",
+        "commonhealth", "cw.com", "managertoday", "bnext", "inside", "techorange"
+    ],
     "INDIE": [
         # 主要獨立媒體
         "twreporter", "theinitium", "thenewslens", "mindiworld", 
@@ -545,6 +634,18 @@ DB_MAP = {
         # 主要國際媒體
         "bbc", "cnn", "reuters", "apnews", "bloomberg", "wsj", "nytimes", 
         "dw.com", "voanews", "rfi",
+        # 國際通訊社（外電）
+        "afp.com", "dpa.com", "efe.com", "ansa", "upi",
+        "kyodonews", "jiji", "yna",
+        # 國際智庫
+        "brookings", "csis.org", "cfr.org", "rand.org",
+        "carnegieendowment", "heritage.org", "atlanticcouncil",
+        "chathamhouse", "iiss.org", "rusi.org", "piie.com",
+        "cnas.org", "stimson", "wilsoncenter", "fpri.org",
+        "sipri.org", "ecfr.eu", "ifri.org", "swp-berlin",
+        "aspi.org", "lowyinstitute",
+        # 政策分析期刊
+        "foreignaffairs", "foreignpolicy", "thediplomat",
         # 擴展國際媒體
         "theguardian", "washingtonpost", "latimes", "usatoday", "time",
         "newsweek", "theatlantic", "newyorker", "ft.com", "economist",
@@ -606,8 +707,13 @@ AUTHORITY_TIERS = {
         "weight_coefficient": 1.4
     },
     "Tier_2_International": {
-        "media_list": ["bbc.com", "reuters.com", "apnews.com", "bloomberg.com", 
-                       "wsj.com", "nytimes.com", "theguardian.com", "dw.com"],
+        "media_list": [
+            "bbc.com", "reuters.com", "apnews.com", "afp.com", "bloomberg.com", 
+            "wsj.com", "nytimes.com", "theguardian.com", "dw.com",
+            "brookings.edu", "csis.org", "cfr.org", "rand.org",
+            "carnegieendowment.org", "chathamhouse.org", "iiss.org",
+            "foreignaffairs.com", "foreignpolicy.com", "thediplomat.com"
+        ],
         "base_score": 0.85,
         "weight_coefficient": 1.3
     },
@@ -740,7 +846,8 @@ def get_category_meta(cat: str) -> Tuple[str, str]:
         "FARM": ("⛔ 內容農場", "#ef6c00"),
         "BLUE": ("🔵 泛藍觀點", "#1565c0"),
         "GREEN": ("🟢 泛綠觀點", "#2e7d32"),
-        "OFFICIAL": ("⚪ 官方/中立", "#546e7a"),
+        "OFFICIAL": ("⚪ 官方/公廣", "#546e7a"),
+        "NEUTRAL": ("📰 中立商業", "#78909c"),
         "INDIE": ("🕵️ 獨立/深度", "#fbc02d"),
         "INTL": ("🌏 國際媒體", "#f57c00"),
         "VIDEO": ("🟣 影音社群", "#7b1fa2"),
@@ -837,6 +944,7 @@ def process_timeline_rows(timeline_data: List[Dict], sources: List[Dict], blind_
         elif "泛藍" in label: emoji = "🔵"
         elif "泛綠" in label: emoji = "🟢"
         elif "官方" in label: emoji = "⚪"
+        elif "中立" in label: emoji = "📰"
         elif "獨立" in label: emoji = "🕵️"
         elif "國際" in label: emoji = "🌏"
         elif "農場" in label: emoji = "⛔"
@@ -1830,7 +1938,8 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
         source_score = 0.75
         details["source_tier"] = 2
     elif source_category == "INTL":
-        intl_authorities = ["bbc.com", "reuters.com", "apnews.com", "bloomberg.com", "wsj.com", "nytimes.com"]
+        intl_authorities = ["bbc.com", "reuters.com", "apnews.com", "afp.com", "bloomberg.com", "wsj.com", "nytimes.com",
+                           "brookings.edu", "csis.org", "cfr.org", "chathamhouse.org", "foreignaffairs.com", "foreignpolicy.com"]
         if any(auth in url.lower() for auth in intl_authorities):
             source_tier = 2
             source_score = 0.75
@@ -1845,6 +1954,10 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
         source_tier = 3
         source_score = 0.5
         details["source_tier"] = 3
+    elif source_category == "NEUTRAL":
+        source_tier = 3
+        source_score = 0.55  # 中立商業媒體，略高於藍綠（無明顯立場偏倚）
+        details["source_tier"] = 3
     
     # Tier 4 (低證據強度): 內容農場、社群媒體
     elif source_category in ["FARM", "SOCIAL"]:
@@ -1854,6 +1967,10 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
     elif source_category == "CHINA":
         source_tier = 3
         source_score = 0.4
+        details["source_tier"] = 3
+    elif source_category == "OTHER":
+        source_tier = 3
+        source_score = 0.45
         details["source_tier"] = 3
     
     details["source_score"] = source_score
@@ -2622,6 +2739,42 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
         tasks.append({"name": "Official_Guard", "query": validate_query_length(f"{query} 聲明 新聞稿"), "params": official_params})
 
         logger.info(f"已建立 3 個保底搜尋任務（藍/綠/官方），總任務數: {len(tasks)}")
+
+    # === 國際/亞洲保底搜尋（確保日本、韓國等區域議題有在地媒體報導）===
+    # 觸發條件：1) 使用者選擇「亞洲」 或 2) 查詢包含日本/韓國等關鍵字
+    _query_lower = query.lower().strip()
+    _japan_keywords = ["日本", "自民黨", "岸田", "東京", "大阪", "nhk", "ldp", "japan", "日經", "朝日", "讀賣"]
+    _korea_keywords = ["韓國", "南韓", "北韓", "首爾", "korea", "kim jong", "尹錫悅"]
+    _needs_asia_guard = "亞洲" in selected_str
+    _needs_japan_guard = any(kw in _query_lower for kw in _japan_keywords)
+    _needs_korea_guard = any(kw in _query_lower for kw in _korea_keywords)
+
+    if _needs_asia_guard and INTL_ASIA_WHITELIST:
+        asia_params = optimized_params.copy()
+        asia_params['max_results'] = 8
+        asia_params['search_depth'] = 'advanced'
+        asia_domains = INTL_ASIA_WHITELIST[:55]  # 含外電、智庫、亞洲媒體
+        asia_params['include_domains'] = asia_domains
+        tasks.append({"name": "Intl_Asia_Guard", "query": validate_query_length(query), "params": asia_params})
+        logger.info(f"已建立亞洲國際保底搜尋（{len(asia_domains)} 個網域），總任務數: {len(tasks)}")
+
+    if _needs_japan_guard and INTL_JAPAN_WHITELIST:
+        japan_params = optimized_params.copy()
+        japan_params['max_results'] = 8
+        japan_params['search_depth'] = 'advanced'
+        japan_params['include_domains'] = INTL_JAPAN_WHITELIST
+        tasks.append({"name": "Japan_Guard", "query": validate_query_length(query), "params": japan_params})
+        logger.info(f"已建立日本媒體保底搜尋（查詢含日本關鍵字），總任務數: {len(tasks)}")
+
+    if _needs_korea_guard:
+        korea_domains = [d for d in INTL_ASIA_WHITELIST if "korea" in d.lower() or "yna" in d.lower()]
+        if korea_domains:
+            korea_params = optimized_params.copy()
+            korea_params['max_results'] = 6
+            korea_params['search_depth'] = 'advanced'
+            korea_params['include_domains'] = korea_domains[:25]
+            tasks.append({"name": "Korea_Guard", "query": validate_query_length(query), "params": korea_params})
+            logger.info(f"已建立韓國媒體保底搜尋，總任務數: {len(tasks)}")
 
     def fetch(task, retry_count=0):
         try:
@@ -4203,8 +4356,8 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", value="", type="password", help="用於 AI 分析的 Google Gemini API 金鑰")
-        tavily_key = st.text_input("Tavily Key", value="", type="password", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
+        google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
+        tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         
         st.markdown("---")
         st.markdown("**🔄 降級方案（可選）**")
@@ -4295,7 +4448,7 @@ with st.sidebar:
             "搜尋視角 (Region) - 可複選",
             ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
             default=["🇹🇼 台灣 (Taiwan)"],
-            help="選擇要搜尋的區域，可多選"
+            help="日本/韓國等國際議題建議加選「亞洲」，系統也會依查詢關鍵字自動加入日本媒體保底"
         )
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
@@ -4862,7 +5015,12 @@ if search_btn and query and google_key and tavily_key:
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-        st.write("   ↳ 啟動機制：分眾保底 (藍/綠/官方) + 熱度補完 (動態三軌)")
+        _has_japan = any(kw in query for kw in ["日本", "自民黨", "岸田", "東京", "nhk", "日經"])
+        _has_asia = "亞洲" in str(selected_regions)
+        guard_desc = "分眾保底 (藍/綠/官方)"
+        if _has_japan or _has_asia:
+            guard_desc += " + 亞洲/日本國際媒體保底"
+        st.write(f"   ↳ 啟動機制：{guard_desc} + 熱度補完 (動態三軌)")
         
         # 驗證 Tavily Key
         if not tavily_key:
@@ -5366,6 +5524,7 @@ if st.session_state.result:
                     values = []
                     colors_map = {
                         'OFFICIAL': '#546e7a',
+                        'NEUTRAL': '#78909c',
                         'BLUE': '#1565c0',
                         'GREEN': '#2e7d32',
                         'INDIE': '#fbc02d',
