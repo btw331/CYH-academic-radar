@@ -5222,6 +5222,14 @@ _NETWORK_STANCE_BLOCKLIST = frozenset({
     "協同行為特徵", "語義旋轉", "風險評估", "早期預警", "攻擊目標", "傳播載體", "預期效果",
     "甲方論述", "乙方反制", "Proxy Network", "Early Warning", "Cui Bono", "陣營 A", "陣營 B",
     "邏輯謬誤", "事實查核", "媒體框架", "共識與分歧", "敘事操縱", "認知戰", "法理戰",
+    "錯誤歸因", "滑坡謬誤", "關鍵分歧", "同盟關係", "國際法理戰", "對話前提", "認知戰戰術解構",
+    "早期預警指標", "事實查核結果", "邏輯謬誤偵測", "甲方", "乙方", "北京滲透路徑", "勝選主因",
+    "軍國主義", "戰敗國", "經濟授權", "語義旋轉", "狗哨/暗語",
+})
+# 節點/立場名稱若「包含」以下關鍵字則不顯示（避免概念當成實體）
+_NETWORK_STANCE_KEYWORD_BLOCK = frozenset({
+    "謬誤", "歸因", "論述", "反制", "解構", "偵測", "查核", "預警", "分歧", "推演", "授權",
+    "網絡分析", "利益相關者 A", "利益相關者 B", "利益相關者 C", "陣營 A:", "陣營 B:",
 })
 
 
@@ -5235,10 +5243,51 @@ def _is_likely_entity_name(name: str) -> bool:
         return False
     for block in _NETWORK_STANCE_BLOCKLIST:
         if block in name and name != block:
-            # 允許「高市陣營」「北京陣營」等，僅排除純「陣營 A」
             if name.strip() in (block, "陣營 A 網絡", "陣營 B 滲透路徑"):
                 return False
+    for kw in _NETWORK_STANCE_KEYWORD_BLOCK:
+        if kw in name:
+            return False
     return True
+
+
+def _filter_entity_nodes(nodes: List[Dict], edges: List[Dict]) -> List[Dict]:
+    """過濾掉明顯為概念/章節的節點；有邊時只保留出現在邊上的節點，使圖表表達「誰與誰的關係」。"""
+    out = []
+    has_edges = len(edges) > 0
+    valid_from_edges = set()
+    for e in edges:
+        valid_from_edges.add((e.get("source") or "").strip())
+        valid_from_edges.add((e.get("target") or "").strip())
+    for n in nodes:
+        nid = (n.get("id") or "").strip()
+        if not nid:
+            continue
+        if nid in _NETWORK_STANCE_BLOCKLIST:
+            continue
+        if any(kw in nid for kw in _NETWORK_STANCE_KEYWORD_BLOCK):
+            continue
+        if has_edges and nid not in valid_from_edges:
+            continue
+        out.append(n)
+    if has_edges and not out and valid_from_edges:
+        return [{"id": nid, "group": "報告", "size": 5} for nid in valid_from_edges if nid]
+    return out if out else nodes
+
+
+def _filter_stance_items(items: List[Dict]) -> List[Dict]:
+    """過濾掉概念型名稱，只保留像實體的立場點。"""
+    out = []
+    for it in items:
+        name = (it.get("name") or "").strip()
+        if not name or name in _NETWORK_STANCE_BLOCKLIST:
+            continue
+        if any(kw in name for kw in _NETWORK_STANCE_KEYWORD_BLOCK):
+            continue
+        if "狗哨" in name or "謬誤" in name or "歸因" in name or "論述" in name or "反制" in name:
+            continue
+        out.append(it)
+    return out
 
 
 def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
@@ -5425,13 +5474,17 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
 
     with tabs[0]:
         st.caption("分析利益相關者、代理人與資金/影響力流向")
+        st.markdown("**圖表說明**：每個圓點＝報告中的**角色或組織**，連線＝彼此之間的**支持／資金／對立**關係（有連線時較易解讀「誰影響誰」）。")
         if visual_data.get("network"):
             nodes = visual_data["network"].get("nodes") or []
             edges = visual_data["network"].get("edges") or []
+            nodes = _filter_entity_nodes(nodes, edges)
             if nodes or edges:
                 fig_net = _draw_network_plotly(nodes, edges)
                 if fig_net is not None:
                     st.plotly_chart(fig_net, use_container_width=True)
+                    if not edges:
+                        st.info("目前僅萃取出節點，尚無關係線，因此無法呈現「誰與誰」的連結。若報告中有「A → B」或「A 支持/反對 B」等敘述，可改善萃取結果。")
                 elif GRAPHVIZ_AVAILABLE:
                     graph = graphviz.Digraph()
                     graph.attr(rankdir="LR", nodesep="0.4", ranksep="0.5")
@@ -5454,6 +5507,8 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
                         color = "red" if etype == "oppose" else "green"
                         graph.edge(src, tgt, label=(edge.get("label") or "")[:8], color=color)
                     st.graphviz_chart(graph)
+                    if not edges:
+                        st.info("目前僅萃取出節點，尚無關係線。若報告中有「A → B」或「A 支持/反對 B」等敘述，可改善萃取結果。")
                 else:
                     st.warning("請安裝網絡圖套件（二擇一）：`pip install networkx`（推薦）或 `pip install graphviz`")
             else:
@@ -5463,8 +5518,9 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
 
     with tabs[1]:
         st.caption("各方勢力在「美中光譜 (X)」與「鷹鴿光譜 (Y)」的定位")
+        st.markdown("**圖表說明**：X 軸＝**親中(左)～親美(右)**，Y 軸＝**經濟務實(下)～安全鷹派(上)**。每個點代表報告中的一個實體（國家、陣營、人物），位置表示其立場。")
         if visual_data.get("stance_map") and visual_data["stance_map"].get("items"):
-            raw_items = visual_data["stance_map"]["items"]
+            raw_items = _filter_stance_items(visual_data["stance_map"]["items"])
             # 將「A/B/C」合併標籤拆成多筆，每勢力一點，避免單一長標籤
             expanded = []
             for it in raw_items:
@@ -5481,7 +5537,7 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
                     expanded.append({"name": name, "name_short": name[:10] + ("…" if len(name) > 10 else ""), "x": x, "y": y, "desc": desc})
             df = pd.DataFrame(expanded)
             if df.empty:
-                st.info("立場資料不足，無法繪製光譜圖。")
+                st.info("立場資料不足或多為概念詞已過濾，無法繪製光譜圖。請確認報告「Cui Bono」或立場分析段落有列出**多個具體角色**並標註親中/親美、鴿派/鷹派。")
             else:
                 for col in ["x", "y"]:
                     if col not in df.columns:
@@ -5500,6 +5556,8 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
                 fig.add_vline(x=0, line_dash="dash", line_color="gray")
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 st.plotly_chart(fig, use_container_width=True)
+                if len(df) <= 1:
+                    st.info("目前僅萃取出 1 個實體，無法呈現光譜「分布」。請確認報告中「Cui Bono」或立場段落有列出**多個角色**並標註其親中/親美、鴿派/鷹派位置。")
         else:
             st.info("報告中未萃取出立場地圖資料。")
 
