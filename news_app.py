@@ -1375,6 +1375,78 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
     
     return fallback
 
+
+def translate_queries_to_english(
+    query: str,
+    expanded_queries: List[Any],
+    api_key: Optional[str] = None,
+    max_english_queries: int = 3,
+) -> List[str]:
+    """
+    將主查詢與擴展查詢翻譯／改寫為英文搜尋關鍵字，用於歐洲/美洲非中文檢索。
+    
+    理論基礎：跨語言資訊檢索 (CLIR) 中，目標區域為歐美時以英文查詢可提升當地媒體覆蓋。
+    參考「搜尋視角改進建議」建議一。
+    
+    Args:
+        query: 使用者主查詢（中文）
+        expanded_queries: 擴展查詢列表，可為 List[str] 或 List[Dict]（含 'query' 鍵）
+        api_key: Google Gemini API Key；若為 None 則不呼叫 LLM，返回 []
+        max_english_queries: 最多產出幾條英文查詢（避免任務數過多與 API 負荷）
+    
+    Returns:
+        英文查詢字串列表，長度不超過 max_english_queries；失敗或無 api_key 時返回 []
+    """
+    if not api_key or max_english_queries <= 0:
+        return []
+    # 擷取查詢文字（前 5 條以控制 prompt 長度）
+    query_texts: List[str] = []
+    if isinstance(expanded_queries, list):
+        for i, q in enumerate(expanded_queries[:5]):
+            if isinstance(q, str):
+                query_texts.append(q.strip())
+            elif isinstance(q, dict) and q.get("query"):
+                query_texts.append(str(q["query"]).strip())
+    if not query_texts:
+        query_texts = [query.strip()] if query else []
+    if not query_texts:
+        return []
+
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2
+        )
+        prompt = f"""You are a search query translator for news and current affairs.
+
+Given the following user query and/or related search phrases (in Chinese or mixed), output 2 to {max_english_queries} concise English search queries suitable for finding the same topic in English-language news (e.g. Reuters, BBC, NYT). Keep proper nouns and names in their standard English form (e.g. Taiwan, China, NATO). Output ONLY one query per line, no numbering, no explanation.
+
+User query: {query[:200]}
+
+Related phrases:
+{chr(10).join(query_texts[:5])}
+
+English search queries (one per line):"""
+        raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
+        if not raw or not isinstance(raw, str):
+            return []
+        lines = [ln.strip() for ln in raw.strip().splitlines() if ln.strip()]
+        # 過濾掉明顯非英文或過長的行
+        out = []
+        for ln in lines[: max_english_queries + 2]:
+            if len(ln) > 350:
+                continue
+            # 簡單啟發：至少含一個英文字母
+            if any(c.isalpha() and ord(c) < 128 for c in ln):
+                out.append(ln)
+            if len(out) >= max_english_queries:
+                break
+        logger.info(f"英文查詢翻譯完成: 主查詢={query[:40]}..., 產出 {len(out)} 條: {out[:3]}")
+        return out[:max_english_queries]
+    except Exception as e:
+        logger.warning(f"英文查詢翻譯失敗: {str(e)[:200]}")
+        return []
+
+
 def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:
     """
     分析不同立場間的共識與分歧（方案 3.3 - 共識分析，LLM 增強版）
@@ -3034,7 +3106,15 @@ def analyze_volume_weight(sources: List[Dict], progress_callback=None) -> Dict[s
         'unique_count': len(unique_articles)
     }
 
-def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, is_strict_mode: bool, dynamic_keywords: List, selected_regions: List[str]) -> List[Dict]:
+def execute_hybrid_search(
+    query: str,
+    api_key_tavily: str,
+    search_params: Dict,
+    is_strict_mode: bool,
+    dynamic_keywords: List,
+    selected_regions: List[str],
+    english_queries: Optional[List[str]] = None,
+) -> List[Dict]:
     """
     執行混和搜尋（完整版 - 基於 Tavily 最佳實踐）
     
@@ -3043,9 +3123,11 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
     2. 搜尋深度：通用搜尋使用 basic，保底搜尋使用 advanced
     3. 結果過濾：使用 topic: "news" 和網域過濾
     4. 平衡報導：多視角查詢 + 分眾保底機制
+    5. 建議一：當選歐洲/美洲且傳入 english_queries 時，新增英文查詢任務（非中文檢索），結果與現有任務共用 seen_urls 去重，避免邏輯衝突。
     
     Args:
         dynamic_keywords: 可以是 List[str] 或 List[Dict] (擴展查詢格式)
+        english_queries: 英文搜尋關鍵字列表；當 selected_regions 含歐洲/美洲時會用於非中文檢索任務（可選）
     """
     tavily = TavilyClient(api_key=api_key_tavily)
     seen_urls = set()
@@ -3219,6 +3301,33 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
             korea_params['include_domains'] = korea_domains[:25]
             tasks.append({"name": "Korea_Guard", "query": validate_query_length(query), "params": korea_params})
             logger.info(f"已建立韓國媒體保底搜尋，總任務數: {len(tasks)}")
+
+    # === 建議一：歐洲/美洲非中文檢索（英文關鍵字 + 國際網域，與中文通用搜尋並行，結果依 URL 去重）===
+    # 衝突避免：英文任務使用獨立參數（不設 country，不與台灣保底混用），且僅在選歐洲/美洲時加入
+    _needs_english_guard = "歐洲" in selected_str or "美洲" in selected_str
+    if _needs_english_guard and english_queries:
+        # 合併歐洲+美洲網域，精簡至 20 個以符合 Tavily 建議（列表簡短）
+        _intl_domains = []
+        if "歐洲" in selected_str and INTL_EUROPE_WHITELIST:
+            _intl_domains.extend(INTL_EUROPE_WHITELIST[:12])
+        if "美洲" in selected_str and INTL_AMERICAS_WHITELIST:
+            _intl_domains.extend(INTL_AMERICAS_WHITELIST[:12])
+        _intl_domains = list(dict.fromkeys(_intl_domains))[:20]
+        if _intl_domains:
+            # 英文任務不設 country，避免與台灣優先衝突
+            en_params = optimized_params.copy()
+            en_params.pop("country", None)
+            en_params["max_results"] = 8
+            en_params["search_depth"] = "advanced"
+            en_params["include_domains"] = _intl_domains
+            for i, eq in enumerate(english_queries[:3]):
+                if eq and isinstance(eq, str) and eq.strip():
+                    tasks.append({
+                        "name": f"English_Guard_{i+1}",
+                        "query": validate_query_length(eq.strip()),
+                        "params": en_params,
+                    })
+            logger.info(f"已建立 {min(3, len(english_queries))} 個英文檢索任務（歐洲/美洲網域），總任務數: {len(tasks)}")
 
     def fetch(task, retry_count=0):
         try:
@@ -3417,6 +3526,35 @@ def execute_hybrid_search(query: str, api_key_tavily: str, search_params: Dict, 
                         logger.warning(f"   URL 值: {sample.get('url', 'N/A')[:50]}")
     else:
         logger.warning("沒有通用搜尋任務結果")
+
+    # C. 國際保底（亞洲/日本/韓國）— 與通用搜尋共用 seen_urls 去重
+    other_guards = ["Intl_Asia_Guard", "Japan_Guard", "Korea_Guard"]
+    other_guard_count = 0
+    for guard_name in other_guards:
+        if guard_name in results_map:
+            for item in results_map[guard_name]:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("url") and item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    final_list.append(item)
+                    other_guard_count += 1
+    if other_guard_count:
+        logger.info(f"國際保底（亞洲/日本/韓國）共加入 {other_guard_count} 筆結果")
+
+    # D. 建議一：英文檢索結果（歐洲/美洲非中文）— 與前述任務共用 seen_urls，避免重複
+    english_guard_keys = [k for k in results_map.keys() if k.startswith("English_Guard_")]
+    english_guard_count = 0
+    for key in sorted(english_guard_keys):
+        for item in results_map[key]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("url") and item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                final_list.append(item)
+                english_guard_count += 1
+    if english_guard_count:
+        logger.info(f"英文檢索（歐洲/美洲）共加入 {english_guard_count} 筆結果")
     
     logger.info(f"搜尋總結果: {len(final_list)} 筆（去重後）")
     
@@ -3927,6 +4065,17 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
             # 合併原有查詢和平衡查詢
             all_queries = dynamic_keywords + balanced_expanded
             logger.info(f"開始執行混和搜尋: 查詢={query[:50]}, 擴展查詢數={len(all_queries)}, strict_mode={is_strict_mode}, selected_regions={selected_regions}")
+
+            # 建議一：選歐洲/美洲時產出英文關鍵字並進行非中文檢索（翻譯在執行前完成，避免搜尋邏輯衝突）
+            english_queries: List[str] = []
+            if google_api_key and selected_regions:
+                _sel_str = str(selected_regions)
+                if "歐洲" in _sel_str or "美洲" in _sel_str:
+                    english_queries = translate_queries_to_english(
+                        query, all_queries, google_api_key, max_english_queries=3
+                    )
+                    if english_queries:
+                        logger.info(f"已產出 {len(english_queries)} 條英文查詢，將用於歐洲/美洲非中文檢索")
             
             # 如果 strict_mode 且選定了區域，先嘗試無網域過濾的測試搜尋
             if is_strict_mode and selected_regions:
@@ -3948,7 +4097,10 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                 except Exception as e:
                     logger.warning(f"測試搜尋失敗: {str(e)[:200]}")
             
-            results = execute_hybrid_search(query, api_key_tavily, search_params, is_strict_mode, all_queries, selected_regions)
+            results = execute_hybrid_search(
+                query, api_key_tavily, search_params, is_strict_mode, all_queries, selected_regions,
+                english_queries=english_queries,
+            )
             
             logger.info(f"混和搜尋完成: 取得 {len(results)} 筆結果")
             
@@ -5193,11 +5345,10 @@ flowchart LR
         - 動態調整直到達到平衡（balance_score ≥ 0.7）或達最大迭代次數
         
         **搜尋視角與關鍵字語言 (Region & Keyword Language)**
-        - **目前邏輯**：搜尋視角（台灣/亞洲/歐洲/美洲/獨立）主要決定「保底搜尋」的**網域範圍**，**不會**在執行前將關鍵字翻譯成不同語言。
         - **台灣**：保底搜尋限定藍/綠/官方網域，並可設 Tavily `country: taiwan`。
         - **亞洲**：增加亞洲國際媒體保底（INTL_ASIA_WHITELIST）；若查詢含日本/韓國關鍵字會再加日本/韓國媒體保底。
-        - **歐洲/美洲**：會納入對應國際網域名單供後續擴充；通用搜尋仍使用您「生成/編輯後」的關鍵字（多為中文）。
-        - **若需非中文檢索**：請在「意圖導向」填寫「請產出英文關鍵字」或「請同時給出英文搜尋詞」，或在「檢視與編輯搜尋策略」中手動加入英文查詢，再執行分析。
+        - **歐洲/美洲（建議一已實作）**：勾選歐洲或美洲時，系統會以 LLM 將主查詢與擴展查詢**翻譯為英文**，並用**英文關鍵字**對歐洲/美洲國際網域執行一輪非中文檢索（最多 3 條英文查詢、約 20 個網域）；結果與中文搜尋**共用 URL 去重**，避免重複與邏輯衝突。通用搜尋仍使用您生成/編輯的中文關鍵字。
+        - **若需更多非中文檢索**：可於「意圖導向」填寫「請產出英文關鍵字」或在「檢視與編輯搜尋策略」中手動加入英文查詢。
         
         **搜尋深度優化**
         - 通用搜尋使用 `basic` 深度（平衡速度與品質）
