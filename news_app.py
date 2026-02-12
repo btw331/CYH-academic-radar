@@ -1083,31 +1083,30 @@ def cache_query_expansion(query: str, expanded_queries: List[Dict], balanced_que
     except Exception as e:
         logger.warning(f"查詢擴展快取寫入失敗: {str(e)}")
 
-def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12, use_cache: bool = True) -> List[Dict[str, Any]]:
+def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12, use_cache: bool = True, focus_instruction: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     多層次查詢擴展機制（方案 1.1，優化版：減少 API 調用）
     
-    優化策略：
-    1. 使用快取避免重複調用
-    2. 合併 base 和 semantic 為一次 LLM 調用
+    Args:
+        focus_instruction: 選用。使用者意圖導向（如 "Focus on economic security, ignore gossip"），會注入提示以引導 LLM 生成方向；有值時不讀快取。
     
     Returns:
         List[Dict]: [{"query": "...", "type": "...", "priority": ...}, ...]
     """
-    # 檢查快取
-    if use_cache:
+    use_cache_this = use_cache and not (focus_instruction or "").strip()
+    if use_cache_this:
         cached = get_cached_query_expansion(query)
         if cached and cached.get("expanded_queries"):
             return cached["expanded_queries"][:max_expansions]
     
     expanded_queries = []
+    focus_block = f"\n【使用者意圖導向】請嚴格遵守：{focus_instruction.strip()}\n" if (focus_instruction or "").strip() else ""
     
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
         
-        # 優化：合併 base 和 semantic 為一次調用（減少 1 次 API 調用）
         combined_prompt = f"""
-        請針對議題「{query}」，生成搜尋關鍵字，包含以下兩個部分：
+        請針對議題「{query}」，生成搜尋關鍵字，包含以下兩個部分。{focus_block}
         
         【第一部分：基礎三軌】（3 個關鍵字）
         1. [事實軌]：針對事件發展、時間軸、新聞報導。
@@ -1177,8 +1176,8 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
                 if len(unique_queries) >= max_expansions:
                     break
         
-        # 存入快取
-        if use_cache:
+        # 存入快取（有 focus_instruction 時不寫入，避免覆蓋通用快取）
+        if use_cache_this:
             cache_query_expansion(query, unique_queries)
         
         logger.info(f"查詢擴展完成：生成了 {len(unique_queries)} 個擴展查詢（優化：合併為 1 次 API 調用）")
@@ -1191,16 +1190,15 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
             {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
             {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
         ]
-        # 即使失敗也快取降級結果
-        if use_cache:
+        if use_cache_this:
             cache_query_expansion(query, fallback)
         return fallback
 
 # 向後相容的函數
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=2, max=5))
-def generate_dynamic_keywords(query: str, api_key: str, use_cache: bool = True) -> List[str]:
-    """向後相容：返回前三個關鍵字（優化：使用快取）"""
-    expanded = generate_expanded_queries(query, api_key, max_expansions=3, use_cache=use_cache)
+def generate_dynamic_keywords(query: str, api_key: str, use_cache: bool = True, focus_instruction: Optional[str] = None) -> List[str]:
+    """向後相容：返回前三個關鍵字（優化：使用快取）。focus_instruction 會傳入 generate_expanded_queries 以導向意圖。"""
+    expanded = generate_expanded_queries(query, api_key, max_expansions=3, use_cache=use_cache, focus_instruction=focus_instruction)
     return [q["query"] for q in expanded[:3]]
 
 def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) -> Dict[str, List[str]]:
@@ -5637,7 +5635,11 @@ flowchart LR
 
 st.title(f"{analysis_mode.split(' ')[0]}")
 query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
-search_btn = st.button("🚀 啟動全域掃描", type="primary")
+focus_instruction = st.text_input(
+    "意圖導向 (選填)",
+    placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
+    help="引導關鍵字生成方向，留空則由系統自動生成"
+)
 
 if 'result' not in st.session_state: st.session_state.result = None
 if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
@@ -5645,21 +5647,65 @@ if 'sources' not in st.session_state: st.session_state.sources = None
 if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
 if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
 if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
+if 'keyword_plan' not in st.session_state: st.session_state.keyword_plan = None
 
-if search_btn and query and google_key and tavily_key:
+# ---------- Step 1: Generate Search Strategy ----------
+gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
+if gen_btn and query:
+    use_cache_enabled = st.session_state.get('use_cache', True)
+    if google_key:
+        with st.spinner("正在生成搜尋關鍵字..."):
+            expanded = generate_expanded_queries(
+                query, google_key, max_expansions=15, use_cache=use_cache_enabled,
+                focus_instruction=focus_instruction.strip() or None
+            )
+        kw_list = [q["query"] for q in expanded]
+    else:
+        kw_list = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析", f"{query} 最新發展", f"{query} 分析"]
+    st.session_state.keyword_plan = pd.DataFrame({"Keyword": kw_list, "Active": [True] * len(kw_list)})
+    st.success(f"已生成 {len(kw_list)} 個關鍵字，請在下方檢視並編輯後再執行搜尋。")
+    st.rerun()
+
+# ---------- Step 2: Review Strategy (editable table) ----------
+final_keywords = []
+if st.session_state.keyword_plan is not None:
+    st.markdown("**🕵️ 檢視與編輯搜尋策略**（勾選保留、取消勾選排除；可新增/刪除列）")
+    edited_df = st.data_editor(
+        st.session_state.keyword_plan,
+        num_rows="dynamic",
+        column_config={"Keyword": st.column_config.TextColumn("關鍵字", width="large"), "Active": st.column_config.CheckboxColumn("使用", default=True)},
+        use_container_width=True,
+        key="keyword_plan_editor"
+    )
+    st.session_state.keyword_plan = edited_df
+    final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
+    final_keywords = [k for k in final_keywords if k and k.strip()]
+
+# ---------- Step 3: Execute Analysis ----------
+search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
+
+if search_btn and query and tavily_key:
     st.session_state.result = None
     st.session_state.scenario_result = None
     
+    # 決定使用的關鍵字：若有檢視過的策略則用編輯後列表，否則即時生成
+    if final_keywords:
+        dynamic_keywords = final_keywords
+    else:
+        dynamic_keywords = None  # 將在 status 內生成
+    
     with st.status("🚀 啟動 V38.0 平衡報導分析引擎...", expanded=True) as status:
         
-        st.write("🧠 1. 生成動態搜尋策略...")
-        use_cache_enabled = st.session_state.get('use_cache', True)
-        if google_key:
-            dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled)
+        if dynamic_keywords is None:
+            st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
+            use_cache_enabled = st.session_state.get('use_cache', True)
+            if google_key:
+                dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
+            else:
+                dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
         else:
-            # 如果沒有 API Key，使用降級策略
-            dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
-        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords)}")
+            st.write("🧠 1. 使用您檢視/編輯後的搜尋策略...")
+        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords[:10])}{' ...' if len(dynamic_keywords) > 10 else ''}")
         
         regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
         st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
