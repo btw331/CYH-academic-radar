@@ -5168,40 +5168,22 @@ JSON 必須且僅包含以下三個鍵（英文）："network"、"stance_map"、
 
     user_prompt = f"""請分析以下報告並輸出「單一」JSON 物件，格式如下（鍵名必須一致）：
 
-{{
-  "network": {{
-    "nodes": [{{"id": "角色或組織名稱", "group": "陣營/國家", "size": 5}}],
-    "edges": [{{"source": "名稱1", "target": "名稱2", "label": "關係說明", "type": "support 或 oppose 或 money"}}]
-  }},
-  "stance_map": {{
-    "items": [{{"name": "名稱", "x": -10到10的數字（親中到親美）, "y": -10到10的數字（鴿派到鷹派）, "desc": "簡短理由"}}]
-  }},
-  "timeline": {{
-    "events": [{{"date": "YYYY-MM-DD", "event": "事件標題", "category": "Politics 或 Military 或 Economy"}}]
-  }}
-}}
+{{"network": {{"nodes": [{{"id": "名稱", "group": "陣營", "size": 5}}], "edges": [{{"source": "A", "target": "B", "label": "關係", "type": "support"}}]}}, "stance_map": {{"items": [{{"name": "名稱", "x": 0, "y": 0, "desc": "理由"}}]}}, "timeline": {{"events": [{{"date": "YYYY-MM-DD", "event": "事件", "category": "Politics"}}]}}}}
 
 報告內容：
 {text_input}
 
-請直接輸出上述格式的單一 JSON，不要用 ``` 包住，不要其他文字。"""
+請「只」輸出上述格式的一個 JSON 物件，鍵名必須為 network、stance_map、timeline。不要任何其他文字、不要 markdown。"""
 
     try:
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=api_key,
-            temperature=0.0,
-        )
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_prompt})
-        raw = _extract_text_from_llm_content(response.content)
+        raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
         if not raw or not isinstance(raw, str):
-            logger.warning("generate_visual_data: LLM 返回為空或非字串")
+            logger.warning("generate_visual_data: call_gemini 返回為空或非字串")
             return None
+        raw = raw.strip()
         data = _extract_json_from_llm_raw(raw)
         if not data:
-            logger.warning("generate_visual_data: 無法從回傳中解析 JSON，原始長度=%s", len(raw))
+            logger.warning("generate_visual_data: 無法從回傳中解析 JSON，原始長度=%s 前 500 字=%s", len(raw), (raw[:500] if raw else ""))
             return None
         # 正規化結構，確保前端需要的鍵存在
         if "network" not in data or not isinstance(data["network"], dict):
@@ -5221,6 +5203,45 @@ JSON 必須且僅包含以下三個鍵（英文）："network"、"stance_map"、
     except Exception as e:
         logger.error("generate_visual_data: 視覺化資料萃取失敗: %s", str(e))
         return None
+
+
+def build_visual_data_fallback(parsed_result: Dict[str, Any], sources: Optional[List[Dict]] = None) -> Dict[str, Any]:
+    """
+    當 LLM 萃取失敗時，從已解析的報告時間軸與來源列表組出最小視覺化資料，
+    至少可顯示「未來時間軸」分頁，避免使用者只看到錯誤訊息。
+    """
+    events = []
+    timeline = parsed_result.get("timeline") or []
+    for item in timeline:
+        if isinstance(item, dict):
+            events.append({
+                "date": item.get("date", ""),
+                "event": item.get("title", item.get("media", "")) or "—",
+                "category": "Politics",
+            })
+        else:
+            continue
+    if not events and isinstance(timeline, list):
+        for i, row in enumerate(timeline[:20]):
+            if isinstance(row, dict):
+                events.append({
+                    "date": row.get("date", "—"),
+                    "event": row.get("title", row.get("media", str(i + 1))),
+                    "category": "Politics",
+                })
+    if sources and not events:
+        for i, s in enumerate(sources[:15]):
+            events.append({
+                "date": (s.get("final_date") or s.get("published_date") or "—")[:10],
+                "event": (s.get("title") or "報導")[:80],
+                "category": "Politics",
+            })
+    return {
+        "network": {"nodes": [], "edges": []},
+        "stance_map": {"items": []},
+        "timeline": {"events": events},
+        "_fallback": True,
+    }
 
 
 def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
@@ -7099,6 +7120,8 @@ if st.session_state.result:
     if report_text and report_text.strip():
         st.markdown("---")
         if st.session_state.get("visual_war_room_data"):
+            if st.session_state.get("visual_war_room_fallback"):
+                st.info("⚠️ 無法從報告中萃取出完整視覺化資料（網絡圖、立場圖需 LLM 解析）。以下僅顯示由「報告時間軸／來源列表」產生的部分內容。")
             render_visual_war_room(st.session_state.visual_war_room_data)
         if st.button("📊 啟動視覺化戰情室 (Visual War Room)", key="visual_war_room_btn"):
             if not google_key or not google_key.strip():
@@ -7108,9 +7131,14 @@ if st.session_state.result:
                     vdata = generate_visual_data(report_text, google_key)
                 if vdata:
                     st.session_state.visual_war_room_data = vdata
+                    st.session_state.visual_war_room_fallback = False
                     st.rerun()
                 else:
-                    st.warning("無法從報告中萃取出視覺化資料，請稍後再試或檢查報告內容。")
+                    # 改為從已解析的報告時間軸與來源組出最小視覺化，至少顯示時間軸
+                    fallback = build_visual_data_fallback(data, st.session_state.get("sources"))
+                    st.session_state.visual_war_room_data = fallback
+                    st.session_state.visual_war_room_fallback = True
+                    st.rerun()
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
