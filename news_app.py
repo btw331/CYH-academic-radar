@@ -3302,6 +3302,25 @@ def execute_hybrid_search(
             tasks.append({"name": "Korea_Guard", "query": validate_query_length(query), "params": korea_params})
             logger.info(f"已建立韓國媒體保底搜尋，總任務數: {len(tasks)}")
 
+    # === 建議二：歐洲/美洲分區保底（依視角拆成子查詢，include_domains 精簡 10–15 網域，與亞洲保底對稱）===
+    # 每個選定視角都有對應保底，避免只靠通用搜尋；使用主查詢（中文），不設 country
+    if "歐洲" in selected_str and INTL_EUROPE_WHITELIST:
+        europe_params = optimized_params.copy()
+        europe_params.pop("country", None)
+        europe_params["max_results"] = 8
+        europe_params["search_depth"] = "advanced"
+        europe_params["include_domains"] = INTL_EUROPE_WHITELIST[:15]
+        tasks.append({"name": "Europe_Guard", "query": validate_query_length(query), "params": europe_params})
+        logger.info(f"已建立歐洲區域保底搜尋（{len(INTL_EUROPE_WHITELIST[:15])} 個網域），總任務數: {len(tasks)}")
+    if "美洲" in selected_str and INTL_AMERICAS_WHITELIST:
+        americas_params = optimized_params.copy()
+        americas_params.pop("country", None)
+        americas_params["max_results"] = 8
+        americas_params["search_depth"] = "advanced"
+        americas_params["include_domains"] = INTL_AMERICAS_WHITELIST[:15]
+        tasks.append({"name": "Americas_Guard", "query": validate_query_length(query), "params": americas_params})
+        logger.info(f"已建立美洲區域保底搜尋（{len(INTL_AMERICAS_WHITELIST[:15])} 個網域），總任務數: {len(tasks)}")
+
     # === 建議一：歐洲/美洲非中文檢索（英文關鍵字 + 國際網域，與中文通用搜尋並行，結果依 URL 去重）===
     # 衝突避免：英文任務使用獨立參數（不設 country，不與台灣保底混用），且僅在選歐洲/美洲時加入
     _needs_english_guard = "歐洲" in selected_str or "美洲" in selected_str
@@ -3541,6 +3560,21 @@ def execute_hybrid_search(
                     other_guard_count += 1
     if other_guard_count:
         logger.info(f"國際保底（亞洲/日本/韓國）共加入 {other_guard_count} 筆結果")
+
+    # C2. 建議二：區域保底（歐洲/美洲）— 分區子查詢結果，共用 seen_urls 去重
+    region_guards = ["Europe_Guard", "Americas_Guard"]
+    region_guard_count = 0
+    for guard_name in region_guards:
+        if guard_name in results_map:
+            for item in results_map[guard_name]:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("url") and item["url"] not in seen_urls:
+                    seen_urls.add(item["url"])
+                    final_list.append(item)
+                    region_guard_count += 1
+    if region_guard_count:
+        logger.info(f"區域保底（歐洲/美洲）共加入 {region_guard_count} 筆結果")
 
     # D. 建議一：英文檢索結果（歐洲/美洲非中文）— 與前述任務共用 seen_urls，避免重複
     english_guard_keys = [k for k in results_map.keys() if k.startswith("English_Guard_")]
@@ -3974,12 +4008,23 @@ def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
     
     return context_line, res
 
-def get_search_context(query: str, api_key_tavily: str, days_back: int, selected_regions: List[str], max_results: int, dynamic_keywords: List[str], use_cache: bool = True, google_api_key: str = None):
+def get_search_context(
+    query: str,
+    api_key_tavily: str,
+    days_back: int,
+    selected_regions: List[str],
+    max_results: int,
+    dynamic_keywords: List[str],
+    use_cache: bool = True,
+    google_api_key: str = None,
+    enable_english_for_regions: bool = True,
+):
     """
     獲取搜尋上下文（完整版 - 整合事實查核、公信力評分、平衡檢索）
     
     Args:
         google_api_key: 用於事實查核的 Google API Key
+        enable_english_for_regions: 建議三；當勾選歐洲/美洲時是否自動加入英文關鍵字檢索（預設 True）
     
     Returns:
         Tuple: (context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis)
@@ -4066,9 +4111,9 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
             all_queries = dynamic_keywords + balanced_expanded
             logger.info(f"開始執行混和搜尋: 查詢={query[:50]}, 擴展查詢數={len(all_queries)}, strict_mode={is_strict_mode}, selected_regions={selected_regions}")
 
-            # 建議一：選歐洲/美洲時產出英文關鍵字並進行非中文檢索（翻譯在執行前完成，避免搜尋邏輯衝突）
+            # 建議一＋建議三：選歐洲/美洲時可自動產出英文關鍵字並進行非中文檢索（可由 UI 核取方塊關閉）
             english_queries: List[str] = []
-            if google_api_key and selected_regions:
+            if enable_english_for_regions and google_api_key and selected_regions:
                 _sel_str = str(selected_regions)
                 if "歐洲" in _sel_str or "美洲" in _sel_str:
                     english_queries = translate_queries_to_english(
@@ -4076,6 +4121,11 @@ def get_search_context(query: str, api_key_tavily: str, days_back: int, selected
                     )
                     if english_queries:
                         logger.info(f"已產出 {len(english_queries)} 條英文查詢，將用於歐洲/美洲非中文檢索")
+            # 建議三：寫入上次英文查詢供策略表顯示（僅在非快取路徑更新）
+            try:
+                st.session_state["last_english_queries"] = english_queries
+            except Exception:
+                pass
             
             # 如果 strict_mode 且選定了區域，先嘗試無網域過濾的測試搜尋
             if is_strict_mode and selected_regions:
@@ -5218,7 +5268,26 @@ with st.sidebar:
             "搜尋視角 (Region) - 可複選",
             ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
             default=["🇹🇼 台灣 (Taiwan)"],
-            help="視角決定「保底搜尋」的網域範圍（台灣=藍/綠/官方；亞洲=亞洲國際媒體）。目前關鍵字「不會自動翻譯」— 檢索一律使用您生成/編輯後的關鍵字語言；若需歐美英文來源，請在「意圖導向」填「請產出英文關鍵字」或在策略表中手動加入英文查詢。日本/韓國議題建議加選「亞洲」。"
+            help="視角決定保底網域與是否觸發英文檢索；詳見下方「搜尋視角說明」。"
+        )
+        with st.expander("📖 搜尋視角說明（視角→網域／英文檢索）", expanded=False):
+            st.markdown("""
+            **視角與保底網域對應**
+            | 視角 | 保底網域／行為 |
+            |------|----------------|
+            | 台灣 | 藍/綠/官方網域 + Tavily country 優先台灣 |
+            | 亞洲 | 亞洲國際媒體；查詢含日本/韓國關鍵字時加日本/韓國媒體保底 |
+            | 歐洲 | 歐洲區域保底（約 15 網域）+ 可自動英文關鍵字檢索（見下方選項） |
+            | 美洲 | 美洲區域保底（約 15 網域）+ 可自動英文關鍵字檢索 |
+            | 獨立 | 納入獨立/自媒體網域 |
+
+            **英文檢索觸發**：勾選歐洲或美洲時，可選擇是否「自動加入英文關鍵字檢索」（系統會將查詢翻譯為英文並對歐美網域搜尋）。若關閉，仍會執行該區域的**中文查詢**保底。
+            """)
+        enable_english_for_regions = st.checkbox(
+            "當勾選歐洲/美洲時，自動加入英文關鍵字檢索",
+            value=st.session_state.get("enable_english_for_regions", True),
+            key="enable_english_for_regions",
+            help="建議三：可關閉以僅使用中文查詢對歐美網域保底，或手動在策略表加入英文查詢。"
         )
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
@@ -5347,7 +5416,9 @@ flowchart LR
         **搜尋視角與關鍵字語言 (Region & Keyword Language)**
         - **台灣**：保底搜尋限定藍/綠/官方網域，並可設 Tavily `country: taiwan`。
         - **亞洲**：增加亞洲國際媒體保底（INTL_ASIA_WHITELIST）；若查詢含日本/韓國關鍵字會再加日本/韓國媒體保底。
-        - **歐洲/美洲（建議一已實作）**：勾選歐洲或美洲時，系統會以 LLM 將主查詢與擴展查詢**翻譯為英文**，並用**英文關鍵字**對歐洲/美洲國際網域執行一輪非中文檢索（最多 3 條英文查詢、約 20 個網域）；結果與中文搜尋**共用 URL 去重**，避免重複與邏輯衝突。通用搜尋仍使用您生成/編輯的中文關鍵字。
+        - **歐洲/美洲（建議一+二已實作）**：勾選歐洲或美洲時，（1）**建議二**：各建一組**區域保底**任務（Europe_Guard / Americas_Guard），以主查詢（中文）+ 該區白名單（精簡 15 個網域）、`search_depth=advanced`，確保該視角有對應保底；（2）**建議一**：並以 LLM 翻譯為英文關鍵字，對歐洲/美洲網域執行非中文檢索（最多 3 條英文查詢）；結果皆與中文搜尋**共用 URL 去重**。
+        - **建議三（透明度與可控）**：側欄提供「搜尋視角說明」摺疊與核取方塊「當勾選歐洲/美洲時，自動加入英文關鍵字檢索」；可關閉以僅用中文查詢保底。策略表下方可顯示「英文檢索關鍵字（上次執行）」供檢視。
+        - **視角→觸發對應**：台灣→藍/綠/官方保底 + country；亞洲→亞洲國際保底（+ 日韓關鍵字時日韓保底）；歐洲→Europe_Guard + 可選英文檢索；美洲→Americas_Guard + 可選英文檢索；獨立→納入獨立媒體網域。
         - **若需更多非中文檢索**：可於「意圖導向」填寫「請產出英文關鍵字」或在「檢視與編輯搜尋策略」中手動加入英文查詢。
         
         **搜尋深度優化**
@@ -5836,7 +5907,7 @@ query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電�
 focus_instruction = st.text_input(
     "意圖導向 (選填)",
     placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
-    help="引導關鍵字生成方向，留空則由系統自動生成"
+    help="引導關鍵字生成方向，留空則由系統自動生成。可填「請產出英文關鍵字」或「請同時給出英文搜尋詞」以加強非中文檢索。"
 )
 
 if 'result' not in st.session_state: st.session_state.result = None
@@ -5878,6 +5949,13 @@ if st.session_state.keyword_plan is not None:
     st.session_state.keyword_plan = edited_df
     final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
     final_keywords = [k for k in final_keywords if k and k.strip()]
+    # 建議三：顯示上次執行時使用的英文檢索關鍵字（僅供參考，不可編輯）
+    last_en = st.session_state.get("last_english_queries", [])
+    if last_en and isinstance(last_en, list) and len(last_en) > 0:
+        with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
+            st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
+            for i, q in enumerate(last_en, 1):
+                st.text(f"{i}. {q}")
 
 # ---------- Step 3: Execute Analysis ----------
 search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
@@ -5952,8 +6030,9 @@ if search_btn and query and tavily_key:
         # 執行搜尋（整合所有功能）
         st.write("🔍 開始執行完整搜尋...")
         search_result = get_search_context(
-            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords, 
-            use_cache=use_cache_enabled, google_api_key=google_key
+            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
+            use_cache=use_cache_enabled, google_api_key=google_key,
+            enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
         )
         
         if len(search_result) >= 8:
