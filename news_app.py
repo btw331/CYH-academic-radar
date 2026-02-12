@@ -1100,40 +1100,39 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
             return cached["expanded_queries"][:max_expansions]
     
     expanded_queries = []
-    focus_block = f"\n【使用者意圖導向】請嚴格遵守：{focus_instruction.strip()}\n" if (focus_instruction or "").strip() else ""
+    focus_display = (focus_instruction or "").strip() or "無（請依照標準情報程序分析）"
     
     try:
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
         
         combined_prompt = f"""
-        你是極度專業的情報檢索專家。請針對議題「{query}」生成 3 組「高精準度」的搜尋關鍵字。{focus_block}
+        你是極度專業的情報檢索專家。請針對議題「{query}」生成 3 組「高精準度」的搜尋關鍵字。
         
+        【使用者特別指令 (Focus Instruction)】：
+        {focus_display}
+
         【嚴格禁止】：
-        1. 禁止使用泛泛的詞彙（如「新聞」、「總整理」、「懶人包」）。
-        2. 禁止重複查詢詞（如「高市早苗 中國」與「中國 高市早苗」視為重複）。
+        1. 禁止使用泛泛的詞彙（如「新聞」、「總整理」、「懶人包」、「影響」），除非該詞彙是專有名詞的一部分。
+        2. 禁止重複查詢詞。
+
+        【必須包含實體 (Must Include Entities)】：
+        請優先提取議題相關的：
+        - **專有名詞**：法案名稱（如「經濟安保法」）、條約、專有術語（如「存亡危機事態」）。
+        - **關鍵人物**：除了主角外，涉及的關鍵對手或第三方（如「薛劍」、「川普」）。
+        - **具體行動**：如「稀土制裁」、「撤回言論」、「軍事演習」。
+
+        請依照以下三個戰略維度生成（每個維度 1 個關鍵字）：
         
-        【必須包含】：
-        1. **專有名詞 (Proper Nouns)**：具體的法案名稱、條約、專有術語（如「存亡危機事態」）。
-        2. **具體行動 (Specific Actions)**：如「稀土制裁」、「撤回言論」、「軍事演習」。
-        3. **關鍵人物 (Key Figures)**：除了主角外，涉及的關鍵對手或第三方（如「薛劍」、「川普」）。
-        
-        請依照以下三個戰略維度生成：
-        
-        【維度一：核心引爆點 (Core Flashpoint)】
-        找出引發爭議的最具體事件或言論。
-        (範例：高市早苗 "存亡危機事態" 台灣)
-        
-        【維度二：具體攻防與代價 (Action & Retaliation)】
-        找出雙方的具體制裁、報復或法律行動。
-        (範例：中國 對日 "稀土出口管制")
-        
-        【維度三：地緣連動 (Geopolitical Nexus)】
-        找出此議題如何影響美日同盟或區域安全架構。
-        (範例：高市早苗 川普 "日美安保" 修訂)
-        
-        請以以下格式輸出（不要輸出其他文字）：
+        1. **[Core Flashpoint] 核心引爆點**：引發爭議的最具體事件、言論或法案。
+           (例：高市早苗 "存亡危機事態" 台灣)
+        2. **[Action & Retaliation] 具體攻防/代價**：雙方的具體制裁、報復或法律行動。
+           (例：中國 對日 "稀土出口管制")
+        3. **[Geopolitical Nexus] 地緣/外部連動**：涉及第三方（美/歐）或區域安全架構的影響。
+           (例：高市早苗 川普 "日美安保" 修訂)
+
+        【輸出格式】：
         第一部分：關鍵字1, 關鍵字2, 關鍵字3
-        第二部分：(這裡放 6-8 個相關的語義擴展詞，包含專有名詞與英文關鍵字)
+        第二部分：(6-8 個語義擴展詞，包含英文關鍵字)
         """
         
         combined_resp = _extract_text_from_llm_content(llm.invoke(combined_prompt).content)
