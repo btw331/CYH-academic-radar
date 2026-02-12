@@ -1106,35 +1106,46 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
         
         combined_prompt = f"""
-        請針對議題「{query}」，生成搜尋關鍵字，包含以下兩個部分。{focus_block}
+        你是極度專業的情報檢索專家。請針對議題「{query}」生成 3 組「高精準度」的搜尋關鍵字。{focus_block}
         
-        【第一部分：基礎三軌】（3 個關鍵字）
-        1. [事實軌]：針對事件發展、時間軸、新聞報導。
-        2. [觀點軌]：針對爭議、正反評論、社論。
-        3. [深度軌]：針對懶人包、影響分析、法規細節。
+        【嚴格禁止】：
+        1. 禁止使用泛泛的詞彙（如「新聞」、「總整理」、「懶人包」）。
+        2. 禁止重複查詢詞（如「高市早苗 中國」與「中國 高市早苗」視為重複）。
         
-        【第二部分：語義擴展】（6-8 個關鍵字）
-        生成語義相關的搜尋查詢變體，涵蓋不同的表達方式、專業術語和語境。
+        【必須包含】：
+        1. **專有名詞 (Proper Nouns)**：具體的法案名稱、條約、專有術語（如「存亡危機事態」）。
+        2. **具體行動 (Specific Actions)**：如「稀土制裁」、「撤回言論」、「軍事演習」。
+        3. **關鍵人物 (Key Figures)**：除了主角外，涉及的關鍵對手或第三方（如「薛劍」、「川普」）。
         
-        請以以下格式輸出：
+        請依照以下三個戰略維度生成：
+        
+        【維度一：核心引爆點 (Core Flashpoint)】
+        找出引發爭議的最具體事件或言論。
+        (範例：高市早苗 "存亡危機事態" 台灣)
+        
+        【維度二：具體攻防與代價 (Action & Retaliation)】
+        找出雙方的具體制裁、報復或法律行動。
+        (範例：中國 對日 "稀土出口管制")
+        
+        【維度三：地緣連動 (Geopolitical Nexus)】
+        找出此議題如何影響美日同盟或區域安全架構。
+        (範例：高市早苗 川普 "日美安保" 修訂)
+        
+        請以以下格式輸出（不要輸出其他文字）：
         第一部分：關鍵字1, 關鍵字2, 關鍵字3
-        第二部分：關鍵字1, 關鍵字2, 關鍵字3, 關鍵字4, 關鍵字5, 關鍵字6
-        
-        範例：
-        第一部分：台積電美國設廠事件, 台積電美國設廠爭議, 台積電美國設廠分析
-        第二部分：台積電海外投資, 半導體產業外移, 科技供應鏈重組, 美國製造業回流, 晶圓廠建置, 地緣政治影響
+        第二部分：(這裡放 6-8 個相關的語義擴展詞，包含專有名詞與英文關鍵字)
         """
         
         combined_resp = _extract_text_from_llm_content(llm.invoke(combined_prompt).content)
         
-        # 解析第一部分（基礎三軌）
+        # 解析第一部分（三戰略維度：核心引爆點、具體攻防、地緣連動）
         part1_match = re.search(r'第一部分[：:]\s*(.+?)(?=第二部分|$)', combined_resp, re.DOTALL)
         if part1_match:
             base_keywords = [k.strip() for k in part1_match.group(1).split(',') if k.strip()]
             if len(base_keywords) >= 3:
-                expanded_queries.append({"query": base_keywords[0], "type": "事實軌", "priority": 1})
-                expanded_queries.append({"query": base_keywords[1], "type": "觀點軌", "priority": 1})
-                expanded_queries.append({"query": base_keywords[2], "type": "深度軌", "priority": 1})
+                expanded_queries.append({"query": base_keywords[0], "type": "核心引爆點", "priority": 1})
+                expanded_queries.append({"query": base_keywords[1], "type": "具體攻防與代價", "priority": 1})
+                expanded_queries.append({"query": base_keywords[2], "type": "地緣連動", "priority": 1})
         
         # 解析第二部分（語義擴展）
         part2_match = re.search(r'第二部分[：:]\s*(.+?)$', combined_resp, re.DOTALL)
@@ -1144,15 +1155,15 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
                 if kw and kw not in [q["query"] for q in expanded_queries]:
                     expanded_queries.append({"query": kw, "type": "語義擴展", "priority": 2})
         
-        # 如果解析失敗，使用降級策略
+        # 如果解析失敗，使用降級策略（仍盡量用議題+具體詞）
         if len(expanded_queries) < 3:
             expanded_queries.extend([
-                {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
-                {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
-                {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+                {"query": f"{query} 事件 爭議", "type": "核心引爆點", "priority": 1},
+                {"query": f"{query} 制裁 影響", "type": "具體攻防與代價", "priority": 1},
+                {"query": f"{query} 地緣 同盟", "type": "地緣連動", "priority": 1}
             ])
         
-        # 層次三：語境級擴展（時間/觀點維度）- 不需要 LLM
+        # 語境級擴展（時間/觀點維度）- 不需 LLM，避免過於泛化
         contextual_queries = [
             f"{query} 最新發展",
             f"{query} 歷史背景",
@@ -1186,9 +1197,9 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
     except Exception as e:
         logger.warning(f"查詢擴展失敗，使用基礎關鍵字: {str(e)}")
         fallback = [
-            {"query": f"{query} 新聞 事件", "type": "事實軌", "priority": 1},
-            {"query": f"{query} 爭議 評論", "type": "觀點軌", "priority": 1},
-            {"query": f"{query} 懶人包 分析", "type": "深度軌", "priority": 1}
+            {"query": f"{query} 事件 爭議", "type": "核心引爆點", "priority": 1},
+            {"query": f"{query} 制裁 影響", "type": "具體攻防與代價", "priority": 1},
+            {"query": f"{query} 地緣 同盟", "type": "地緣連動", "priority": 1}
         ]
         if use_cache_this:
             cache_query_expansion(query, fallback)
