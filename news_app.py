@@ -97,13 +97,13 @@ EMOTIONAL_WORDS_DIVISOR = 8.0  # 情感詞彙計算除數
 EMOTIONAL_TITLE_BONUS = 0.2  # 標題包含情感詞彙的加權
 
 # ==========================================
-# 證據強度分級閾值常數
+# 證據強度分級閾值常數（GRADE 對應；已微調使扎實文本易達強/中強）
 # ==========================================
-EVIDENCE_LEVEL_A_PLUS = 0.85  # A+ 等級閾值
-EVIDENCE_LEVEL_A = 0.70  # A 等級閾值
-EVIDENCE_LEVEL_B_PLUS = 0.55  # B+ 等級閾值
-EVIDENCE_LEVEL_B = 0.40  # B 等級閾值
-EVIDENCE_LEVEL_C = 0.25  # C 等級閾值
+EVIDENCE_LEVEL_A_PLUS = 0.85  # A+ 極強
+EVIDENCE_LEVEL_A = 0.65      # A 強（原 0.70，略降以反映內容權重上調）
+EVIDENCE_LEVEL_B_PLUS = 0.50  # B+ 中強（原 0.55）
+EVIDENCE_LEVEL_B = 0.35      # B 中等（原 0.40）
+EVIDENCE_LEVEL_C = 0.22      # C 中弱（原 0.25）
 
 # ==========================================
 # 協調行為偵測閾值常數
@@ -2100,7 +2100,8 @@ def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
     評估內容品質（內容導向篩選的核心）
     
     依據文章內文特徵評分，不依賴來源黑白名單：
-    - 長度、結構、事實密度、引用、 attribution、標題內容一致
+    - 長度、結構、事實密度、引用、attribution、標題內容一致
+    權重已上調（2026.02）：使扎實文本更容易獲得「強」「中強」證據等級。
     """
     quality_score = 0.0
     indicators = {}
@@ -2108,46 +2109,47 @@ def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
     if not content:
         return {'score': 0.0, 'indicators': indicators}
     
-    # 長度評估（扎實報導通常較長）
+    # 長度評估（扎實報導通常較長；上調給分以反映文本內容價值）
     content_length = len(content)
     if content_length > CONTENT_QUALITY_LONG:
-        quality_score += 0.22
+        quality_score += 0.28
         indicators['length'] = '長'
     elif content_length > CONTENT_QUALITY_MEDIUM:
-        quality_score += 0.17
+        quality_score += 0.22
         indicators['length'] = '中'
     elif content_length > CONTENT_QUALITY_SHORT:
-        quality_score += 0.12
+        quality_score += 0.16
         indicators['length'] = '短'
     else:
+        quality_score += 0.06
         indicators['length'] = '極短'
     
-    # 完整性評估（結構化資訊）
+    # 完整性評估（結構化資訊：日期、數字、引述）
     has_dates = bool(re.search(r'\d{4}[-年]\d{1,2}[-月]\d{1,2}', content))
     has_numbers = bool(re.search(r'\d+', content))
     has_quotes = bool('"' in content or '"' in content or "'" in content)
     
     if has_dates:
-        quality_score += 0.12
+        quality_score += 0.14
         indicators['has_dates'] = True
     if has_numbers:
-        quality_score += 0.08
+        quality_score += 0.10
         indicators['has_numbers'] = True
     if has_quotes:
-        quality_score += 0.10
+        quality_score += 0.12
         indicators['has_quotes'] = True
     
-    # 引用與 attribution（記者、據、指出、來源、專家）
+    # 引用與 attribution（記者、據、指出、來源、專家；上調以肯定有依據的文本）
     citation_patterns = ['來源', '引用', '據', '指出', '表示', 'Source', 'reference', '記者', '報導', '專家', '認為', '分析']
     citation_count = sum(1 for pattern in citation_patterns if pattern in content)
     if citation_count > 3:
-        quality_score += 0.18
+        quality_score += 0.22
         indicators['citations'] = '多'
     elif citation_count > 1:
-        quality_score += 0.12
+        quality_score += 0.16
         indicators['citations'] = '有'
     elif citation_count > 0:
-        quality_score += 0.06
+        quality_score += 0.10
         indicators['citations'] = '少'
     
     # 標題與內容相關性（標題黨扣分已在 style_score）
@@ -2156,10 +2158,10 @@ def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
         content_words = set(content.lower().split()[:50])
         overlap = len(title_words & content_words) / len(title_words) if title_words else 0
         if overlap > CONTENT_OVERLAP_HIGH:
-            quality_score += 0.12
+            quality_score += 0.14
             indicators['relevance'] = '高'
         elif overlap > CONTENT_OVERLAP_MEDIUM:
-            quality_score += 0.08
+            quality_score += 0.10
             indicators['relevance'] = '中'
         else:
             indicators['relevance'] = '低'
@@ -2171,13 +2173,16 @@ def assess_content_quality(content: str, title: str) -> Dict[str, Any]:
 
 def calculate_academic_evidence_level(url: str, source_category: str, content: str, title: str, all_sources: Optional[List[Dict]] = None) -> Tuple[str, float, Dict[str, Any]]:
     """
-    學術級證據強度分級系統（方案 2.2）
+    學術級證據強度分級系統（方案 2.2，依 GRADE 多維度評分）
     
     參考 GRADE 標準，實作多維度評分：
     - Tier 1: 官方原始文檔、同儕評審論文、權威機構報告
     - Tier 2: 專業媒體深度調查、獨立媒體機構報告、國際權威媒體
     - Tier 3: 一般媒體報導、專家評論、組織聲明
     - Tier 4: 社群媒體、個人部落格、內容農場
+    
+    綜合公式權重：內容品質 46%、來源 10%、公信力 10%、語言風格 17%、交叉驗證 12%、網站品質 5%；
+    扎實文本（content_score≥0.55 且 style_score≥0.55）享有保底加分，使「強」「中強」更易出現。
     
     Args:
         url: 來源 URL
@@ -2316,22 +2321,22 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
     website_quality = assess_website_quality(url, content)
     details["website_quality"] = website_quality
     
-    # === 綜合評分（內容導向：以文章品質為主，來源為輔）===
-    # 設計理念：不過度依賴黑白名單，高品質內容可彌補來源評級不足
+    # === 綜合評分（GRADE 多維度；內容權重已上調，使扎實文本易達強/中強）===
+    # 方法論：來源類型、公信力、內容品質、語言風格、交叉驗證、網站品質、利益衝突
     final_score = (
-        source_score * 0.12 +      # 來源類型（降低，避免域名決定一切）
-        credibility_score * 0.12 + # 來源公信力（降低）
-        content_score * 0.38 +     # 內容品質（提高：長度、結構、引用、事實密度）
-        style_score * 0.18 +       # 語言風格（提高：非聳動、非標題黨）
-        cross_validation_score * 0.15 +
+        source_score * 0.10 +      # 來源類型（GRADE Tier）
+        credibility_score * 0.10 + # 來源公信力
+        content_score * 0.46 +     # 內容品質（上調：長度、結構、引用、事實密度為核心）
+        style_score * 0.17 +       # 語言風格（非聳動、非標題黨）
+        cross_validation_score * 0.12 +
         website_quality['quality_score'] * 0.05
     )
     if conflict_score < 0:
-        final_score += conflict_score * 0.08  # 利益衝突扣分
-    # 內容品質加分：若內文明顯扎實，不受限於來源評級
-    if content_score >= 0.65 and style_score >= 0.65:
-        content_bonus = min(0.15, (content_score - 0.5) * 0.3)
-        final_score = max(final_score, 0.42 + content_bonus)  # 至少「中等」起跳
+        final_score += conflict_score * 0.06  # 利益衝突扣分
+    # 內容品質保底：扎實內文可拉高證據等級，不受限於來源評級
+    if content_score >= 0.55 and style_score >= 0.55:
+        content_bonus = min(0.18, (content_score - 0.45) * 0.35)
+        final_score = max(final_score, 0.48 + content_bonus)  # 至少傾向「中強」起跳
     final_score = max(0.0, min(1.0, final_score))
     
     # === 轉換為等級 ===
@@ -3477,6 +3482,17 @@ def execute_hybrid_search(
                 })
         logger.info(f"已建立 {min(2, len(korean_queries))} 個韓文檢索任務（韓國媒體），總任務數: {len(tasks)}")
 
+    # === 獨立/自媒體保底（勾選「獨立/自媒體」時，對 INDIE_WHITELIST 執行專用搜尋）===
+    if "獨立" in selected_str and INDIE_WHITELIST:
+        indie_domains = INDIE_WHITELIST[:20]  # 精簡以符合 Tavily 建議
+        indie_params = optimized_params.copy()
+        indie_params.pop("country", None)
+        indie_params["max_results"] = 8
+        indie_params["search_depth"] = "advanced"
+        indie_params["include_domains"] = indie_domains
+        tasks.append({"name": "Indie_Guard", "query": validate_query_length(query), "params": indie_params})
+        logger.info(f"已建立獨立/自媒體保底搜尋（{len(indie_domains)} 個網域），總任務數: {len(tasks)}")
+
     # === 建議二：歐洲/美洲分區保底（含 INTL_WEST_WHITELIST 調查／國際權威，網域精簡 15）===
     # 每個選定視角都有對應保底；併入西方調查媒體白名單，避免只靠通用搜尋
     if "歐洲" in selected_str and (INTL_EUROPE_WHITELIST or INTL_WEST_WHITELIST):
@@ -3745,6 +3761,19 @@ def execute_hybrid_search(
                     other_guard_count += 1
     if other_guard_count:
         logger.info(f"國際保底（亞洲/日本/韓國）共加入 {other_guard_count} 筆結果")
+
+    # C1a. 獨立/自媒體保底結果
+    if "Indie_Guard" in results_map:
+        indie_count = 0
+        for item in results_map["Indie_Guard"]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("url") and item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                final_list.append(item)
+                indie_count += 1
+        if indie_count:
+            logger.info(f"獨立/自媒體保底共加入 {indie_count} 筆結果")
 
     # C1b. 亞洲日文/韓文檢索結果（日本/韓國在地媒體）— 共用 seen_urls 去重
     asia_lang_keys = [k for k in results_map.keys() if k.startswith("Asia_Japanese_Guard_") or k.startswith("Asia_Korean_Guard_")]
@@ -5493,7 +5522,7 @@ with st.sidebar:
             | 亞洲 | 亞洲國際媒體 + **自動產出日文/韓文關鍵字**對日本/韓國媒體檢索（重要） |
             | 歐洲 | 歐洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索（見下方選項） |
             | 美洲 | 美洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索 |
-            | 獨立 | 納入獨立/自媒體網域 |
+            | 獨立 | 獨立/自媒體保底搜尋（Indie_Guard，約 20 網域）+ 來源分類標為獨立 |
 
             **英文檢索觸發**：勾選歐洲或美洲時，可選擇是否「自動加入英文關鍵字檢索」（系統會將查詢翻譯為英文並對歐美網域搜尋）。若關閉，仍會執行該區域的**中文查詢**保底。
             """)
@@ -5632,7 +5661,7 @@ flowchart LR
         - **亞洲**：增加亞洲國際媒體保底（INTL_ASIA_WHITELIST）；**並自動產出日文與韓文關鍵字**，對日本/韓國網域執行日文/韓文檢索（各最多 2 條查詢），以覆蓋在地媒體。若查詢含日本/韓國關鍵字也會以中文再加日本/韓國媒體保底。
         - **歐洲/美洲（建議一+二已實作）**：勾選歐洲或美洲時，（1）**建議二**：各建一組**區域保底**任務（Europe_Guard / Americas_Guard），以主查詢（中文）+ 該區白名單**併入 INTL_WEST_WHITELIST（西方調查／國際權威）**、精簡 15 個網域、`search_depth=advanced`；（2）**建議一**：並以 LLM 翻譯為英文關鍵字，對歐洲/美洲/**西方調查**網域執行非中文檢索（最多 3 條英文查詢）；結果皆與中文搜尋**共用 URL 去重**。
         - **建議三（透明度與可控）**：側欄提供「搜尋視角說明」摺疊與核取方塊「當勾選歐洲/美洲時，自動加入英文關鍵字檢索」；可關閉以僅用中文查詢保底。策略表下方可顯示「英文檢索關鍵字（上次執行）」供檢視。
-        - **視角→觸發對應**：台灣→藍/綠/官方保底 + country；亞洲→亞洲國際保底 + **日文/韓文關鍵字檢索（日本/韓國媒體）**（+ 查詢含日韓關鍵字時中文日韓保底）；歐洲→Europe_Guard + 可選英文檢索；美洲→Americas_Guard + 可選英文檢索；獨立→納入獨立媒體網域。
+        - **視角→觸發對應**：台灣→藍/綠/官方保底 + country；亞洲→亞洲國際保底 + **日文/韓文關鍵字檢索（日本/韓國媒體）**（+ 查詢含日韓關鍵字時中文日韓保底）；歐洲→Europe_Guard + 可選英文檢索；美洲→Americas_Guard + 可選英文檢索；**獨立→Indie_Guard（獨立/自媒體白名單約 20 網域保底搜尋）+ 來源分類標為 INDIE**。
         - **若需更多非中文檢索**：可於「意圖導向」填寫「請產出英文關鍵字」或在「檢視與編輯搜尋策略」中手動加入英文查詢。
         
         **搜尋深度優化**
@@ -5670,10 +5699,10 @@ flowchart LR
         - **中等公信力來源** (0.6-0.8)：正常展示內容
         - **低公信力來源** (<0.6)：縮短內容至 50%，標註「⚠️ 低可信度，請謹慎參考」警告
         
-        **評分計算公式**
+        **評分計算公式（已上調文本內容權重，扎實內文易達強/中強）**
         ```
-        證據強度 = 內容品質 (38%) + 語言風格 (18%) + 來源類型 (12%) + 公信力 (12%) + 交叉驗證 (15%) + 利益衝突 (扣分)
-        ※ 內容導向：高品質內文可彌補來源評級，不受限於黑白名單
+        證據強度 = 內容品質 (46%) + 語言風格 (17%) + 來源類型 (10%) + 公信力 (10%) + 交叉驗證 (12%) + 網站品質 (5%) + 利益衝突 (扣分)
+        ※ 內容導向：高品質內文可彌補來源評級；content_score≥0.55 且 style_score≥0.55 時享有保底加分
         ```
         """)
         
@@ -5782,25 +5811,26 @@ flowchart LR
         **GRADE 標準參考 (Grading of Recommendations Assessment, Development and Evaluation)**
         參考 GRADE 系統與 CERQual（Confidence in the Evidence from Reviews of Qualitative research）方法：
         
-        **證據類型分級**
+        **證據類型分級（閾值已微調，使扎實文本易達強/中強）**
         - **A+ / 極強 (≥0.85)**：官方原始文檔 + 多源交叉驗證
-        - **A / 強 (0.70-0.84)**：權威來源 + 完整內容品質
-        - **B+ / 中強 (0.55-0.69)**：一般媒體 + 基本品質
-        - **B / 中等 (0.40-0.54)**：商業媒體報導
-        - **C / 中弱 (0.25-0.39)**：低品質來源
-        - **D / 弱 (<0.25)**：社群媒體、內容農場
+        - **A / 強 (0.65-0.84)**：權威來源或扎實內容品質
+        - **B+ / 中強 (0.50-0.64)**：一般媒體 + 基本品質
+        - **B / 中等 (0.35-0.49)**：商業媒體報導
+        - **C / 中弱 (0.22-0.34)**：低品質來源
+        - **D / 弱 (<0.22)**：社群媒體、內容農場
         
-        **多維度評分系統**
+        **多維度評分系統（內容權重已上調）**
         ```
-        證據強度 = f(內容品質, 語言風格, 來源類型, 來源公信力, 交叉驗證, 利益衝突)
+        證據強度 = f(內容品質, 語言風格, 來源類型, 來源公信力, 交叉驗證, 網站品質, 利益衝突)
         ※ 以文章內容為主：長度、引用、事實密度、非聳動風格，高品質者可提升評級
         
         其中：
-        - 來源類型權重：25%
-        - 來源公信力權重：20%（整合 Tier 1-4 評分）
-        - 內容品質權重：25%（長度、完整性、引用、相關性）
-        - 交叉驗證權重：20%（多個獨立來源確認）
-        - 利益衝突權重：10%（負權重，檢測贊助/廣告關係）
+        - 內容品質權重：46%（長度、完整性、引用、相關性；已上調）
+        - 語言風格權重：17%（非聳動、非標題黨）
+        - 來源類型權重：10%（GRADE Tier）
+        - 來源公信力權重：10%
+        - 交叉驗證權重：12%（多個獨立來源確認）
+        - 網站品質權重：5%；利益衝突：扣分
         ```
         
         **內容品質評估 (CERQual)**
