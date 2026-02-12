@@ -52,6 +52,12 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
+try:
+    import graphviz
+    GRAPHVIZ_AVAILABLE = True
+except ImportError:
+    GRAPHVIZ_AVAILABLE = False
+
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -174,7 +180,9 @@ REQUIRED_SECTIONS_FUSION = [
     "共識與分歧",
     "深層偏見與認知盲區解構",
     "Cui Bono",
-    "敘事操縱與資訊操作風險"
+    "敘事操縱與資訊操作風險",
+    "影響力網絡與預警指標",
+    "混合戰威脅建模"
 ]
 
 REQUIRED_SECTIONS_SCENARIO = [
@@ -5044,6 +5052,27 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            - **協同行為特徵**：(分析 [MANIPULATION_SIGNALS] 中的擴散模式)
            - **語義旋轉 (Semantic Spin)**：(分析同一事實如何被不同框架扭曲)
            - **風險評估**：(高/中/低，並提供詳細理由)
+
+        8. 🕵️ 影響力網絡與預警指標 (Influence Network & Early Warning)
+           * **代理人與網絡分析 (Proxy Network)**：
+             請解構主要行動者背後的深層支持網絡（誰在出錢？誰在出論述？）。
+             - **陣營 A 網絡**：(例如：智庫 -> 媒體代理人 -> 企業金主)
+             - **陣營 B 滲透路徑**：(例如：外部勢力 -> 友好協會 -> 地方議員)
+           * **早期預警指標 (Early Warning Watchlist)**：
+             請列出具體、可觀測的「微弱訊號 (Weak Signals)」儀表板：
+             | 指標類型 | 具體訊號 (What to watch) | 代表意義 | 監測頻率 |
+             |:---|:---|:---|:---|
+             | (軍事/經濟/政治/社會) | ... | ... | ... |
+
+        9. ⚔️ 混合戰威脅建模 (Hybrid Warfare: Cognitive & Lawfare)
+           * **認知戰戰術解構 (Cognitive Warfare - DISARM Framework)**：
+             - **攻擊目標**：(例如：年輕選民、特定產業從業者)
+             - **核心敘事**：(例如：修憲=徵兵、恐懼訴求、分化族群)
+             - **傳播載體**：(例如：TikTok 短影音、匿名帳號集群)
+             - **預期效果**：...
+           * **國際法理戰推演 (Lawfare Gaming)**：
+             - **甲方論述**：(引用之國際法或條約，如聯合國憲章第51條)
+             - **乙方反制**：(引用之歷史權利、波茨坦公告或主權宣示)
         """
         
     elif mode == "DEEP_SCENARIO":
@@ -5081,6 +5110,149 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         system_prompt = system_prompt.replace("[MANIPULATION_SIGNALS]", replacement)
 
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
+
+
+# --- Visual Intelligence Module (Phase 3: Visual War Room) ---
+
+def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    使用 LLM 從文字報告中萃取結構化 JSON，供視覺化戰情室使用。
+    理論基礎：資訊視覺化 (Information Visualization)，將 ACH、Cui Bono、影響力網絡等
+    章節轉為節點/邊/立場座標/時間軸事件，以支援網絡圖、政治光譜圖、時間軸圖表。
+
+    Args:
+        report_text: 戰略分析報告全文（[REPORT_TEXT] 區塊）
+        api_key: Google Gemini API Key
+
+    Returns:
+        含 "network"（nodes, edges）、"stance_map"（items）、"timeline"（events）的字典；
+        失敗或無 api_key 時返回 None。
+    """
+    if not api_key or not (report_text or "").strip():
+        logger.warning("generate_visual_data: 缺少 api_key 或 report_text 為空")
+        return None
+
+    text_input = (report_text.strip())[:25000]
+    system_prompt = """You are a Data Visualization Expert. Analyze the following intelligence report and extract structured data for visualization.
+Output ONLY valid JSON. No markdown code fence, no explanation. Use the exact keys: "network", "stance_map", "timeline"."""
+
+    user_prompt = f"""
+REPORT TEXT:
+{text_input}
+
+TASK:
+Extract 3 datasets in valid JSON format:
+
+1. "network": A knowledge graph of key stakeholders (from Cui Bono & Influence Network sections).
+   - "nodes": [{{"id": "Name", "group": "Camp/Country", "size": 1-10}}]
+   - "edges": [{{"source": "Name", "target": "Name", "label": "Relationship", "type": "support/oppose/money"}}]
+
+2. "stance_map": Positioning of actors on a 2D geopolitical spectrum.
+   - "items": [{{"name": "Name", "x": number from -10 to 10 (Pro-China to Pro-US), "y": number from -10 to 10 (Dove/Economy to Hawk/Security), "desc": "Reason"}}]
+
+3. "timeline": Key events from the Timeline or Future Scenario sections.
+   - "events": [{{"date": "YYYY-MM-DD", "event": "Title", "category": "Politics/Military/Economy"}}]
+
+OUTPUT JSON ONLY.
+"""
+
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=api_key,
+            temperature=0.0,
+        )
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        response = chain.invoke({"input": user_prompt})
+        raw = _extract_text_from_llm_content(response.content)
+        if not raw or not isinstance(raw, str):
+            logger.warning("generate_visual_data: LLM 返回為空或非字串")
+            return None
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```\s*$", "", raw)
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"generate_visual_data: JSON 解析失敗: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"generate_visual_data: 視覺化資料萃取失敗: {e}")
+        return None
+
+
+def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
+    """
+    在 Streamlit 中渲染視覺化戰情室：影響力網絡圖、政治光譜圖、未來時間軸。
+    使用 Graphviz（網絡圖）、Plotly（散點圖）、DataFrame（時間軸表格）。
+    """
+    st.markdown("## 📊 視覺化戰情室 (Visual Intelligence)")
+    tabs = st.tabs(["🕸️ 影響力網絡", "⚖️ 政治光譜圖", "⏳ 未來時間軸"])
+
+    with tabs[0]:
+        st.caption("分析利益相關者、代理人與資金/影響力流向")
+        if visual_data.get("network"):
+            nodes = visual_data["network"].get("nodes") or []
+            edges = visual_data["network"].get("edges") or []
+            if GRAPHVIZ_AVAILABLE and (nodes or edges):
+                graph = graphviz.Digraph()
+                graph.attr(rankdir="LR")
+                for node in nodes:
+                    group = node.get("group", "") or ""
+                    color = "lightblue" if "US" in group or "Japan" in group or "美" in group or "日" in group else "lightcoral"
+                    graph.node(node.get("id", "?"), label=node.get("id", "?"), style="filled", fillcolor=color)
+                for edge in edges:
+                    etype = edge.get("type") or ""
+                    color = "red" if etype == "oppose" else "green"
+                    graph.edge(
+                        edge.get("source", "?"),
+                        edge.get("target", "?"),
+                        label=edge.get("label", "") or "",
+                        color=color,
+                    )
+                st.graphviz_chart(graph)
+            elif not GRAPHVIZ_AVAILABLE:
+                st.warning("未安裝 graphviz 套件，無法顯示網絡圖。請執行：pip install graphviz")
+            else:
+                st.info("報告中未萃取出網絡節點與邊，請確認報告包含 Cui Bono 或影響力網絡章節。")
+        else:
+            st.info("報告中未萃取出網絡資料，請先執行「啟動視覺化戰情室」並確認報告內容。")
+
+    with tabs[1]:
+        st.caption("各方勢力在「美中光譜 (X)」與「鷹鴿光譜 (Y)」的定位")
+        if visual_data.get("stance_map") and visual_data["stance_map"].get("items"):
+            df = pd.DataFrame(visual_data["stance_map"]["items"])
+            if df.empty or "name" not in df.columns:
+                st.info("立場資料不足，無法繪製光譜圖。")
+            else:
+                for col in ["x", "y"]:
+                    if col not in df.columns:
+                        df[col] = 0
+                fig = px.scatter(
+                    df,
+                    x="x",
+                    y="y",
+                    text="name",
+                    color="x",
+                    labels={"x": "← 親中 | 親美 →", "y": "← 經濟務實 | 安全鷹派 →"},
+                    title="地緣政治立場分佈圖",
+                )
+                fig.update_traces(textposition="top center")
+                fig.add_vline(x=0, line_dash="dash", line_color="gray")
+                fig.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("報告中未萃取出立場地圖資料。")
+
+    with tabs[2]:
+        st.caption("從報告時間軸或未來情境章節萃取之關鍵事件")
+        if visual_data.get("timeline") and visual_data["timeline"].get("events"):
+            df_time = pd.DataFrame(visual_data["timeline"]["events"])
+            st.dataframe(df_time, use_container_width=True)
+        else:
+            st.info("報告中未萃取出時間軸事件。")
+
 
 def parse_gemini_data(text: str) -> Dict[str, Any]:
     """
@@ -6650,7 +6822,8 @@ if search_btn and query and tavily_key:
                     parsed_data["report_text"] = raw_report.strip()
         
         st.session_state.result = parsed_data
-        
+        st.session_state.visual_war_room_data = None  # 新分析完成，清除舊視覺化快取
+
         # 顯示解析統計
         timeline_count = len(parsed_data.get("timeline", []))
         report_length = len(parsed_data.get("report_text", ""))
@@ -6880,6 +7053,23 @@ if st.session_state.result:
         formatted_text = format_citation_style(cleaned_report)
         html_content = markdown.markdown(formatted_text, extensions=['tables'])
         st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+
+    # 視覺化戰情室（Phase 3）：報告產出後可啟動
+    if report_text and report_text.strip():
+        st.markdown("---")
+        if st.session_state.get("visual_war_room_data"):
+            render_visual_war_room(st.session_state.visual_war_room_data)
+        if st.button("📊 啟動視覺化戰情室 (Visual War Room)", key="visual_war_room_btn"):
+            if not google_key or not google_key.strip():
+                st.error("請在側邊欄輸入 Gemini API Key 以啟用視覺化戰情室。")
+            else:
+                with st.spinner("正在從報告萃取視覺化資料…"):
+                    vdata = generate_visual_data(report_text, google_key)
+                if vdata:
+                    st.session_state.visual_war_room_data = vdata
+                    st.rerun()
+                else:
+                    st.warning("無法從報告中萃取出視覺化資料，請稍後再試或檢查報告內容。")
     
     if "未來" not in analysis_mode and not st.session_state.scenario_result:
         st.markdown("---")
