@@ -5162,18 +5162,21 @@ def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, A
         return None
 
     text_input = (report_text.strip())[:25000]
-    system_prompt = """你是資料視覺化專家。請「僅」根據下方情報報告，萃取出可視覺化的結構化資料。
-請「只」輸出一个 JSON 物件，不要任何前言、結論或 markdown 標記。
-JSON 必須且僅包含以下三個鍵（英文）："network"、"stance_map"、"timeline"。"""
+    system_prompt = """你是資料視覺化專家。報告中「一定」包含以下章節，請從中萃取資料：
+- **第 6 節 Cui Bono 與利益分析**：列出「利益相關者」與「核心動機」「機制」→ 轉成 network 的 nodes，以及 stance_map 的 items（依立場給 x: 親中-10～親美+10, y: 鴿派-10～鷹派+10）。
+- **第 8 節 影響力網絡與預警指標**：其中「代理人與網絡分析」有「陣營 A 網絡」「陣營 B 滲透路徑」或「高市陣營網絡」「台日連結網絡」等，常以「A -> B -> C」表示關係 → 轉成 network 的 nodes 與 edges（type: support/oppose/money）。
+- **時間軸或未來情境**：有日期的關鍵事件 → 轉成 timeline.events。
+請「只」輸出一個 JSON 物件，鍵名必須為 network、stance_map、timeline。不要任何前言、不要 markdown 程式碼區塊。"""
 
-    user_prompt = f"""請分析以下報告並輸出「單一」JSON 物件，格式如下（鍵名必須一致）：
+    user_prompt = f"""請從下方報告的「Cui Bono」「影響力網絡與預警指標」「代理人與網絡分析」等章節，萃取出 network（nodes 與 edges）、stance_map（items）、timeline（events）。至少從 Cui Bono 或 影響力網絡 產出 3 個以上 nodes、2 個以上 edges。
 
-{{"network": {{"nodes": [{{"id": "名稱", "group": "陣營", "size": 5}}], "edges": [{{"source": "A", "target": "B", "label": "關係", "type": "support"}}]}}, "stance_map": {{"items": [{{"name": "名稱", "x": 0, "y": 0, "desc": "理由"}}]}}, "timeline": {{"events": [{{"date": "YYYY-MM-DD", "event": "事件", "category": "Politics"}}]}}}}
+輸出格式（單一 JSON，鍵名固定）：
+{{"network": {{"nodes": [{{"id": "角色或組織名", "group": "陣營/國家", "size": 5}}], "edges": [{{"source": "名稱1", "target": "名稱2", "label": "關係", "type": "support或oppose或money"}}]}}, "stance_map": {{"items": [{{"name": "名稱", "x": 數字-10~10, "y": 數字-10~10, "desc": "簡短理由"}}]}}, "timeline": {{"events": [{{"date": "YYYY-MM-DD", "event": "事件標題", "category": "Politics或Military或Economy"}}]}}}}
 
 報告內容：
 {text_input}
 
-請「只」輸出上述格式的一個 JSON 物件，鍵名必須為 network、stance_map、timeline。不要任何其他文字、不要 markdown。"""
+請直接輸出上述格式的單一 JSON，不要其他文字。"""
 
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
@@ -5205,10 +5208,65 @@ JSON 必須且僅包含以下三個鍵（英文）："network"、"stance_map"、
         return None
 
 
-def build_visual_data_fallback(parsed_result: Dict[str, Any], sources: Optional[List[Dict]] = None) -> Dict[str, Any]:
+def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
-    當 LLM 萃取失敗時，從已解析的報告時間軸與來源列表組出最小視覺化資料，
-    至少可顯示「未來時間軸」分頁，避免使用者只看到錯誤訊息。
+    從報告內文以規則萃取出 network nodes/edges 與 stance_map items。
+    用於 fallback：當 LLM 未回傳時，至少能從「Cui Bono」「影響力網絡」等章節撈出結構。
+    """
+    nodes: List[Dict] = []
+    edges: List[Dict] = []
+    items: List[Dict] = []
+    if not report_text or not isinstance(report_text, str):
+        return nodes, edges, items
+    text = report_text.strip()
+    node_ids: Set[str] = set()
+    # 1) 從 "A -> B" 或 "A->B" 萃取邊與節點（常見於影響力網絡、代理人與網絡分析）
+    for m in re.finditer(r"([^\s\[\]\(\)]+?)\s*->\s*([^\s\[\]\(\)]+?)(?:\s*->|\s*[,\.\)]|\s*$)", text):
+        src, tgt = m.group(1).strip(), m.group(2).strip()
+        if len(src) > 1 and len(tgt) > 1 and len(src) < 80 and len(tgt) < 80:
+            if not any(e.get("source") == src and e.get("target") == tgt for e in edges):
+                node_ids.add(src)
+                node_ids.add(tgt)
+                edges.append({"source": src, "target": tgt, "label": "影響/連結", "type": "support"})
+    # 多段 A -> B -> C
+    for part in re.split(r"[\n。；]", text):
+        segs = [s.strip() for s in re.split(r"\s*->\s*", part) if s.strip()]
+        for i in range(len(segs) - 1):
+            a, b = segs[i][:60], segs[i + 1][:60]
+            if a and b and a != b:
+                node_ids.add(a)
+                node_ids.add(b)
+                if not any(e.get("source") == a and e.get("target") == b for e in edges):
+                    edges.append({"source": a, "target": b, "label": "→", "type": "support"})
+    # 2) 從 Cui Bono 小標 **XXX**： 或 **XXX**（ 萃出角色名作為 nodes / stance items
+    for m in re.finditer(r"\*\*([^*]+?)\*\*\s*[：:（(]?", text):
+        name = m.group(1).strip()
+        if 2 <= len(name) <= 50 and "利益" not in name and "動機" not in name and "機制" not in name:
+            node_ids.add(name)
+            if not any(it.get("name") == name for it in items):
+                items.append({"name": name, "x": 0, "y": 0, "desc": "報告內角色"})
+    # 3) 補齊 nodes 列表（來自 edges 的 source/target 與上述名稱）
+    for nid in node_ids:
+        nodes.append({"id": nid, "group": "報告", "size": 5})
+    # 去重 nodes（同一 id 只保留一筆）
+    seen = set()
+    uniq_nodes = []
+    for n in nodes:
+        i = n.get("id", "")
+        if i and i not in seen:
+            seen.add(i)
+            uniq_nodes.append(n)
+    return uniq_nodes, edges, items
+
+
+def build_visual_data_fallback(
+    parsed_result: Dict[str, Any],
+    sources: Optional[List[Dict]] = None,
+    report_text: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    當 LLM 萃取失敗時，從已解析的報告時間軸、來源列表與報告內文組出視覺化資料。
+    若提供 report_text，會以規則從「Cui Bono」「影響力網絡」等章節萃出 network 與 stance_map。
     """
     events = []
     timeline = parsed_result.get("timeline") or []
@@ -5236,9 +5294,12 @@ def build_visual_data_fallback(parsed_result: Dict[str, Any], sources: Optional[
                 "event": (s.get("title") or "報導")[:80],
                 "category": "Politics",
             })
+    nodes, edge_list, stance_items = [], [], []
+    if report_text and report_text.strip():
+        nodes, edge_list, stance_items = _parse_network_and_stance_from_report(report_text)
     return {
-        "network": {"nodes": [], "edges": []},
-        "stance_map": {"items": []},
+        "network": {"nodes": nodes, "edges": edge_list},
+        "stance_map": {"items": stance_items},
         "timeline": {"events": events},
         "_fallback": True,
     }
@@ -7134,8 +7195,12 @@ if st.session_state.result:
                     st.session_state.visual_war_room_fallback = False
                     st.rerun()
                 else:
-                    # 改為從已解析的報告時間軸與來源組出最小視覺化，至少顯示時間軸
-                    fallback = build_visual_data_fallback(data, st.session_state.get("sources"))
+                    # 從已解析的報告時間軸、來源與「報告內文」規則萃出 network/stance，至少顯示時間軸與部分網絡/立場
+                    fallback = build_visual_data_fallback(
+                        data,
+                        st.session_state.get("sources"),
+                        report_text=report_text,
+                    )
                     st.session_state.visual_war_room_data = fallback
                     st.session_state.visual_war_room_fallback = True
                     st.rerun()
