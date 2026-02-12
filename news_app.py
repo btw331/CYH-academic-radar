@@ -58,6 +58,12 @@ try:
 except ImportError:
     GRAPHVIZ_AVAILABLE = False
 
+try:
+    import networkx as nx
+    NETWORKX_AVAILABLE = True
+except ImportError:
+    NETWORKX_AVAILABLE = False
+
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -5332,12 +5338,89 @@ def build_visual_data_fallback(
     }
 
 
+def _draw_network_plotly(nodes: List[Dict], edges: List[Dict]) -> Optional[go.Figure]:
+    """
+    使用 NetworkX 計算版面 + Plotly 繪製網絡圖。不依賴 Graphviz，錯誤率低、相容性高。
+    """
+    if not NETWORKX_AVAILABLE or not PLOTLY_AVAILABLE or (not nodes and not edges):
+        return None
+    valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
+    if not valid_ids and edges:
+        for e in edges:
+            valid_ids.add((e.get("source") or "").strip())
+            valid_ids.add((e.get("target") or "").strip())
+    G = nx.Graph()
+    for n in nodes:
+        nid = (n.get("id") or "").strip()
+        if nid:
+            G.add_node(nid)
+    for e in edges:
+        src = (e.get("source") or "").strip()
+        tgt = (e.get("target") or "").strip()
+        if src and tgt and (src in valid_ids or not valid_ids) and (tgt in valid_ids or not valid_ids):
+            G.add_edge(src, tgt)
+    if not G.nodes:
+        return None
+    try:
+        pos = nx.kamada_kawai_layout(G)
+    except Exception:
+        pos = nx.spring_layout(G, seed=42)
+    # 邊：線段
+    edge_x, edge_y = [], []
+    for u, v in G.edges():
+        x0, y0 = pos.get(u, (0, 0))
+        x1, y1 = pos.get(v, (0, 0))
+        edge_x.extend([x0, x1, None])
+        edge_y.extend([y0, y1, None])
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=1.5, color="#888"), hoverinfo="none"))
+    # 節點：散點 + 標籤
+    node_x = [pos[n][0] for n in G.nodes()]
+    node_y = [pos[n][1] for n in G.nodes()]
+    node_ids = list(G.nodes())
+    colors = []
+    for nid in node_ids:
+        node_dict = next((n for n in nodes if (n.get("id") or "").strip() == nid), {})
+        group = node_dict.get("group", "") or ""
+        colors.append("rgba(66,135,245,0.9)" if "US" in group or "Japan" in group or "美" in group or "日" in group else "rgba(229,57,53,0.9)")
+    fig.add_trace(go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        marker=dict(size=14, color=colors, line=dict(width=1, color="white")),
+        text=[n[:12] + ("…" if len(n) > 12 else "") for n in node_ids],
+        textposition="top center",
+        textfont=dict(size=10),
+        hovertext=node_ids,
+        hoverinfo="text",
+    ))
+    fig.update_layout(
+        showlegend=False,
+        margin=dict(b=20, l=20, r=20, t=40),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
+
+
 def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
     """
     在 Streamlit 中渲染視覺化戰情室：影響力網絡圖、政治光譜圖、未來時間軸。
-    使用 Graphviz（網絡圖）、Plotly（散點圖）、DataFrame（時間軸表格）。
+    網絡圖優先使用 NetworkX + Plotly（錯誤率低），其次 Graphviz。
     """
     st.markdown("## 📊 視覺化戰情室 (Visual Intelligence)")
+    with st.expander("📌 本系統使用的繪圖工具與替代方案（錯誤率低、穩定）", expanded=False):
+        st.markdown("""
+| 圖表類型 | 目前優先使用 | 替代方案 | 說明 |
+|:---|:---|:---|:---|
+| **影響力網絡** | **NetworkX + Plotly** | Graphviz、PyVis | 節點與邊由 NetworkX 計算版面，Plotly 繪製，不需額外系統依賴，錯誤率低。 |
+| **政治光譜圖** | **Plotly** (散點圖) | Matplotlib、Altair | 專案已使用 Plotly，相容性高。 |
+| **未來時間軸** | **Pandas DataFrame** | Plotly 時間軸/甘特圖 | 表格呈現最穩定。 |
+
+**其他可選工具（若需自行擴充）：**
+- **PyVis**：互動 HTML 網絡圖，`pip install pyvis`，適合中大型節點數。
+- **NetworkX + Matplotlib**：靜態網絡圖，`pip install networkx`，無需瀏覽器渲染。
+- **Cytoscape.js / vis.js**：前端 JS 圖庫，可透過 `st.components.v1.html()` 嵌入。
+        """)
     tabs = st.tabs(["🕸️ 影響力網絡", "⚖️ 政治光譜圖", "⏳ 未來時間軸"])
 
     with tabs[0]:
@@ -5345,30 +5428,34 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
         if visual_data.get("network"):
             nodes = visual_data["network"].get("nodes") or []
             edges = visual_data["network"].get("edges") or []
-            if GRAPHVIZ_AVAILABLE and (nodes or edges):
-                graph = graphviz.Digraph()
-                graph.attr(rankdir="LR", nodesep="0.4", ranksep="0.5")
-                valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
-                max_label_len = 14
-                for node in nodes:
-                    nid = (node.get("id") or "?").strip()
-                    if not nid:
-                        continue
-                    label = nid if len(nid) <= max_label_len else nid[: max_label_len - 1] + "…"
-                    group = node.get("group", "") or ""
-                    color = "lightblue" if "US" in group or "Japan" in group or "美" in group or "日" in group else "lightcoral"
-                    graph.node(nid, label=label, style="filled", fillcolor=color)
-                for edge in edges:
-                    src = (edge.get("source") or "").strip()
-                    tgt = (edge.get("target") or "").strip()
-                    if src not in valid_ids or tgt not in valid_ids:
-                        continue
-                    etype = edge.get("type") or ""
-                    color = "red" if etype == "oppose" else "green"
-                    graph.edge(src, tgt, label=(edge.get("label") or "")[:8], color=color)
-                st.graphviz_chart(graph)
-            elif not GRAPHVIZ_AVAILABLE:
-                st.warning("未安裝 graphviz 套件，無法顯示網絡圖。請執行：pip install graphviz")
+            if nodes or edges:
+                fig_net = _draw_network_plotly(nodes, edges)
+                if fig_net is not None:
+                    st.plotly_chart(fig_net, use_container_width=True)
+                elif GRAPHVIZ_AVAILABLE:
+                    graph = graphviz.Digraph()
+                    graph.attr(rankdir="LR", nodesep="0.4", ranksep="0.5")
+                    valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
+                    max_label_len = 14
+                    for node in nodes:
+                        nid = (node.get("id") or "?").strip()
+                        if not nid:
+                            continue
+                        label = nid if len(nid) <= max_label_len else nid[: max_label_len - 1] + "…"
+                        group = node.get("group", "") or ""
+                        color = "lightblue" if "US" in group or "Japan" in group or "美" in group or "日" in group else "lightcoral"
+                        graph.node(nid, label=label, style="filled", fillcolor=color)
+                    for edge in edges:
+                        src = (edge.get("source") or "").strip()
+                        tgt = (edge.get("target") or "").strip()
+                        if src not in valid_ids or tgt not in valid_ids:
+                            continue
+                        etype = edge.get("type") or ""
+                        color = "red" if etype == "oppose" else "green"
+                        graph.edge(src, tgt, label=(edge.get("label") or "")[:8], color=color)
+                    st.graphviz_chart(graph)
+                else:
+                    st.warning("請安裝網絡圖套件（二擇一）：`pip install networkx`（推薦）或 `pip install graphviz`")
             else:
                 st.info("報告中未萃取出網絡節點與邊，請確認報告包含 Cui Bono 或影響力網絡章節。")
         else:
