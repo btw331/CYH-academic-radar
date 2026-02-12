@@ -1106,55 +1106,85 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
         
         combined_prompt = f"""
-        你是極度專業的情報檢索專家。請針對議題「{query}」生成 3 組「高精準度」的搜尋關鍵字。
+        你是極度專業的情報檢索專家。請針對議題「{query}」生成「實體優先」的搜尋關鍵字，**必須產出專有名詞與具體術語**，不可只輸出「議題+泛用詞」。
         
         【使用者特別指令 (Focus Instruction)】：
         {focus_display}
 
         【嚴格禁止】：
-        1. 禁止使用泛泛的詞彙（如「新聞」、「總整理」、「懶人包」、「影響」），除非該詞彙是專有名詞的一部分。
-        2. 禁止重複查詢詞。
+        1. 禁止僅輸出「議題＋泛用詞」組合（如「議題 事件爭議」「議題 制裁影響」），必須產出具體專有名詞或術語。
+        2. 禁止使用泛泛詞彙（如「新聞」「總整理」「懶人包」「影響」），除非是專有名詞的一部分。
+        3. 禁止重複查詢詞。
 
         【必須包含實體 (Must Include Entities)】：
-        請優先提取議題相關的：
-        - **專有名詞**：法案名稱（如「經濟安保法」）、條約、專有術語（如「存亡危機事態」）。
-        - **關鍵人物**：除了主角外，涉及的關鍵對手或第三方（如「薛劍」、「川普」）。
-        - **具體行動**：如「稀土制裁」、「撤回言論」、「軍事演習」。
+        - **專有名詞/術語**：如「存亡危機事態」「台灣有事就是日本有事」「經濟安保法」「日美安保」。
+        - **關鍵人物**：如「薛劍」「川普」「高市早苗」。
+        - **具體行動**：如「稀土出口管制」「稀土制裁」「撤回言論」。
 
-        請依照以下三個戰略維度生成（每個維度 1 個關鍵字）：
-        
-        1. **[Core Flashpoint] 核心引爆點**：引發爭議的最具體事件、言論或法案。
-           (例：高市早苗 "存亡危機事態" 台灣)
-        2. **[Action & Retaliation] 具體攻防/代價**：雙方的具體制裁、報復或法律行動。
-           (例：中國 對日 "稀土出口管制")
-        3. **[Geopolitical Nexus] 地緣/外部連動**：涉及第三方（美/歐）或區域安全架構的影響。
-           (例：高市早苗 川普 "日美安保" 修訂)
+        請依三個戰略維度各輸出 **1 個關鍵字**（需含上述實體）：
+        1. 核心引爆點：具體事件/言論/法案（例：高市早苗 存亡危機事態 台灣）
+        2. 具體攻防/代價：制裁或法律行動（例：中國 對日 稀土出口管制）
+        3. 地緣連動：第三方或同盟（例：台灣有事就是日本有事 日美安保）
 
-        【輸出格式】：
+        【輸出格式】請**嚴格依下列兩行**輸出，不要其他說明或換行干擾：
         第一部分：關鍵字1, 關鍵字2, 關鍵字3
-        第二部分：(6-8 個語義擴展詞，包含英文關鍵字)
+        第二部分：關鍵字4, 關鍵字5, 關鍵字6, 關鍵字7, 關鍵字8
         """
         
         combined_resp = _extract_text_from_llm_content(llm.invoke(combined_prompt).content)
+        combined_resp = (combined_resp or "").strip().replace("\r\n", "\n")
+        # 正規化全角符號，方便解析
+        combined_resp_norm = combined_resp.replace("：", ":").replace("，", ",")
         
-        # 解析第一部分（三戰略維度：核心引爆點、具體攻防、地緣連動）
-        part1_match = re.search(r'第一部分[：:]\s*(.+?)(?=第二部分|$)', combined_resp, re.DOTALL)
-        if part1_match:
-            base_keywords = [k.strip() for k in part1_match.group(1).split(',') if k.strip()]
-            if len(base_keywords) >= 3:
-                expanded_queries.append({"query": base_keywords[0], "type": "核心引爆點", "priority": 1})
-                expanded_queries.append({"query": base_keywords[1], "type": "具體攻防與代價", "priority": 1})
-                expanded_queries.append({"query": base_keywords[2], "type": "地緣連動", "priority": 1})
+        def parse_part1(text: str) -> List[str]:
+            """解析第一部分：嘗試多種模式，回傳至少 3 個關鍵字或空列表。"""
+            # 模式 1：第一部分：key1, key2, key3
+            m = re.search(r'第一部分\s*:\s*(.+?)(?=第二部分|$)', text, re.DOTALL | re.IGNORECASE)
+            if m:
+                part = m.group(1).strip()
+                keys = [k.strip().strip('"') for k in re.split(r'[,，]', part) if k.strip()]
+                if len(keys) >= 3:
+                    return keys[:3]
+            # 模式 2：僅找「第一」開頭的那一行
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("第一") and "部分" in line:
+                    rest = re.sub(r'^第一\s*部分\s*[：:]\s*', '', line, flags=re.I).strip()
+                    keys = [k.strip().strip('"') for k in re.split(r'[,，]', rest) if k.strip()]
+                    if len(keys) >= 3:
+                        return keys[:3]
+            # 模式 3：找第一個看起來像「短句, 短句, 短句」的片段（長度合理）
+            for seg in re.split(r'[\n。]', text):
+                seg = seg.strip()
+                if 10 < len(seg) < 200 and seg.count(',') >= 2:
+                    keys = [k.strip().strip('"') for k in re.split(r'[,，]', seg) if 3 <= len(k.strip()) <= 80]
+                    if len(keys) >= 3:
+                        return keys[:3]
+            return []
         
-        # 解析第二部分（語義擴展）
-        part2_match = re.search(r'第二部分[：:]\s*(.+?)$', combined_resp, re.DOTALL)
-        if part2_match:
-            semantic_keywords = [k.strip() for k in part2_match.group(1).split(',') if k.strip()][:8]
-            for kw in semantic_keywords:
-                if kw and kw not in [q["query"] for q in expanded_queries]:
-                    expanded_queries.append({"query": kw, "type": "語義擴展", "priority": 2})
+        def parse_part2(text: str) -> List[str]:
+            """解析第二部分：語義擴展關鍵字。"""
+            m = re.search(r'第二部分\s*:\s*(.+?)$', text, re.DOTALL | re.IGNORECASE)
+            if m:
+                part = m.group(1).strip()
+                return [k.strip().strip('"') for k in re.split(r'[,，]', part) if 2 <= len(k.strip()) <= 80][:8]
+            return []
         
-        # 如果解析失敗，使用降級策略（仍盡量用議題+具體詞）
+        part1_keywords = parse_part1(combined_resp_norm) or parse_part1(combined_resp)
+        if part1_keywords:
+            expanded_queries.append({"query": part1_keywords[0], "type": "核心引爆點", "priority": 1})
+            expanded_queries.append({"query": part1_keywords[1], "type": "具體攻防與代價", "priority": 1})
+            expanded_queries.append({"query": part1_keywords[2], "type": "地緣連動", "priority": 1})
+        
+        part2_keywords = parse_part2(combined_resp_norm) or parse_part2(combined_resp)
+        for kw in part2_keywords:
+            if kw and kw not in [q["query"] for q in expanded_queries]:
+                expanded_queries.append({"query": kw, "type": "語義擴展", "priority": 2})
+        
+        if len(expanded_queries) < 3:
+            logger.warning(f"查詢擴展解析不足 3 筆，LLM 回應前 300 字: {(combined_resp or '')[:300]}")
+        
+        # 若 LLM 解析失敗，使用降級策略（仍盡量用議題+具體詞）
         if len(expanded_queries) < 3:
             expanded_queries.extend([
                 {"query": f"{query} 事件 爭議", "type": "核心引爆點", "priority": 1},
