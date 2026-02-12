@@ -5166,6 +5166,7 @@ def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, A
 - **第 6 節 Cui Bono 與利益分析**：列出「利益相關者」與「核心動機」「機制」→ 轉成 network 的 nodes，以及 stance_map 的 items（依立場給 x: 親中-10～親美+10, y: 鴿派-10～鷹派+10）。
 - **第 8 節 影響力網絡與預警指標**：其中「代理人與網絡分析」有「陣營 A 網絡」「陣營 B 滲透路徑」或「高市陣營網絡」「台日連結網絡」等，常以「A -> B -> C」表示關係 → 轉成 network 的 nodes 與 edges（type: support/oppose/money）。
 - **時間軸或未來情境**：有日期的關鍵事件 → 轉成 timeline.events。
+**重要**：network 的 nodes 只填「具體人名、組織名、國家或陣營名」，勿填章節標題或抽象概念（如核心共識、知識論風險、核心敘事）。stance_map 的 items 請「每個實體一筆」，勿將多個勢力合併成一個 name（例如勿用「俄羅斯/中東/非盟」一筆，應拆成三筆）。
 請「只」輸出一個 JSON 物件，鍵名必須為 network、stance_map、timeline。不要任何前言、不要 markdown 程式碼區塊。"""
 
     user_prompt = f"""請從下方報告的「Cui Bono」「影響力網絡與預警指標」「代理人與網絡分析」等章節，萃取出 network（nodes 與 edges）、stance_map（items）、timeline（events）。至少從 Cui Bono 或 影響力網絡 產出 3 個以上 nodes、2 個以上 edges。
@@ -5208,6 +5209,32 @@ def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, A
         return None
 
 
+# 規則萃取時排除的粗體文字：章節標題、抽象概念，非具體人物/組織/陣營
+_NETWORK_STANCE_BLOCKLIST = frozenset({
+    "核心共識", "知識論風險", "核心敘事", "代理人與網絡分析", "權力結構重組", "踐踏國際正義",
+    "正常國家", "結構性遺漏", "隱含前提", "狗哨", "知識論", "利益相關者", "核心動機", "機制",
+    "協同行為特徵", "語義旋轉", "風險評估", "早期預警", "攻擊目標", "傳播載體", "預期效果",
+    "甲方論述", "乙方反制", "Proxy Network", "Early Warning", "Cui Bono", "陣營 A", "陣營 B",
+    "邏輯謬誤", "事實查核", "媒體框架", "共識與分歧", "敘事操縱", "認知戰", "法理戰",
+})
+
+
+def _is_likely_entity_name(name: str) -> bool:
+    """排除章節標題與抽象詞，只保留像「人名/組織/陣營」的粗體。"""
+    if not name or len(name) < 2 or len(name) > 40:
+        return False
+    if name in _NETWORK_STANCE_BLOCKLIST:
+        return False
+    if name.startswith(("H1:", "H2:", "H3:")) or "假設" in name or "證據" in name:
+        return False
+    for block in _NETWORK_STANCE_BLOCKLIST:
+        if block in name and name != block:
+            # 允許「高市陣營」「北京陣營」等，僅排除純「陣營 A」
+            if name.strip() in (block, "陣營 A 網絡", "陣營 B 滲透路徑"):
+                return False
+    return True
+
+
 def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
     """
     從報告內文以規則萃取出 network nodes/edges 與 stance_map items。
@@ -5238,10 +5265,10 @@ def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict],
                 node_ids.add(b)
                 if not any(e.get("source") == a and e.get("target") == b for e in edges):
                     edges.append({"source": a, "target": b, "label": "→", "type": "support"})
-    # 2) 從 Cui Bono 小標 **XXX**： 或 **XXX**（ 萃出角色名作為 nodes / stance items
+    # 2) 從 Cui Bono 小標 **XXX**： 僅保留像實體的名稱（排除章節名、抽象詞）
     for m in re.finditer(r"\*\*([^*]+?)\*\*\s*[：:（(]?", text):
         name = m.group(1).strip()
-        if 2 <= len(name) <= 50 and "利益" not in name and "動機" not in name and "機制" not in name:
+        if _is_likely_entity_name(name):
             node_ids.add(name)
             if not any(it.get("name") == name for it in items):
                 items.append({"name": name, "x": 0, "y": 0, "desc": "報告內角色"})
@@ -5249,7 +5276,7 @@ def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict],
     for nid in node_ids:
         nodes.append({"id": nid, "group": "報告", "size": 5})
     # 去重 nodes（同一 id 只保留一筆）
-    seen = set()
+    seen: Set[str] = set()
     uniq_nodes = []
     for n in nodes:
         i = n.get("id", "")
@@ -5320,20 +5347,25 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
             edges = visual_data["network"].get("edges") or []
             if GRAPHVIZ_AVAILABLE and (nodes or edges):
                 graph = graphviz.Digraph()
-                graph.attr(rankdir="LR")
+                graph.attr(rankdir="LR", nodesep="0.4", ranksep="0.5")
+                valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
+                max_label_len = 14
                 for node in nodes:
+                    nid = (node.get("id") or "?").strip()
+                    if not nid:
+                        continue
+                    label = nid if len(nid) <= max_label_len else nid[: max_label_len - 1] + "…"
                     group = node.get("group", "") or ""
                     color = "lightblue" if "US" in group or "Japan" in group or "美" in group or "日" in group else "lightcoral"
-                    graph.node(node.get("id", "?"), label=node.get("id", "?"), style="filled", fillcolor=color)
+                    graph.node(nid, label=label, style="filled", fillcolor=color)
                 for edge in edges:
+                    src = (edge.get("source") or "").strip()
+                    tgt = (edge.get("target") or "").strip()
+                    if src not in valid_ids or tgt not in valid_ids:
+                        continue
                     etype = edge.get("type") or ""
                     color = "red" if etype == "oppose" else "green"
-                    graph.edge(
-                        edge.get("source", "?"),
-                        edge.get("target", "?"),
-                        label=edge.get("label", "") or "",
-                        color=color,
-                    )
+                    graph.edge(src, tgt, label=(edge.get("label") or "")[:8], color=color)
                 st.graphviz_chart(graph)
             elif not GRAPHVIZ_AVAILABLE:
                 st.warning("未安裝 graphviz 套件，無法顯示網絡圖。請執行：pip install graphviz")
@@ -5345,8 +5377,23 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
     with tabs[1]:
         st.caption("各方勢力在「美中光譜 (X)」與「鷹鴿光譜 (Y)」的定位")
         if visual_data.get("stance_map") and visual_data["stance_map"].get("items"):
-            df = pd.DataFrame(visual_data["stance_map"]["items"])
-            if df.empty or "name" not in df.columns:
+            raw_items = visual_data["stance_map"]["items"]
+            # 將「A/B/C」合併標籤拆成多筆，每勢力一點，避免單一長標籤
+            expanded = []
+            for it in raw_items:
+                name = it.get("name") or ""
+                x = it.get("x") if isinstance(it.get("x"), (int, float)) else 0
+                y = it.get("y") if isinstance(it.get("y"), (int, float)) else 0
+                desc = it.get("desc") or ""
+                if "/" in name:
+                    parts = [p.strip() for p in name.split("/") if p.strip()]
+                    for i, p in enumerate(parts[:10]):
+                        jitter = (i - len(parts) / 2) * 0.08
+                        expanded.append({"name": p, "name_short": p[:10] + ("…" if len(p) > 10 else ""), "x": x + jitter, "y": y, "desc": desc})
+                else:
+                    expanded.append({"name": name, "name_short": name[:10] + ("…" if len(name) > 10 else ""), "x": x, "y": y, "desc": desc})
+            df = pd.DataFrame(expanded)
+            if df.empty:
                 st.info("立場資料不足，無法繪製光譜圖。")
             else:
                 for col in ["x", "y"]:
@@ -5356,12 +5403,13 @@ def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
                     df,
                     x="x",
                     y="y",
-                    text="name",
+                    text="name_short",
                     color="x",
                     labels={"x": "← 親中 | 親美 →", "y": "← 經濟務實 | 安全鷹派 →"},
                     title="地緣政治立場分佈圖",
                 )
                 fig.update_traces(textposition="top center")
+                fig.update_traces(hovertemplate="%{text}<br>x: %{x}<br>y: %{y}<extra></extra>")
                 fig.add_vline(x=0, line_dash="dash", line_color="gray")
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 st.plotly_chart(fig, use_container_width=True)
