@@ -347,10 +347,10 @@ st.markdown(CSS_STYLE, unsafe_allow_html=True)
 # 擴展媒體資料庫（優化：增加搜尋覆蓋率）
 # ==========================================
 
-# 藍營媒體白名單（大幅擴展；與 GREEN 互斥，無重複）
+# 藍營媒體白名單（大幅擴展；與 GREEN 互斥，無重複；2026.02.12 補齊缺失）
 BLUE_WHITELIST = [
     # 主要藍營媒體
-    "udn.com", "udn.com.tw", "chinatimes.com", "tvbs.com.tw", "cti.com.tw", 
+    "udn.com", "udn.com.tw", "chinatimes.com", "tvbs.com.tw", "cti.com.tw",
     "nownews.com", "ctee.com.tw", "storm.mg",
     # 擴展藍營媒體
     "want-daily.com", "want-china.com", "coolloud.org.tw", "kmt.org.tw",
@@ -358,23 +358,26 @@ BLUE_WHITELIST = [
     "wealth.com.tw", "bwnet.com.tw", "cmmedia.com.tw", "cmoney.tw",
     "technews.tw", "techbang.com", "digitimes.com.tw", "ithome.com.tw",
     # 地方媒體（taiwanhot、taiwannews 已移至 NEUTRAL，避免藍綠重複）
-    "merit-times.com.tw"
+    "merit-times.com.tw",
+    # 補齊：Yahoo TW 常轉載藍營內容
+    "yahoo.com.tw",
 ]
 
-# 綠營媒體白名單（大幅擴展；與 BLUE 互斥；獨立媒體歸 INDIE 不在此列）
+# 綠營媒體白名單（大幅擴展；與 BLUE 互斥；獨立媒體歸 INDIE 不在此列；2026.02.12 補齊）
 GREEN_WHITELIST = [
     # 主要綠營媒體
-    "ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw", 
+    "ltn.com.tw", "ftvnews.com.tw", "setn.com", "rti.org.tw",
     "newtalk.tw", "mirrormedia.mg", "upmedia.mg",
     # 擴展綠營媒體（twreporter/theinitium/thenewslens 為 INDIE，不計入綠營保底）
     "peoplenews.tw", "dpp.org.tw",
-    "watchout.tw", "taisounds.com", "taiwanjustice.net", "taiwanjustice.org"
+    "watchout.tw", "taisounds.com", "taiwanjustice.net", "taiwanjustice.org",
+    "mnews.tw",
 ]
 
-# 官方媒體白名單（大幅擴展）
+# 官方媒體白名單（大幅擴展；2026.02.12 補齊）
 OFFICIAL_WHITELIST = [
     # 主要官方媒體
-    "cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw", 
+    "cna.com.tw", "pts.org.tw", "mnd.gov.tw", "mac.gov.tw",
     "tfc-taiwan.org.tw", "gov.tw",
     # 擴展官方機構
     "ey.gov.tw", "moea.gov.tw", "mofa.gov.tw", "moc.gov.tw",
@@ -384,15 +387,16 @@ OFFICIAL_WHITELIST = [
     # 事實查核機構
     "mygopen.com", "cofacts.tw", "tfc-taiwan.org.tw", "tfc.org.tw",
     # 學術機構
-    "nccu.edu.tw", "ntu.edu.tw", "sinica.edu.tw", "nctu.edu.tw"
+    "nccu.edu.tw", "ntu.edu.tw", "sinica.edu.tw", "nctu.edu.tw", "ncl.edu.tw",
 ]
 
-# 中立商業媒體白名單（不參與藍綠保底，作為平衡參照）
+# 中立商業媒體白名單（不參與藍綠保底；yahoo.com.tw 已歸藍營）
 NEUTRAL_WHITELIST = [
     "taiwanhot.net", "taiwannews.com.tw",
-    "yahoo.com.tw", "ettoday.net", "businessweekly.com.tw",
+    "ettoday.net", "businessweekly.com.tw",
     "commonhealth.com.tw", "cw.com.tw", "managertoday.com.tw",
-    "bnext.com.tw", "inside.com.tw", "techorange.com"
+    "bnext.com.tw", "inside.com.tw", "techorange.com",
+    "gvm.com.tw", "anue.com",
 ]
 
 # 完整台灣媒體白名單（擴充：包含社群平台；用於通用搜尋範圍）
@@ -401,36 +405,45 @@ FULL_TAIWAN_WHITELIST = (
     ["youtube.com", "youtu.be", "ptt.cc", "dcard.tw", "mobile01.com"]
 )
 
-# 獨立媒體白名單（大幅擴展：包含自媒體平台）
+# 獨立媒體白名單（大幅擴展：調查報導、法律/科學/人文、環境/社運；2026.02.12 補齊）
 INDIE_WHITELIST = [
-    # 主要獨立媒體
-    "twreporter.org", "theinitium.com", "thenewslens.com", 
-    "mindiworldnews.com", "vocus.cc", "matters.town", "plainlaw.me",
-    # 擴展獨立媒體
-    "readr.tw", "new7.com.tw", "watchout.tw", "taisounds.com",
-    "taiwanjustice.net", "taiwanjustice.org",
-    # 新媒體平台
-    "medium.com", "substack.com", "ghost.org", "wordpress.com",
+    # 主要獨立／調查媒體
+    "twreporter.org", "theinitium.com", "thenewslens.com", "readr.tw",
+    # 法律／科學／人文
+    "plainlaw.me", "pansci.asia", "story.gushi.tw", "thinkingtaiwan.com",
+    "whogovernstw.org", "voicettank.org", "openbook.org.tw",
+    # 環境／社運／農業
+    "newsmarket.com.tw", "e-info.org.tw", "eventsinfocus.org",
+    "civilmedia.tw", "rightplus.org", "npost.tw", "leaptop.com",
+    # 國際視野／部落格平台
+    "mindiworldnews.com", "vocus.cc", "matters.town", "medium.com",
+    "substack.com", "ghost.org", "wordpress.com",
+    # 擴展
+    "womany.net", "biosmonthly.com",
     # 學術媒體
-    "thinkingtaiwan.com", "taiwaninsight.com", "taiwaninsight.org",
-    # 自媒體影音平台（重要：投資理財等議題主要討論場域）
-    "youtube.com", "youtu.be"
+    "taiwaninsight.com", "taiwaninsight.org", "new7.com.tw",
+    # 自媒體影音平台
+    "youtube.com", "youtu.be",
 ]
 
-# 日本媒體白名單（專用於日本相關議題保底搜尋）
+# 日本媒體白名單（擴展：週刊、調查、商業深度；2026.02.12 補齊）
 INTL_JAPAN_WHITELIST = [
-    # 日本三大報
-    "asahi.com", "mainichi.jp", "yomiuri.co.jp",
-    # 經濟與產經
-    "nikkei.com", "asia.nikkei.com", "sankei.com",
+    # 主要日報與 NHK
+    "asahi.com", "mainichi.jp", "yomiuri.co.jp", "nikkei.com",
+    "sankei.com", "nhk.or.jp", "www3.nhk.or.jp",
     # 通訊社
     "kyodonews.com", "jiji.com",
-    # 廣電與綜合
-    "nhk.or.jp", "www3.nhk.or.jp",
-    # 英文日本媒體（國際讀者重要來源）
-    "japantimes.co.jp",
-    # 國際媒體日本報導（路透、美聯等常有日本分社）
-    "reuters.com", "apnews.com", "bloomberg.com"
+    # 調查／週刊（醜聞與深度報導）
+    "bunshun.jp", "dailyshincho.jp", "friday.kodansha.co.jp",
+    "gendai.ismedia.jp", "post.tv-asahi.co.jp",
+    # 商業／深度分析
+    "toyokeizai.net", "diamond.jp", "jbpress.ismedia.jp",
+    "wedge.ismedia.jp", "president.jp", "business.nikkei.com",
+    "newspicks.com", "agora-web.jp",
+    # 英文版
+    "japantimes.co.jp", "asia.nikkei.com", "japannews.yomiuri.co.jp",
+    # 國際媒體日本報導
+    "reuters.com", "apnews.com", "bloomberg.com",
 ]
 
 # 國際通訊社／外電白名單（三大通訊社 + 區域主要通訊社）
@@ -532,10 +545,30 @@ INTL_AMERICAS_WHITELIST = [
     "jornada.com.mx", "reforma.com", "milenio.com"
 ]
 
-# 完整國際媒體白名單（去重；含外電與智庫）
+# 西方／全球調查與權威媒體白名單（2026.02.12 新增：調查報導、OSINT、智庫）
+INTL_WEST_WHITELIST = [
+    # 頂級調查／獨立
+    "propublica.org", "publicintegrity.org", "thebureauinvestigates.com",
+    "icij.org", "revealnews.org", "theintercept.com", "bellingcat.com",
+    "vox.com", "axios.com", "politico.com", "politico.eu",
+    "slate.com", "motherjones.com", "democracynow.org",
+    # 智庫與地緣
+    "foreignaffairs.com", "foreignpolicy.com", "thediplomat.com",
+    "csis.org", "rusi.org", "chathamhouse.org", "rand.org",
+    "atlanticcouncil.org", "carnegieendowment.org", "crisisgroup.org",
+    "project-syndicate.org", "theconversation.com",
+    # 主流國際
+    "nytimes.com", "wsj.com", "washingtonpost.com", "ft.com",
+    "theguardian.com", "economist.com", "bloomberg.com",
+    "reuters.com", "apnews.com", "afp.com", "bbc.com", "cnn.com",
+    "dw.com", "france24.com", "aljazeera.com", "scmp.com",
+    "straitstimes.com", "channelnewsasia.com",
+]
+
+# 完整國際媒體白名單（去重；含亞洲、歐美、西方調查、外電與智庫）
 INTL_WHITELIST = sorted(list(set(
     INTL_ASIA_WHITELIST + INTL_EUROPE_WHITELIST + INTL_AMERICAS_WHITELIST +
-    INTL_WIRES_WHITELIST + INTL_THINKTANKS_WHITELIST
+    INTL_WEST_WHITELIST + INTL_WIRES_WHITELIST + INTL_THINKTANKS_WHITELIST
 )))
 
 # 擴展域名中文名稱映射（用於顯示）
@@ -605,7 +638,15 @@ DOMAIN_NAME_MAP = {
     "managertoday.com.tw": "經理人", "bnext.com.tw": "數位時代",
     "inside.com.tw": "Inside", "techorange.com": "科技報橘",
     # 事實查核
-    "mygopen.com": "MyGoPen", "cofacts.tw": "Cofacts", "tfc.org.tw": "台灣事實查核中心"
+    "mygopen.com": "MyGoPen", "cofacts.tw": "Cofacts", "tfc.org.tw": "台灣事實查核中心",
+    # 2026.02.12 補齊：中立、獨立、日本週刊、西方調查
+    "gvm.com.tw": "遠見", "anue.com": "鉅亨網", "ncl.edu.tw": "國家圖書館",
+    "mnews.tw": "民視新聞",
+    "pansci.asia": "泛科學", "openbook.org.tw": "Openbook", "voicettank.org": "想想論壇",
+    "whogovernstw.org": "誰來關心", "newsmarket.com.tw": "上下游", "e-info.org.tw": "環境資訊中心",
+    "bunshun.jp": "文春", "dailyshincho.jp": "日刊新潮", "toyokeizai.net": "東洋經濟",
+    "jbpress.ismedia.jp": "JBpress", "wedge.ismedia.jp": "Wedge", "propublica.org": "ProPublica",
+    "bellingcat.com": "Bellingcat", "theintercept.com": "The Intercept", "politico.com": "Politico",
 }
 
 # 擴展媒體資料庫映射（用於來源分類）
@@ -623,7 +664,7 @@ DB_MAP = {
         # 主要綠營媒體
         "ltn", "ftv", "setn", "rti.org", "newtalk", "mirrormedia", "dpp", "upmedia",
         # 擴展綠營媒體（taiwanhot/taiwannews→NEUTRAL；twreporter/theinitium/thenewslens→INDIE）
-        "peoplenews", "watchout", "taisounds", "taiwanjustice"
+        "peoplenews", "watchout", "taisounds", "taiwanjustice", "mnews",
     ],
     "BLUE": [
         # 主要藍營媒體
@@ -643,20 +684,21 @@ DB_MAP = {
         # 事實查核機構
         "mygopen", "cofacts", "tfc.org",
         # 學術機構
-        "nccu.edu", "ntu.edu", "sinica.edu", "nctu.edu"
+        "nccu.edu", "ntu.edu", "sinica.edu", "nctu.edu", "ncl.edu",
     ],
     "NEUTRAL": [
         # 中立商業/綜合媒體（不參與藍綠保底）
         "taiwanhot", "taiwannews", "yahoo.com", "ettoday", "businessweekly",
-        "commonhealth", "cw.com", "managertoday", "bnext", "inside", "techorange"
+        "commonhealth", "cw.com", "managertoday", "bnext", "inside", "techorange",
+        "gvm", "anue",
     ],
     "INDIE": [
-        # 主要獨立媒體
-        "twreporter", "theinitium", "thenewslens", "mindiworld", 
-        "vocus", "matters", "plainlaw",
-        # 擴展獨立媒體
-        "readr", "new7", "watchout", "taisounds", "taiwanjustice",
-        "thinkingtaiwan", "taiwaninsight"
+        # 台灣獨立／調查／部落格
+        "twreporter", "theinitium", "thenewslens", "mindiworld", "vocus",
+        "matters", "plainlaw", "readr", "new7", "watchout", "taisounds",
+        "taiwanjustice", "thinkingtaiwan", "taiwaninsight", "whogoverns",
+        "story.gushi", "pansci", "newsmarket", "e-info", "eventsinfocus",
+        "civilmedia", "rightplus", "npost", "leaptop", "opinion.cw",
     ],
     "INTL": [
         # 主要國際媒體
@@ -681,7 +723,12 @@ DB_MAP = {
         "lemonde", "elpais", "repubblica", "corriere", "telegraph",
         "independent", "scmp", "channelnewsasia", "straitstimes",
         "japantimes", "asahi", "yomiuri", "mainichi", "nhk",
-        "nikkei", "asia.nikkei", "koreaherald", "koreatimes"
+        "nikkei", "asia.nikkei", "koreaherald", "koreatimes",
+        # 調查／國際權威（2026.02.12 補齊）
+        "propublica", "publicintegrity", "bellingcat", "intercept", "politico",
+        "axios", "vox", "motherjones", "project-syndicate", "conversation",
+        # 日本深度分析
+        "bunshun", "dailyshincho", "toyokeizai", "diamond.jp", "jbpress", "wedge",
     ],
     "FARM": [
         # 內容農場
@@ -697,7 +744,7 @@ DB_MAP = {
         # 擴展社群媒體
         "twitter.com", "x.com", "instagram.com", "tiktok.com",
         "weibo.com", "douyin.com", "bilibili.com", "reddit.com",
-        "linkedin.com", "pinterest.com"
+        "linkedin.com", "pinterest.com", "substack", "medium",
     ],
     "VIDEO": [
         # 影音平台
@@ -1445,6 +1492,95 @@ English search queries (one per line):"""
     except Exception as e:
         logger.warning(f"英文查詢翻譯失敗: {str(e)[:200]}")
         return []
+
+
+def translate_queries_to_japanese_korean(
+    query: str,
+    expanded_queries: List[Any],
+    api_key: Optional[str] = None,
+    max_per_language: int = 2,
+) -> Dict[str, List[str]]:
+    """
+    將主查詢與擴展查詢翻譯為日文與韓文搜尋關鍵字，用於亞洲視角之日韓在地媒體檢索。
+    
+    理論基礎：跨語言資訊檢索 (CLIR)；日本/韓國媒體以當地語言檢索可提升覆蓋。
+    
+    Args:
+        query: 使用者主查詢（中文）
+        expanded_queries: 擴展查詢列表，可為 List[str] 或 List[Dict]（含 'query' 鍵）
+        api_key: Google Gemini API Key；若為 None 則不呼叫 LLM，返回 {"ja": [], "ko": []}
+        max_per_language: 日文與韓文各自最多產出幾條查詢（建議 2，避免任務過多）
+    
+    Returns:
+        Dict 含 "ja" 與 "ko" 鍵，值為該語言查詢字串列表；失敗時返回 {"ja": [], "ko": []}
+    """
+    out: Dict[str, List[str]] = {"ja": [], "ko": []}
+    if not api_key or max_per_language <= 0:
+        return out
+    query_texts: List[str] = []
+    if isinstance(expanded_queries, list):
+        for i, q in enumerate(expanded_queries[:4]):
+            if isinstance(q, str):
+                query_texts.append(q.strip())
+            elif isinstance(q, dict) and q.get("query"):
+                query_texts.append(str(q["query"]).strip())
+    if not query_texts:
+        query_texts = [query.strip()] if query else []
+    if not query_texts:
+        return out
+
+    try:
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2
+        )
+        prompt = f"""You are a search query translator for news. Output search queries in Japanese and Korean for the same topic.
+
+User query (Chinese or mixed): {query[:200]}
+
+Related phrases:
+{chr(10).join(query_texts[:4])}
+
+Output EXACTLY in this format (use natural Japanese and Korean for news search; keep proper nouns in local form):
+JAPANESE:
+<one query per line, up to {max_per_language} lines>
+KOREAN:
+<one query per line, up to {max_per_language} lines>
+
+No numbering, no explanation. Write only the queries."""
+        raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
+        if not raw or not isinstance(raw, str):
+            return out
+        block = raw.strip()
+        ja_lines: List[str] = []
+        ko_lines: List[str] = []
+        current = "ja"
+        for line in block.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.upper().startswith("KOREAN"):
+                current = "ko"
+                rest = line[6:].strip()
+                if rest:
+                    ko_lines.append(rest[:350])
+                continue
+            if line.upper().startswith("JAPANESE"):
+                current = "ja"
+                rest = line[8:].strip()
+                if rest:
+                    ja_lines.append(rest[:350])
+                continue
+            if current == "ja" and len(ja_lines) < max_per_language:
+                ja_lines.append(line[:350])
+            elif current == "ko" and len(ko_lines) < max_per_language:
+                ko_lines.append(line[:350])
+        out["ja"] = ja_lines[:max_per_language]
+        out["ko"] = ko_lines[:max_per_language]
+        logger.info(f"日韓查詢翻譯完成: 主查詢={query[:40]}..., ja={len(out['ja'])}, ko={len(out['ko'])}")
+        return out
+    except Exception as e:
+        logger.warning(f"日韓查詢翻譯失敗: {str(e)[:200]}")
+        return out
 
 
 def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str] = None, query: Optional[str] = None) -> Dict[str, Any]:
@@ -3114,6 +3250,8 @@ def execute_hybrid_search(
     dynamic_keywords: List,
     selected_regions: List[str],
     english_queries: Optional[List[str]] = None,
+    japanese_queries: Optional[List[str]] = None,
+    korean_queries: Optional[List[str]] = None,
 ) -> List[Dict]:
     """
     執行混和搜尋（完整版 - 基於 Tavily 最佳實踐）
@@ -3123,11 +3261,14 @@ def execute_hybrid_search(
     2. 搜尋深度：通用搜尋使用 basic，保底搜尋使用 advanced
     3. 結果過濾：使用 topic: "news" 和網域過濾
     4. 平衡報導：多視角查詢 + 分眾保底機制
-    5. 建議一：當選歐洲/美洲且傳入 english_queries 時，新增英文查詢任務（非中文檢索），結果與現有任務共用 seen_urls 去重，避免邏輯衝突。
+    5. 建議一：當選歐洲/美洲且傳入 english_queries 時，新增英文查詢任務（非中文檢索），結果與現有任務共用 seen_urls 去重。
+    6. 亞洲視角：當選亞洲且傳入 japanese_queries / korean_queries 時，新增日文/韓文查詢任務，對日本/韓國網域檢索。
     
     Args:
         dynamic_keywords: 可以是 List[str] 或 List[Dict] (擴展查詢格式)
         english_queries: 英文搜尋關鍵字列表；當 selected_regions 含歐洲/美洲時會用於非中文檢索任務（可選）
+        japanese_queries: 日文搜尋關鍵字列表；當 selected_regions 含亞洲時會用於日本媒體保底（可選）
+        korean_queries: 韓文搜尋關鍵字列表；當 selected_regions 含亞洲時會用於韓國媒體保底（可選）
     """
     tavily = TavilyClient(api_key=api_key_tavily)
     seen_urls = set()
@@ -3288,7 +3429,9 @@ def execute_hybrid_search(
         japan_params = optimized_params.copy()
         japan_params['max_results'] = 8
         japan_params['search_depth'] = 'advanced'
-        japan_params['include_domains'] = INTL_JAPAN_WHITELIST
+        # 與藍/綠/官方一致：擴增白名單時仍限制網域數，避免單次請求過大並符合 Tavily 建議
+        japan_domains = INTL_JAPAN_WHITELIST[:50] if len(INTL_JAPAN_WHITELIST) > 50 else INTL_JAPAN_WHITELIST
+        japan_params['include_domains'] = japan_domains
         tasks.append({"name": "Japan_Guard", "query": validate_query_length(query), "params": japan_params})
         logger.info(f"已建立日本媒體保底搜尋（查詢含日本關鍵字），總任務數: {len(tasks)}")
 
@@ -3302,35 +3445,77 @@ def execute_hybrid_search(
             tasks.append({"name": "Korea_Guard", "query": validate_query_length(query), "params": korea_params})
             logger.info(f"已建立韓國媒體保底搜尋，總任務數: {len(tasks)}")
 
-    # === 建議二：歐洲/美洲分區保底（依視角拆成子查詢，include_domains 精簡 10–15 網域，與亞洲保底對稱）===
-    # 每個選定視角都有對應保底，避免只靠通用搜尋；使用主查詢（中文），不設 country
-    if "歐洲" in selected_str and INTL_EUROPE_WHITELIST:
-        europe_params = optimized_params.copy()
-        europe_params.pop("country", None)
-        europe_params["max_results"] = 8
-        europe_params["search_depth"] = "advanced"
-        europe_params["include_domains"] = INTL_EUROPE_WHITELIST[:15]
-        tasks.append({"name": "Europe_Guard", "query": validate_query_length(query), "params": europe_params})
-        logger.info(f"已建立歐洲區域保底搜尋（{len(INTL_EUROPE_WHITELIST[:15])} 個網域），總任務數: {len(tasks)}")
-    if "美洲" in selected_str and INTL_AMERICAS_WHITELIST:
-        americas_params = optimized_params.copy()
-        americas_params.pop("country", None)
-        americas_params["max_results"] = 8
-        americas_params["search_depth"] = "advanced"
-        americas_params["include_domains"] = INTL_AMERICAS_WHITELIST[:15]
-        tasks.append({"name": "Americas_Guard", "query": validate_query_length(query), "params": americas_params})
-        logger.info(f"已建立美洲區域保底搜尋（{len(INTL_AMERICAS_WHITELIST[:15])} 個網域），總任務數: {len(tasks)}")
+    # === 亞洲視角：日文/韓文關鍵字檢索（日本/韓國在地媒體，與既有中文保底並行）===
+    _needs_asia_lang = "亞洲" in selected_str
+    if _needs_asia_lang and japanese_queries and INTL_JAPAN_WHITELIST:
+        ja_params = optimized_params.copy()
+        ja_params.pop("country", None)
+        ja_params["max_results"] = 8
+        ja_params["search_depth"] = "advanced"
+        ja_params["include_domains"] = INTL_JAPAN_WHITELIST[:15]
+        for i, jq in enumerate(japanese_queries[:2]):
+            if jq and isinstance(jq, str) and jq.strip():
+                tasks.append({
+                    "name": f"Asia_Japanese_Guard_{i+1}",
+                    "query": validate_query_length(jq.strip()),
+                    "params": ja_params,
+                })
+        logger.info(f"已建立 {min(2, len(japanese_queries))} 個日文檢索任務（日本媒體），總任務數: {len(tasks)}")
+    _korea_domains_for_asia = [d for d in INTL_ASIA_WHITELIST if "korea" in d.lower() or "yna" in d.lower()]
+    if _needs_asia_lang and korean_queries and _korea_domains_for_asia:
+        ko_params = optimized_params.copy()
+        ko_params.pop("country", None)
+        ko_params["max_results"] = 8
+        ko_params["search_depth"] = "advanced"
+        ko_params["include_domains"] = _korea_domains_for_asia[:15]
+        for i, kq in enumerate(korean_queries[:2]):
+            if kq and isinstance(kq, str) and kq.strip():
+                tasks.append({
+                    "name": f"Asia_Korean_Guard_{i+1}",
+                    "query": validate_query_length(kq.strip()),
+                    "params": ko_params,
+                })
+        logger.info(f"已建立 {min(2, len(korean_queries))} 個韓文檢索任務（韓國媒體），總任務數: {len(tasks)}")
 
-    # === 建議一：歐洲/美洲非中文檢索（英文關鍵字 + 國際網域，與中文通用搜尋並行，結果依 URL 去重）===
+    # === 建議二：歐洲/美洲分區保底（含 INTL_WEST_WHITELIST 調查／國際權威，網域精簡 15）===
+    # 每個選定視角都有對應保底；併入西方調查媒體白名單，避免只靠通用搜尋
+    if "歐洲" in selected_str and (INTL_EUROPE_WHITELIST or INTL_WEST_WHITELIST):
+        _europe_pool = list(INTL_EUROPE_WHITELIST[:10]) if INTL_EUROPE_WHITELIST else []
+        _europe_pool.extend(INTL_WEST_WHITELIST[:8] if INTL_WEST_WHITELIST else [])
+        europe_domains = list(dict.fromkeys(_europe_pool))[:15]
+        if europe_domains:
+            europe_params = optimized_params.copy()
+            europe_params.pop("country", None)
+            europe_params["max_results"] = 8
+            europe_params["search_depth"] = "advanced"
+            europe_params["include_domains"] = europe_domains
+            tasks.append({"name": "Europe_Guard", "query": validate_query_length(query), "params": europe_params})
+            logger.info(f"已建立歐洲區域保底搜尋（含西方調查，{len(europe_domains)} 個網域），總任務數: {len(tasks)}")
+    if "美洲" in selected_str and (INTL_AMERICAS_WHITELIST or INTL_WEST_WHITELIST):
+        _americas_pool = list(INTL_AMERICAS_WHITELIST[:10]) if INTL_AMERICAS_WHITELIST else []
+        _americas_pool.extend(INTL_WEST_WHITELIST[:8] if INTL_WEST_WHITELIST else [])
+        americas_domains = list(dict.fromkeys(_americas_pool))[:15]
+        if americas_domains:
+            americas_params = optimized_params.copy()
+            americas_params.pop("country", None)
+            americas_params["max_results"] = 8
+            americas_params["search_depth"] = "advanced"
+            americas_params["include_domains"] = americas_domains
+            tasks.append({"name": "Americas_Guard", "query": validate_query_length(query), "params": americas_params})
+            logger.info(f"已建立美洲區域保底搜尋（含西方調查，{len(americas_domains)} 個網域），總任務數: {len(tasks)}")
+
+    # === 建議一：歐洲/美洲非中文檢索（英文關鍵字 + 國際網域含 INTL_WEST，結果依 URL 去重）===
     # 衝突避免：英文任務使用獨立參數（不設 country，不與台灣保底混用），且僅在選歐洲/美洲時加入
     _needs_english_guard = "歐洲" in selected_str or "美洲" in selected_str
     if _needs_english_guard and english_queries:
-        # 合併歐洲+美洲網域，精簡至 20 個以符合 Tavily 建議（列表簡短）
+        # 合併歐洲+美洲+西方調查網域，精簡至 20 個（符合 Tavily 建議）
         _intl_domains = []
         if "歐洲" in selected_str and INTL_EUROPE_WHITELIST:
-            _intl_domains.extend(INTL_EUROPE_WHITELIST[:12])
+            _intl_domains.extend(INTL_EUROPE_WHITELIST[:8])
         if "美洲" in selected_str and INTL_AMERICAS_WHITELIST:
-            _intl_domains.extend(INTL_AMERICAS_WHITELIST[:12])
+            _intl_domains.extend(INTL_AMERICAS_WHITELIST[:8])
+        if INTL_WEST_WHITELIST:
+            _intl_domains.extend(INTL_WEST_WHITELIST[:10])
         _intl_domains = list(dict.fromkeys(_intl_domains))[:20]
         if _intl_domains:
             # 英文任務不設 country，避免與台灣優先衝突
@@ -3346,7 +3531,7 @@ def execute_hybrid_search(
                         "query": validate_query_length(eq.strip()),
                         "params": en_params,
                     })
-            logger.info(f"已建立 {min(3, len(english_queries))} 個英文檢索任務（歐洲/美洲網域），總任務數: {len(tasks)}")
+            logger.info(f"已建立 {min(3, len(english_queries))} 個英文檢索任務（歐洲/美洲/西方調查網域），總任務數: {len(tasks)}")
 
     def fetch(task, retry_count=0):
         try:
@@ -3560,6 +3745,20 @@ def execute_hybrid_search(
                     other_guard_count += 1
     if other_guard_count:
         logger.info(f"國際保底（亞洲/日本/韓國）共加入 {other_guard_count} 筆結果")
+
+    # C1b. 亞洲日文/韓文檢索結果（日本/韓國在地媒體）— 共用 seen_urls 去重
+    asia_lang_keys = [k for k in results_map.keys() if k.startswith("Asia_Japanese_Guard_") or k.startswith("Asia_Korean_Guard_")]
+    asia_lang_count = 0
+    for key in sorted(asia_lang_keys):
+        for item in results_map[key]:
+            if not isinstance(item, dict):
+                continue
+            if item.get("url") and item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                final_list.append(item)
+                asia_lang_count += 1
+    if asia_lang_count:
+        logger.info(f"亞洲日文/韓文檢索共加入 {asia_lang_count} 筆結果")
 
     # C2. 建議二：區域保底（歐洲/美洲）— 分區子查詢結果，共用 seen_urls 去重
     region_guards = ["Europe_Guard", "Americas_Guard"]
@@ -4121,9 +4320,22 @@ def get_search_context(
                     )
                     if english_queries:
                         logger.info(f"已產出 {len(english_queries)} 條英文查詢，將用於歐洲/美洲非中文檢索")
-            # 建議三：寫入上次英文查詢供策略表顯示（僅在非快取路徑更新）
+            # 亞洲視角：產出日文與韓文關鍵字，用於日本/韓國在地媒體檢索
+            japanese_queries: List[str] = []
+            korean_queries: List[str] = []
+            if google_api_key and selected_regions and "亞洲" in str(selected_regions):
+                ja_ko = translate_queries_to_japanese_korean(
+                    query, all_queries, google_api_key, max_per_language=2
+                )
+                japanese_queries = ja_ko.get("ja") or []
+                korean_queries = ja_ko.get("ko") or []
+                if japanese_queries or korean_queries:
+                    logger.info(f"已產出日文 {len(japanese_queries)} 條、韓文 {len(korean_queries)} 條查詢，將用於亞洲日韓檢索")
+            # 建議三：寫入上次英文/日文/韓文查詢供策略表顯示（僅在非快取路徑更新）
             try:
                 st.session_state["last_english_queries"] = english_queries
+                st.session_state["last_japanese_queries"] = japanese_queries
+                st.session_state["last_korean_queries"] = korean_queries
             except Exception:
                 pass
             
@@ -4150,6 +4362,8 @@ def get_search_context(
             results = execute_hybrid_search(
                 query, api_key_tavily, search_params, is_strict_mode, all_queries, selected_regions,
                 english_queries=english_queries,
+                japanese_queries=japanese_queries,
+                korean_queries=korean_queries,
             )
             
             logger.info(f"混和搜尋完成: 取得 {len(results)} 筆結果")
@@ -5276,9 +5490,9 @@ with st.sidebar:
             | 視角 | 保底網域／行為 |
             |------|----------------|
             | 台灣 | 藍/綠/官方網域 + Tavily country 優先台灣 |
-            | 亞洲 | 亞洲國際媒體；查詢含日本/韓國關鍵字時加日本/韓國媒體保底 |
-            | 歐洲 | 歐洲區域保底（約 15 網域）+ 可自動英文關鍵字檢索（見下方選項） |
-            | 美洲 | 美洲區域保底（約 15 網域）+ 可自動英文關鍵字檢索 |
+            | 亞洲 | 亞洲國際媒體 + **自動產出日文/韓文關鍵字**對日本/韓國媒體檢索（重要） |
+            | 歐洲 | 歐洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索（見下方選項） |
+            | 美洲 | 美洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索 |
             | 獨立 | 納入獨立/自媒體網域 |
 
             **英文檢索觸發**：勾選歐洲或美洲時，可選擇是否「自動加入英文關鍵字檢索」（系統會將查詢翻譯為英文並對歐美網域搜尋）。若關閉，仍會執行該區域的**中文查詢**保底。
@@ -5415,10 +5629,10 @@ flowchart LR
         
         **搜尋視角與關鍵字語言 (Region & Keyword Language)**
         - **台灣**：保底搜尋限定藍/綠/官方網域，並可設 Tavily `country: taiwan`。
-        - **亞洲**：增加亞洲國際媒體保底（INTL_ASIA_WHITELIST）；若查詢含日本/韓國關鍵字會再加日本/韓國媒體保底。
-        - **歐洲/美洲（建議一+二已實作）**：勾選歐洲或美洲時，（1）**建議二**：各建一組**區域保底**任務（Europe_Guard / Americas_Guard），以主查詢（中文）+ 該區白名單（精簡 15 個網域）、`search_depth=advanced`，確保該視角有對應保底；（2）**建議一**：並以 LLM 翻譯為英文關鍵字，對歐洲/美洲網域執行非中文檢索（最多 3 條英文查詢）；結果皆與中文搜尋**共用 URL 去重**。
+        - **亞洲**：增加亞洲國際媒體保底（INTL_ASIA_WHITELIST）；**並自動產出日文與韓文關鍵字**，對日本/韓國網域執行日文/韓文檢索（各最多 2 條查詢），以覆蓋在地媒體。若查詢含日本/韓國關鍵字也會以中文再加日本/韓國媒體保底。
+        - **歐洲/美洲（建議一+二已實作）**：勾選歐洲或美洲時，（1）**建議二**：各建一組**區域保底**任務（Europe_Guard / Americas_Guard），以主查詢（中文）+ 該區白名單**併入 INTL_WEST_WHITELIST（西方調查／國際權威）**、精簡 15 個網域、`search_depth=advanced`；（2）**建議一**：並以 LLM 翻譯為英文關鍵字，對歐洲/美洲/**西方調查**網域執行非中文檢索（最多 3 條英文查詢）；結果皆與中文搜尋**共用 URL 去重**。
         - **建議三（透明度與可控）**：側欄提供「搜尋視角說明」摺疊與核取方塊「當勾選歐洲/美洲時，自動加入英文關鍵字檢索」；可關閉以僅用中文查詢保底。策略表下方可顯示「英文檢索關鍵字（上次執行）」供檢視。
-        - **視角→觸發對應**：台灣→藍/綠/官方保底 + country；亞洲→亞洲國際保底（+ 日韓關鍵字時日韓保底）；歐洲→Europe_Guard + 可選英文檢索；美洲→Americas_Guard + 可選英文檢索；獨立→納入獨立媒體網域。
+        - **視角→觸發對應**：台灣→藍/綠/官方保底 + country；亞洲→亞洲國際保底 + **日文/韓文關鍵字檢索（日本/韓國媒體）**（+ 查詢含日韓關鍵字時中文日韓保底）；歐洲→Europe_Guard + 可選英文檢索；美洲→Americas_Guard + 可選英文檢索；獨立→納入獨立媒體網域。
         - **若需更多非中文檢索**：可於「意圖導向」填寫「請產出英文關鍵字」或在「檢視與編輯搜尋策略」中手動加入英文查詢。
         
         **搜尋深度優化**
@@ -5949,13 +6163,26 @@ if st.session_state.keyword_plan is not None:
     st.session_state.keyword_plan = edited_df
     final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
     final_keywords = [k for k in final_keywords if k and k.strip()]
-    # 建議三：顯示上次執行時使用的英文檢索關鍵字（僅供參考，不可編輯）
+    # 建議三：顯示上次執行時使用的英文/日文/韓文檢索關鍵字（僅供參考，不可編輯）
     last_en = st.session_state.get("last_english_queries", [])
+    last_ja = st.session_state.get("last_japanese_queries", [])
+    last_ko = st.session_state.get("last_korean_queries", [])
     if last_en and isinstance(last_en, list) and len(last_en) > 0:
         with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
             st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
             for i, q in enumerate(last_en, 1):
                 st.text(f"{i}. {q}")
+    if (last_ja and isinstance(last_ja, list) and len(last_ja) > 0) or (last_ko and isinstance(last_ko, list) and len(last_ko) > 0):
+        with st.expander("🌏 日文／韓文檢索關鍵字（上次執行）", expanded=False):
+            st.caption("勾選亞洲並執行分析後，系統會自動產出日文與韓文查詢用於日本/韓國媒體檢索；僅供參考。")
+            if last_ja and len(last_ja) > 0:
+                st.markdown("**日文**")
+                for i, q in enumerate(last_ja, 1):
+                    st.text(f"{i}. {q}")
+            if last_ko and len(last_ko) > 0:
+                st.markdown("**韓文**")
+                for i, q in enumerate(last_ko, 1):
+                    st.text(f"{i}. {q}")
 
 # ---------- Step 3: Execute Analysis ----------
 search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
