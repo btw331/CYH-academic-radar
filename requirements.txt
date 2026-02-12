@@ -11,3 +11,4 @@ beautifulsoup4
 plotly
 tabulate
 markdown
+graphviz
