@@ -5114,6 +5114,35 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
 
 # --- Visual Intelligence Module (Phase 3: Visual War Room) ---
 
+def _extract_json_from_llm_raw(raw: str) -> Optional[Dict[str, Any]]:
+    """
+    從 LLM 回傳文字中萃取出單一 JSON 物件。容忍 markdown 程式碼區塊、前後說明文字。
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    raw = raw.strip()
+    # 移除 markdown 程式碼區塊
+    if "```" in raw:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+        if match:
+            raw = match.group(1).strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```\s*$", "", raw)
+    # 找到第一個 { 與最後一個 }，避免前後多餘文字
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        raw = raw[start : end + 1]
+    # 移除可能導致 JSON 解析失敗的尾隨逗號（僅限 ,] 與 ,}）
+    raw = re.sub(r",\s*]", "]", raw)
+    raw = re.sub(r",\s*}", "}", raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
 def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, Any]]:
     """
     使用 LLM 從文字報告中萃取結構化 JSON，供視覺化戰情室使用。
@@ -5133,28 +5162,29 @@ def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, A
         return None
 
     text_input = (report_text.strip())[:25000]
-    system_prompt = """You are a Data Visualization Expert. Analyze the following intelligence report and extract structured data for visualization.
-Output ONLY valid JSON. No markdown code fence, no explanation. Use the exact keys: "network", "stance_map", "timeline"."""
+    system_prompt = """你是資料視覺化專家。請「僅」根據下方情報報告，萃取出可視覺化的結構化資料。
+請「只」輸出一个 JSON 物件，不要任何前言、結論或 markdown 標記。
+JSON 必須且僅包含以下三個鍵（英文）："network"、"stance_map"、"timeline"。"""
 
-    user_prompt = f"""
-REPORT TEXT:
+    user_prompt = f"""請分析以下報告並輸出「單一」JSON 物件，格式如下（鍵名必須一致）：
+
+{{
+  "network": {{
+    "nodes": [{{"id": "角色或組織名稱", "group": "陣營/國家", "size": 5}}],
+    "edges": [{{"source": "名稱1", "target": "名稱2", "label": "關係說明", "type": "support 或 oppose 或 money"}}]
+  }},
+  "stance_map": {{
+    "items": [{{"name": "名稱", "x": -10到10的數字（親中到親美）, "y": -10到10的數字（鴿派到鷹派）, "desc": "簡短理由"}}]
+  }},
+  "timeline": {{
+    "events": [{{"date": "YYYY-MM-DD", "event": "事件標題", "category": "Politics 或 Military 或 Economy"}}]
+  }}
+}}
+
+報告內容：
 {text_input}
 
-TASK:
-Extract 3 datasets in valid JSON format:
-
-1. "network": A knowledge graph of key stakeholders (from Cui Bono & Influence Network sections).
-   - "nodes": [{{"id": "Name", "group": "Camp/Country", "size": 1-10}}]
-   - "edges": [{{"source": "Name", "target": "Name", "label": "Relationship", "type": "support/oppose/money"}}]
-
-2. "stance_map": Positioning of actors on a 2D geopolitical spectrum.
-   - "items": [{{"name": "Name", "x": number from -10 to 10 (Pro-China to Pro-US), "y": number from -10 to 10 (Dove/Economy to Hawk/Security), "desc": "Reason"}}]
-
-3. "timeline": Key events from the Timeline or Future Scenario sections.
-   - "events": [{{"date": "YYYY-MM-DD", "event": "Title", "category": "Politics/Military/Economy"}}]
-
-OUTPUT JSON ONLY.
-"""
+請直接輸出上述格式的單一 JSON，不要用 ``` 包住，不要其他文字。"""
 
     try:
         llm = ChatGoogleGenerativeAI(
@@ -5169,16 +5199,27 @@ OUTPUT JSON ONLY.
         if not raw or not isinstance(raw, str):
             logger.warning("generate_visual_data: LLM 返回為空或非字串")
             return None
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```\s*$", "", raw)
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        logger.error(f"generate_visual_data: JSON 解析失敗: {e}")
-        return None
+        data = _extract_json_from_llm_raw(raw)
+        if not data:
+            logger.warning("generate_visual_data: 無法從回傳中解析 JSON，原始長度=%s", len(raw))
+            return None
+        # 正規化結構，確保前端需要的鍵存在
+        if "network" not in data or not isinstance(data["network"], dict):
+            data["network"] = {"nodes": [], "edges": []}
+        else:
+            data["network"].setdefault("nodes", [])
+            data["network"].setdefault("edges", [])
+        if "stance_map" not in data or not isinstance(data["stance_map"], dict):
+            data["stance_map"] = {"items": []}
+        else:
+            data["stance_map"].setdefault("items", [])
+        if "timeline" not in data or not isinstance(data["timeline"], dict):
+            data["timeline"] = {"events": []}
+        else:
+            data["timeline"].setdefault("events", [])
+        return data
     except Exception as e:
-        logger.error(f"generate_visual_data: 視覺化資料萃取失敗: {e}")
+        logger.error("generate_visual_data: 視覺化資料萃取失敗: %s", str(e))
         return None
 
 
