@@ -5046,8 +5046,9 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
        - 需要哪些類型的資料才能進行完整分析
        - 基於現有資料可以得出哪些有限但可靠的結論
        - 避免僅簡單標示「目前資訊不足」，應提供具體的資訊缺口分析
-    2. **去軍事化**：嚴禁使用軍事隱喻。
-    3. **中性專業**：使用社會科學術語。
+    2. **去軍事化／避免戰爭風**：全文（含標題、小標、表格內文）嚴禁軍事隱喻與戰爭框架。除非議題確為武裝衝突，否則勿使用「開戰」「對決」「攻防」「烽火」「戰線」「戰場」「征戰」等用語；改以「政策討論」「立場差異」「協商」「爭議」「角力」等中性表述。Section 8/9 的標題與內文也須避免過度軍事化修辭。
+    3. **平衡報導風格**：標題與內文請採中性、多元觀點，避免單一立場或煽動用語；可並陳不同看法，勿過度戲劇化。
+    4. **中性專業**：使用社會科學術語。
     """
 
     if mode == "FUSION":
@@ -5086,6 +5087,8 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
+        
+        **⚠️ 標題與內文風格**：報告開頭請以一句 **# 簡短標題** 總括本議題；標題須**中性、平衡報導風格**，勿使用戰爭隱喻或聳動用語（如「開戰」「對決」「烽火」）。全文各節小標與表格內文字亦須符合平衡報導與去軍事化表述。
         
         0. **🎯 ACH 競爭假設分析 (Analysis of Competing Hypotheses)**
            | 假設 | 支持證據 (請詳述) | 反對證據 (請詳述) | 可信度評估 | 關鍵變數 |
@@ -5143,6 +5146,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
              | 指標類型 | 具體訊號 (What to watch) | 代表意義 | 監測頻率 |
              |:---|:---|:---|:---|
              | (軍事/經濟/政治/社會) | ... | ... | ... |
+           （本節用語請保持中性學術表述，勿過度軍事化修辭。）
 
         9. ⚔️ 混合戰威脅建模 (Hybrid Warfare: Cognitive & Lawfare)
            * **認知戰戰術解構 (Cognitive Warfare - DISARM Framework)**：
@@ -5153,6 +5157,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            * **國際法理戰推演 (Lawfare Gaming)**：
              - **甲方論述**：(引用之國際法或條約，如聯合國憲章第51條)
              - **乙方反制**：(引用之歷史權利、波茨坦公告或主權宣示)
+           （本節雖涉及威脅建模，內文仍請以中性學術用語呈現，避免額外戰爭隱喻如「戰場」「攻防」等。）
         """
         
     elif mode == "DEEP_SCENARIO":
