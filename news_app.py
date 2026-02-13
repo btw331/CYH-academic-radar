@@ -5833,14 +5833,13 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
-    # 僅從白名單來源取得：台灣藍綠官方＋國際媒體（與深度分析相同白名單）
+    # 僅從白名單來源取得：台灣藍綠官方＋國際媒體（與深度分析相同白名單）。key 由 widget 擁有，勿再手動寫入 session_state。
     feed_use_whitelist = st.checkbox(
         "僅從白名單來源取得（台灣藍綠官方＋國際媒體）",
-        value=st.session_state.get("feed_use_whitelist", False),
+        value=False,
         key="feed_use_whitelist",
         help="勾選後，Tavily 搜尋會限制在您建立的白名單網域內，與「全域分析」使用的藍/綠/官方/國際白名單一致。",
     )
-    st.session_state["feed_use_whitelist"] = feed_use_whitelist
     use_tavily = True
     current_source_key = "tavily"
     if not feed_llm_key:
