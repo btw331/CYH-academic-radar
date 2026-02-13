@@ -4718,6 +4718,43 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
         logger.error(f"OpenAI API 調用失敗: {error_msg}")
         raise Exception(f"OpenAI API 調用失敗: {error_msg[:200]}") from e
 
+
+def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-2", api_key: Optional[str] = None) -> str:
+    """
+    呼叫 xAI Grok API（OpenAI 相容端點 https://api.x.ai/v1）。
+
+    Args:
+        system_prompt: 系統提示
+        user_text: 用戶輸入
+        model_name: Grok 模型名稱（預設 grok-2，可選 grok-beta、grok-2-mini 等）
+        api_key: xAI API Key
+
+    Returns:
+        str: AI 生成的文本
+    """
+    if not OPENAI_AVAILABLE:
+        raise ImportError("Grok API 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
+    if not api_key or not api_key.strip():
+        raise ValueError("未提供 Grok (xAI) API Key")
+    try:
+        llm = ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            openai_api_key=api_key.strip(),
+            openai_api_base="https://api.x.ai/v1",
+        )
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        response = chain.invoke({"input": user_text})
+        result = _extract_text_from_llm_content(response.content)
+        logger.info(f"成功使用 Grok {model_name} 生成回應")
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Grok API 調用失敗: {error_msg}")
+        raise Exception(f"Grok API 調用失敗: {error_msg[:200]}") from e
+
+
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
     """
     呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
@@ -4940,7 +4977,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None) -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 重視正確度：不使用快速模式，保持完整 context
@@ -5096,6 +5133,8 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         replacement = (manipulation_signals or "").strip() or "（本輪未提供操作信號資料。）"
         system_prompt = system_prompt.replace("[MANIPULATION_SIGNALS]", replacement)
 
+    if use_grok and api_key:
+        return call_grok(system_prompt, context_text, model_name or "grok-2", api_key)
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
 
 
@@ -6171,36 +6210,15 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
+        st.session_state["openai_api_key"] = None
+        st.session_state["openai_model"] = "gpt-4o-mini"
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
         tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
-        
-        st.markdown("---")
-        st.markdown("**🔄 降級方案（可選）**")
-        openai_key = st.text_input("OpenAI Key (可選)", type="password", help="當 Gemini 配額用完時自動使用 OpenAI API")
-        if openai_key:
-            st.session_state['openai_api_key'] = openai_key
-            # 根據 OpenAI 文檔（2025）更新模型選項
-            # 推薦模型：gpt-4o-mini（成本效益高）、gpt-4o（更強能力）
-            # 已棄用但保留作為向後相容：gpt-4-turbo, gpt-3.5-turbo
-            openai_model_options = [
-                "gpt-4o-mini",      # 推薦：成本效益高，適合一般任務
-                "gpt-4o",           # 推薦：更強能力，適合複雜任務
-                "gpt-4-turbo",      # 已棄用，但保留作為向後相容
-                "gpt-3.5-turbo"     # 已棄用，但保留作為向後相容
-            ]
-            selected_openai_model = st.selectbox(
-                "OpenAI 模型", 
-                openai_model_options, 
-                index=0, 
-                help="降級時使用的 OpenAI 模型。推薦使用 gpt-4o-mini（成本效益高）或 gpt-4o（更強能力）"
-            )
-            st.session_state['openai_model'] = selected_openai_model
-            st.info("✅ 已設定 OpenAI 降級方案：當 Gemini 配額用完時會自動切換")
-        else:
-            st.session_state['openai_api_key'] = None
-            st.session_state['openai_model'] = 'gpt-4o-mini'
-            st.caption("💡 提示：提供 OpenAI Key 可在 Gemini 配額用完時自動切換")
-        
+        grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
+        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok"], index=0, horizontal=True, help="選擇深度分析與摘要使用的模型。選 Grok 時請先輸入上方 Grok Key")
+        st.session_state["llm_provider"] = llm_provider
+        st.session_state["grok_api_key"] = (grok_key or "").strip() or None
+
         # API Key 驗證按鈕
         if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
             if google_key and tavily_key:
@@ -7201,16 +7219,21 @@ else:
             mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
             analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
 
-            # 獲取 OpenAI API Key（如果有的話）
             openai_api_key = st.session_state.get('openai_api_key', None)
             openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
-        
+            llm_provider = st.session_state.get("llm_provider", "Gemini")
+            grok_key = st.session_state.get("grok_api_key")
+            use_grok = (llm_provider == "Grok" and grok_key)
+            effective_key = grok_key if use_grok else google_key
+            effective_model = "grok-2" if use_grok else model_name
+
             try:
                 raw_report = run_strategic_analysis(
-                    query, analysis_context, model_name, google_key,
+                    query, analysis_context, effective_model, effective_key,
                     mode=mode_code, fast_mode=False,
                     openai_api_key=openai_api_key, openai_model=openai_model,
-                    manipulation_signals=manipulation_signals_text
+                    manipulation_signals=manipulation_signals_text,
+                    use_grok=use_grok
                 )
             except ChatGoogleGenerativeAIError as e:
                 # Gemini API 特定錯誤（通常是配額相關）
@@ -7268,12 +7291,12 @@ else:
                         try:
                             status.update(label="🔄 Gemini 配額耗盡，自動切換到 OpenAI...", state="running")
                             logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
-                            # 直接使用 OpenAI 完成分析
                             raw_report = run_strategic_analysis(
-                                query, analysis_context, model_name, google_key,
+                                query, analysis_context, effective_model, effective_key,
                                 mode=mode_code, fast_mode=False,
                                 openai_api_key=openai_api_key, openai_model=openai_model,
-                                manipulation_signals=manipulation_signals_text
+                                manipulation_signals=manipulation_signals_text,
+                                use_grok=use_grok
                             )
                             # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
                             status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
@@ -7534,14 +7557,18 @@ else:
             if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
                 with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
                     current_report = data.get("report_text", "")
-                    # 獲取 OpenAI API Key（如果有的話）
                     openai_api_key = st.session_state.get('openai_api_key', None)
                     openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
-                
+                    llm_provider = st.session_state.get("llm_provider", "Gemini")
+                    grok_key = st.session_state.get("grok_api_key")
+                    use_grok = (llm_provider == "Grok" and grok_key)
+                    effective_key = grok_key if use_grok else google_key
+                    effective_model = "grok-2" if use_grok else model_name
                     raw_text = run_strategic_analysis(
-                        query, current_report, model_name, google_key, 
+                        query, current_report, effective_model, effective_key,
                         mode="DEEP_SCENARIO",
-                        openai_api_key=openai_api_key, openai_model=openai_model
+                        openai_api_key=openai_api_key, openai_model=openai_model,
+                        use_grok=use_grok
                     )
                     st.session_state.scenario_result = parse_gemini_data(raw_text) 
                     st.rerun()
