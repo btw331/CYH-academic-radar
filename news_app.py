@@ -5168,23 +5168,23 @@ def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
 # 全球情報摘要 (Global Intelligence Feed)：五大洲 × 政治/經濟/科技
 # ==========================================
 
-# (洲名_繁中, 類型_繁中, Tavily 搜尋查詢)
+# (洲名_繁中, 類型_繁中, Tavily 搜尋查詢) — 查詢強調「今日／最新」與「重要／頭條」
 FEED_CATEGORIES = [
-    ("亞洲", "政治", "Asia politics news today"),
-    ("亞洲", "經濟", "Asia economy business news today"),
-    ("亞洲", "科技", "Asia technology innovation news today"),
-    ("歐洲", "政治", "Europe politics EU news today"),
-    ("歐洲", "經濟", "Europe economy business news today"),
-    ("歐洲", "科技", "Europe technology news today"),
-    ("美洲", "政治", "Americas USA politics news today"),
-    ("美洲", "經濟", "Americas economy market news today"),
-    ("美洲", "科技", "Americas technology news today"),
-    ("非洲", "政治", "Africa politics news today"),
-    ("非洲", "經濟", "Africa economy business news today"),
-    ("非洲", "科技", "Africa technology innovation news today"),
-    ("大洋洲", "政治", "Oceania Australia politics news today"),
-    ("大洋洲", "經濟", "Oceania Australia economy news today"),
-    ("大洋洲", "科技", "Oceania technology news today"),
+    ("亞洲", "政治", "Asia top important politics news today headline"),
+    ("亞洲", "經濟", "Asia top important economy business news today"),
+    ("亞洲", "科技", "Asia top important technology innovation news today"),
+    ("歐洲", "政治", "Europe top important politics EU news today headline"),
+    ("歐洲", "經濟", "Europe top important economy business news today"),
+    ("歐洲", "科技", "Europe top important technology news today"),
+    ("美洲", "政治", "Americas USA top important politics news today headline"),
+    ("美洲", "經濟", "Americas top important economy market news today"),
+    ("美洲", "科技", "Americas top important technology news today"),
+    ("非洲", "政治", "Africa top important politics news today"),
+    ("非洲", "經濟", "Africa top important economy business news today"),
+    ("非洲", "科技", "Africa top important technology news today"),
+    ("大洋洲", "政治", "Oceania Australia top important politics news today"),
+    ("大洋洲", "經濟", "Oceania Australia top important economy news today"),
+    ("大洋洲", "科技", "Oceania top important technology news today"),
 ]
 
 CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
@@ -5218,7 +5218,8 @@ def _summarize_feed_with_llm(
     if continent or topic:
         parts = [p for p in [continent, topic] if p]
         context = f"（本批為「{' '.join(parts)}」類要聞）"
-    system_prompt = """你是資深情報編輯（Senior Intelligence Editor）。請將提供的原始新聞片段整理成「精選要聞」清單。
+    system_prompt = """你是資深情報編輯（Senior Intelligence Editor）。請將提供的原始新聞片段整理成「今日重要要聞」清單。
+選稿原則：優先選擇**具政策／市場／國際影響力**的頭條與重大事件，排除次要、八卦或純地方小事。
 每則請產出：
 - emoji：一個代表該則主題的 emoji（如 🇺🇸 🇹🇼 📉 🤖）
 - title：吸引人的繁體中文標題
@@ -5227,7 +5228,7 @@ def _summarize_feed_with_llm(
 - analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準）
 
 請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, analysis_keywords。"""
-    user_prompt = f"""請將以下原始新聞{context}整理成精選要聞（最多精選 5～8 則，去除重複與次要），輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
+    user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
         if not raw:
@@ -5255,7 +5256,8 @@ def _summarize_feed_with_llm(
 @st.cache_data(ttl=3600)
 def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
     """
-    彙整五大洲 × 政治/經濟/科技頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
+    彙整五大洲 × 政治/經濟/科技「每日最新重要」頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
+    搜尋邏輯：Tavily topic=news、time_range=day（當日／24h），查詢含 top/important/headline；LLM 精選具影響力要聞。
     快取 1 小時以節省 API 配額。
 
     Args:
@@ -5273,7 +5275,14 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
         for continent, topic, query in FEED_CATEGORIES:
             raw_items: List[Dict[str, Any]] = []
             try:
-                resp = tavily.search(query=query, max_results=5, search_depth="basic")
+                # 鎖定「每天最新」：time_range=day；「重要新聞」：topic=news、查詢含 top/important
+                resp = tavily.search(
+                    query=query,
+                    max_results=5,
+                    search_depth="basic",
+                    topic="news",
+                    time_range="day",
+                )
                 results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
                 for r in results:
                     if isinstance(r, dict):
@@ -5372,6 +5381,8 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
         if st.button("🔍 深度分析 (Deep Dive)", key=f"feed_deep_dive_{index}", type="primary"):
             st.session_state["query"] = keywords
             st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
+            # 同步側欄 radio 的 key，否則 rerun 後 radio 會用舊值覆寫 current_page 導致切頁無效
+            st.session_state["nav_page"] = "🚀 全域分析 (Deep Analysis)"
             st.rerun()
 
 
