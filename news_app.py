@@ -5294,6 +5294,43 @@ RSS_FEED_URLS = [
     "https://www.theguardian.com/world/rss",
 ]
 
+# OpenRouter 免費模型 ID（pricing prompt/completion 為 0，依 API 篩選；見 https://openrouter.ai/api/v1/models）
+OPENROUTER_FREE_MODEL_IDS: Set[str] = {
+    "openrouter/aurora-alpha",
+    "openrouter/free",
+    "stepfun/step-3.5-flash:free",
+    "arcee-ai/trinity-large-preview:free",
+    "upstage/solar-pro-3:free",
+    "liquid/lfm-2.5-1.2b-thinking:free",
+    "liquid/lfm-2.5-1.2b-instruct:free",
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "arcee-ai/trinity-mini:free",
+    "tngtech/tng-r1t-chimera:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
+    "qwen/qwen3-vl-30b-a3b-thinking",
+    "qwen/qwen3-vl-235b-a22b-thinking",
+    "qwen/qwen3-next-80b-a3b-instruct:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "openai/gpt-oss-120b:free",
+    "openai/gpt-oss-20b:free",
+    "z-ai/glm-4.5-air:free",
+    "qwen/qwen3-coder:free",
+    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "google/gemma-3n-e2b-it:free",
+    "tngtech/deepseek-r1t2-chimera:free",
+    "deepseek/deepseek-r1-0528:free",
+    "google/gemma-3n-e4b-it:free",
+    "qwen/qwen3-4b:free",
+    "tngtech/deepseek-r1t-chimera:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "google/gemma-3-4b-it:free",
+    "google/gemma-3-12b-it:free",
+    "google/gemma-3-27b-it:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "nousresearch/hermes-3-llama-3.1-405b:free",
+}
+
 
 def _get_feed_source_badges(url_or_domain: str) -> List[str]:
     """
@@ -6309,14 +6346,24 @@ with st.sidebar:
         st.session_state["grok_api_key"] = (grok_key or "").strip() or None
         st.session_state["openrouter_api_key"] = (openrouter_key or "").strip() or None
         if llm_provider == "OpenRouter":
-            openrouter_models = [
+            openrouter_paid = [
                 "google/gemini-2.0-flash-exp",
                 "google/gemini-2.5-pro-preview",
                 "anthropic/claude-3.5-sonnet",
                 "anthropic/claude-3-opus",
                 "openai/gpt-4o",
             ]
-            openrouter_model = st.selectbox("OpenRouter 模型", options=openrouter_models, index=0, help="OpenRouter 上的模型 ID，見 https://openrouter.ai/models")
+            openrouter_free_sorted = sorted(OPENROUTER_FREE_MODEL_IDS)
+            openrouter_models = openrouter_paid + openrouter_free_sorted
+            def _openrouter_label(mid: str) -> str:
+                return f"{mid} (免費)" if mid in OPENROUTER_FREE_MODEL_IDS else mid
+            openrouter_model = st.selectbox(
+                "OpenRouter 模型",
+                options=openrouter_models,
+                index=0,
+                format_func=_openrouter_label,
+                help="付費模型在上方；下方為 OpenRouter 免費模型（pricing=0）。見 https://openrouter.ai/models 或 https://openrouter.ai/collections/free-models",
+            )
             st.session_state["openrouter_model"] = openrouter_model
         else:
             st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
