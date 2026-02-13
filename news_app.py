@@ -5571,13 +5571,11 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     """
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
-    if not google_key or not google_key.strip():
-        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要。")
-        return
     feed_source = st.radio(
         "取得方式",
         options=[
             "📡 RSS 頭條（約 1 次 API，免 Tavily）",
+            "📋 RSS 原始列表（0 次 API，僅頭條與連結）",
             "🔍 Tavily 即時（約 10 次 API，需 Tavily Key）",
         ],
         index=0,
@@ -5585,11 +5583,16 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         key="feed_source_radio",
     )
     use_tavily = "Tavily" in feed_source
+    use_rss_raw = "原始列表" in feed_source or "0 次" in feed_source
+    # 僅在會呼叫 API 的選項時要求對應 Key
+    if not use_rss_raw and (not google_key or not google_key.strip()):
+        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要；或改選「RSS 原始列表」不消耗 API。")
+        return
     if use_tavily and not (tavily_key and tavily_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條」免用 Tavily。")
+        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條／原始列表」免用 Tavily。")
         return
     # 切換來源時清除已載入的資料
-    current_source_key = "tavily" if use_tavily else "rss"
+    current_source_key = "tavily" if use_tavily else ("rss_raw" if use_rss_raw else "rss")
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
@@ -5598,10 +5601,24 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     # 載入請求：由 on_click 寫入，此處讀取並執行（確保點擊一定觸發）
     if st.session_state.get("feed_do_fetch"):
         st.session_state["feed_do_fetch"] = False
-        _use_tavily = "Tavily" in st.session_state.get("feed_source_radio", "")
+        _src = st.session_state.get("feed_source_radio", "")
+        _use_tavily = "Tavily" in _src
+        _use_rss_raw = "原始列表" in _src or "0 次" in _src
         try:
-            with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if _use_tavily else "約 20 秒（1 次 API）")):
-                feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if _use_tavily else fetch_intelligence_feed_rss(google_key)
+            if _use_tavily:
+                spinner_msg = "約 1 分鐘（10 次 API）"
+            elif _use_rss_raw:
+                spinner_msg = "數秒（0 次 API）"
+            else:
+                spinner_msg = "約 20 秒（1 次 API）"
+            with st.spinner("正在載入情報…" + spinner_msg):
+                if _use_tavily:
+                    feed = fetch_intelligence_feed_tavily(tavily_key, google_key)
+                elif _use_rss_raw:
+                    raw = _fetch_rss_raw()
+                    feed = _rss_fallback_from_raw(raw)
+                else:
+                    feed = fetch_intelligence_feed_rss(google_key)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5624,9 +5641,9 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         st.warning("**取得完成，但沒有產出任何要聞。**")
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
-- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額；或改選 **RSS 頭條** 再試。
-- **RSS**：RSS 來源暫時無法連線或解析失敗 → 稍後再按「重新載入」。
-- **Gemini**：摘要階段失敗或回傳空陣列 → 檢查側欄 Gemini Key 是否有效、配額是否足夠。
+- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額；或改選 **RSS 頭條／原始列表** 再試。
+- **RSS／RSS 原始列表**：RSS 來源暫時無法連線或解析失敗 → 稍後再按「重新載入」。若選「原始列表」仍 0 則，表示目前所有 RSS 連結皆無法取得。
+- **Gemini**（僅 RSS 頭條）：摘要階段失敗或回傳空陣列 → 檢查側欄 Gemini Key 是否有效、配額是否足夠；或改選 **RSS 原始列表** 不消耗 API。
             """)
         if st.button("🔄 重新載入", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
@@ -5638,7 +5655,13 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
+                if use_tavily:
+                    feed_new = fetch_intelligence_feed_tavily(tavily_key, google_key)
+                elif use_rss_raw:
+                    raw = _fetch_rss_raw()
+                    feed_new = _rss_fallback_from_raw(raw)
+                else:
+                    feed_new = fetch_intelligence_feed_rss(google_key)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
