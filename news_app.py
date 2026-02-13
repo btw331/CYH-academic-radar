@@ -5181,7 +5181,7 @@ CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
 TOPIC_ORDER = ["政治", "經濟", "科技"]
 CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
 
-# RSS 來源（免 Tavily）：涵蓋全球＋各區域，讓 LLM 有足夠素材可分配至五大洲
+# RSS 來源（免 Tavily）：涵蓋全球＋各區域；前段為主要來源，後段為備援（提高 0 次 API 模式成功率）
 RSS_FEED_URLS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
     "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
@@ -5191,6 +5191,10 @@ RSS_FEED_URLS = [
     "https://feeds.reuters.com/reuters/worldNews",
     "https://feeds.bbci.co.uk/news/business/rss.xml",
     "https://feeds.reuters.com/reuters/technologyNews",
+    # 備援來源（格式較單純或較不易被擋）
+    "https://feeds.npr.org/1001/rss.xml",
+    "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
+    "https://www.theguardian.com/world/rss",
 ]
 
 
@@ -5414,29 +5418,59 @@ def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dic
 
 def _fetch_rss_raw() -> List[Dict[str, Any]]:
     """從 RSS_FEED_URLS 抓取標題／連結／摘要，不依賴 Tavily。使用 requests + xml 解析。"""
+    import xml.etree.ElementTree as ET
+
     entries: List[Dict[str, Any]] = []
+    # 使用常見瀏覽器 User-Agent，降低被部分來源拒絕的機率
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+
+    def _local_name(tag: str) -> str:
+        return tag.split("}")[-1] if "}" in tag else tag
+
+    def _find_any(elem: Optional[ET.Element], *names: str) -> Optional[ET.Element]:
+        if elem is None:
+            return None
+        name_set = set(names)
+        for name in names:
+            found = elem.find(name) or elem.find(f"{{http://www.w3.org/2005/Atom}}{name}")
+            if found is not None:
+                return found
+        for child in elem:
+            if _local_name(child.tag) in name_set:
+                return child
+        return None
+
+    def _text_or_attr(el: Optional[ET.Element], attr: str = "href") -> str:
+        if el is None:
+            return ""
+        if attr and el.get(attr):
+            return (el.get(attr) or "").strip()
+        return (el.text or "").strip()
+
     for url in RSS_FEED_URLS:
         try:
-            r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; NewsFeed/1.0)"})
+            r = requests.get(url, timeout=15, headers=headers)
             r.raise_for_status()
+            r.encoding = r.encoding or "utf-8"
             text = r.text
         except Exception as e:
             logger.warning("_fetch_rss_raw: %s 失敗: %s", url, str(e))
             continue
         try:
-            import xml.etree.ElementTree as ET
             root = ET.fromstring(text)
-            # 支援 RSS 2.0 (channel/item) 與 Atom (feed/entry)
-            items = list(root.iter("item")) or list(root.iter("{http://www.w3.org/2005/Atom}entry"))
+            # 依「本地名」蒐集 item/entry，不受 default namespace 影響（如 RSS 1.0、部分 Atom）
+            items = [e for e in root.iter() if _local_name(e.tag) in ("item", "entry")]
+            if not items:
+                items = list(root.iter("item")) or list(root.iter("{http://www.w3.org/2005/Atom}entry"))
             for item in items:
-                title_el = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
-                link_el = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
-                if link_el is not None and link_el.get("href"):
-                    link = link_el.get("href", "").strip()
-                else:
-                    link = (link_el.text or "").strip() if link_el is not None else ""
+                title_el = _find_any(item, "title") or item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
+                link_el = _find_any(item, "link") or item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
+                link = _text_or_attr(link_el, "href") if link_el is not None else ""
+                if not link and link_el is not None:
+                    link = (link_el.text or "").strip()
                 desc_el = (
-                    item.find("description")
+                    _find_any(item, "description", "summary", "content")
+                    or item.find("description")
                     or item.find("{http://www.w3.org/2005/Atom}summary")
                     or item.find("{http://www.w3.org/2005/Atom}content")
                     or item.find("content")
@@ -5447,7 +5481,7 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                     desc = (ET.tostring(desc_el, encoding="unicode", method="text") if desc_el is not None else "")[:400]
                 title = (title_el.text or "").strip() if title_el is not None else ""
                 if title or link:
-                    entries.append({"title": title, "url": link, "content": desc})
+                    entries.append({"title": title or "(No title)", "url": link, "content": desc})
         except ET.ParseError as e:
             logger.warning("_fetch_rss_raw: 解析 %s 失敗: %s", url, str(e))
             continue
