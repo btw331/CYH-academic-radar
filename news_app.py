@@ -4755,6 +4755,42 @@ def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-2", ap
         raise Exception(f"Grok API 調用失敗: {error_msg[:200]}") from e
 
 
+def call_openrouter(system_prompt: str, user_text: str, model_name: str = "google/gemini-2.0-flash-exp", api_key: Optional[str] = None) -> str:
+    """
+    呼叫 OpenRouter API（OpenAI 相容端點 https://openrouter.ai/api/v1），可選多種後端模型。
+
+    Args:
+        system_prompt: 系統提示
+        user_text: 用戶輸入
+        model_name: OpenRouter 模型 ID（如 google/gemini-2.0-flash-exp、anthropic/claude-3.5-sonnet）
+        api_key: OpenRouter API Key
+
+    Returns:
+        str: AI 生成的文本
+    """
+    if not OPENAI_AVAILABLE:
+        raise ImportError("OpenRouter 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
+    if not api_key or not api_key.strip():
+        raise ValueError("未提供 OpenRouter API Key")
+    try:
+        llm = ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            openai_api_key=api_key.strip(),
+            openai_api_base="https://openrouter.ai/api/v1",
+        )
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        response = chain.invoke({"input": user_text})
+        result = _extract_text_from_llm_content(response.content)
+        logger.info(f"成功使用 OpenRouter {model_name} 生成回應")
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"OpenRouter API 調用失敗: {error_msg}")
+        raise Exception(f"OpenRouter API 調用失敗: {error_msg[:200]}") from e
+
+
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
     """
     呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
@@ -4977,7 +5013,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False) -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_openrouter: bool = False) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 重視正確度：不使用快速模式，保持完整 context
@@ -5135,6 +5171,8 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
 
     if use_grok and api_key:
         return call_grok(system_prompt, context_text, model_name or "grok-2", api_key)
+    if use_openrouter and api_key:
+        return call_openrouter(system_prompt, context_text, model_name or "google/gemini-2.0-flash-exp", api_key)
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
 
 
@@ -6215,9 +6253,23 @@ with st.sidebar:
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
         tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
         grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
-        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok"], index=0, horizontal=True, help="選擇深度分析與摘要使用的模型。選 Grok 時請先輸入上方 Grok Key")
+        openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
+        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
         st.session_state["grok_api_key"] = (grok_key or "").strip() or None
+        st.session_state["openrouter_api_key"] = (openrouter_key or "").strip() or None
+        if llm_provider == "OpenRouter":
+            openrouter_models = [
+                "google/gemini-2.0-flash-exp",
+                "google/gemini-2.5-pro-preview",
+                "anthropic/claude-3.5-sonnet",
+                "anthropic/claude-3-opus",
+                "openai/gpt-4o",
+            ]
+            openrouter_model = st.selectbox("OpenRouter 模型", options=openrouter_models, index=0, help="OpenRouter 上的模型 ID，見 https://openrouter.ai/models")
+            st.session_state["openrouter_model"] = openrouter_model
+        else:
+            st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
 
         # API Key 驗證按鈕
         if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
@@ -7223,9 +7275,19 @@ else:
             openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
             llm_provider = st.session_state.get("llm_provider", "Gemini")
             grok_key = st.session_state.get("grok_api_key")
+            openrouter_key = st.session_state.get("openrouter_api_key")
+            openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
             use_grok = (llm_provider == "Grok" and grok_key)
-            effective_key = grok_key if use_grok else google_key
-            effective_model = "grok-2" if use_grok else model_name
+            use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
+            if use_grok:
+                effective_key = grok_key
+                effective_model = "grok-2"
+            elif use_openrouter:
+                effective_key = openrouter_key
+                effective_model = openrouter_model
+            else:
+                effective_key = google_key
+                effective_model = model_name
 
             try:
                 raw_report = run_strategic_analysis(
@@ -7233,7 +7295,8 @@ else:
                     mode=mode_code, fast_mode=False,
                     openai_api_key=openai_api_key, openai_model=openai_model,
                     manipulation_signals=manipulation_signals_text,
-                    use_grok=use_grok
+                    use_grok=use_grok,
+                    use_openrouter=use_openrouter
                 )
             except ChatGoogleGenerativeAIError as e:
                 # Gemini API 特定錯誤（通常是配額相關）
@@ -7296,7 +7359,8 @@ else:
                                 mode=mode_code, fast_mode=False,
                                 openai_api_key=openai_api_key, openai_model=openai_model,
                                 manipulation_signals=manipulation_signals_text,
-                                use_grok=use_grok
+                                use_grok=use_grok,
+                                use_openrouter=use_openrouter
                             )
                             # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
                             status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
@@ -7561,14 +7625,22 @@ else:
                     openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
                     llm_provider = st.session_state.get("llm_provider", "Gemini")
                     grok_key = st.session_state.get("grok_api_key")
+                    openrouter_key = st.session_state.get("openrouter_api_key")
+                    openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
                     use_grok = (llm_provider == "Grok" and grok_key)
-                    effective_key = grok_key if use_grok else google_key
-                    effective_model = "grok-2" if use_grok else model_name
+                    use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
+                    if use_grok:
+                        effective_key, effective_model = grok_key, "grok-2"
+                    elif use_openrouter:
+                        effective_key, effective_model = openrouter_key, openrouter_model
+                    else:
+                        effective_key, effective_model = google_key, model_name
                     raw_text = run_strategic_analysis(
                         query, current_report, effective_model, effective_key,
                         mode="DEEP_SCENARIO",
                         openai_api_key=openai_api_key, openai_model=openai_model,
-                        use_grok=use_grok
+                        use_grok=use_grok,
+                        use_openrouter=use_openrouter
                     )
                     st.session_state.scenario_result = parse_gemini_data(raw_text) 
                     st.rerun()
