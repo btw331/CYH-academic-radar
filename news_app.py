@@ -5933,11 +5933,18 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
                             _render_feed_card(items[i + 1], idx, len(feed))
 
 
+# 政治／經濟／科技新聞卡片外框色（方便閱讀區分）
+_TOPIC_BORDER_COLORS = {"政治": "#2196F3", "經濟": "#4CAF50", "科技": "#FF9800"}
+
+
 def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
     """
     Intelligence Card：高資訊密度、可操作按鈕（Ground News / Particle 風格）。
     含 Header、Meta 標籤、摘要、同溫層警示、深度戰略分析按鈕。
+    依 topic（政治／經濟／科技）以不同顏色外框標示。
     """
+    topic = (item.get("topic") or "政治").strip()
+    border_color = _TOPIC_BORDER_COLORS.get(topic, "#9E9E9E")
     emoji = item.get("emoji", "📌")
     title = (item.get("title") or "（無標題）").strip()
     summary = (item.get("summary") or "").strip()
@@ -5947,6 +5954,11 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
     strategic_angle = (item.get("strategic_angle") or "").strip()
     # 穩定唯一 key（避免重複 key 導致按鈕失效）
     news_id = hashlib.md5(f"{title}_{url}_{index}".encode("utf-8")).hexdigest()[:12]
+    # 主題色條：卡片上方色帶標示政治／經濟／科技，方便閱讀區分
+    st.markdown(
+        f'<div style="background: {border_color}; color: white; padding: 4px 10px; font-size: 0.75rem; border-radius: 6px 6px 0 0; margin-bottom: -1px;">{topic}</div>',
+        unsafe_allow_html=True,
+    )
     with st.container(border=True):
         # Header: Emoji + Title
         st.markdown(f"### {emoji} {title}")
@@ -6343,38 +6355,34 @@ with st.sidebar:
         st.session_state["openai_api_key"] = None
         st.session_state["openai_model"] = "gpt-4o-mini"
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
-        model_name = st.selectbox(
-            "模型選擇 (Gemini Series)",
-            [
-                "gemini-3-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-                "gemini-2.5-flash-lite"
-            ],
-            index=1,
-            help="選擇用於分析的 Gemini 模型版本\n\n"
-                 "**Gemini 3 系列（Preview，推薦）**：\n"
-                 "• gemini-3-pro-preview：最強性能，適合複雜分析\n"
-                 "• gemini-3-flash-preview：平衡性能與速度，推薦使用\n\n"
-                 "**Gemini 2.5 系列（穩定版）**：\n"
-                 "• gemini-2.5-pro：高性能，配額限制嚴格\n"
-                 "• gemini-2.5-flash：速度與配額平衡\n"
-                 "• gemini-2.5-flash-lite：最輕量級\n\n"
-                 "⚠️ 注意：免費層對 pro 模型的配額限制較嚴格，建議使用 flash 版本"
-        )
-        if "3-pro" in model_name:
-            st.info("🚀 **Gemini 3 Pro Preview**：最新最強模型，具備增強的多模態理解能力，適合複雜分析任務")
-        elif "3-flash" in model_name:
-            st.info("⚡ **Gemini 3 Flash Preview**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
-        elif "2.5-pro" in model_name:
-            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議使用 gemini-3-flash-preview 或 gemini-2.5-flash。")
         grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
         llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
         st.session_state["grok_api_key"] = (grok_key or "").strip() or None
         st.session_state["openrouter_api_key"] = (openrouter_key or "").strip() or None
+        if llm_provider == "Gemini":
+            model_name = st.selectbox(
+                "Gemini 模型",
+                [
+                    "gemini-3-pro-preview",
+                    "gemini-3-flash-preview",
+                    "gemini-2.5-pro",
+                    "gemini-2.5-flash",
+                    "gemini-2.5-flash-lite"
+                ],
+                index=1,
+                help="選擇用於分析的 Gemini 模型版本。免費層對 pro 模型配額較嚴，建議使用 flash。"
+            )
+            st.session_state["gemini_model"] = model_name
+            if "3-pro" in model_name:
+                st.info("🚀 **Gemini 3 Pro Preview**：最強性能，適合複雜分析")
+            elif "3-flash" in model_name:
+                st.info("⚡ **Gemini 3 Flash Preview**：推薦，配額較寬鬆")
+            elif "2.5-pro" in model_name:
+                st.warning("⚠️ 免費層對 gemini-2.5-pro 配額非常嚴格，建議改用 flash。")
+        else:
+            model_name = st.session_state.get("gemini_model", "gemini-2.5-flash")
         if llm_provider == "OpenRouter":
             openrouter_paid = [
                 "google/gemini-2.0-flash-exp",
