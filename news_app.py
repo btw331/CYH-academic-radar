@@ -5792,10 +5792,12 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
                 st.caption(f"來源：[{source or url}]({url})")
             elif source:
                 st.caption(f"來源：{source}")
-        # Summary（約 3 行內）
+        # Summary（約 3 行內；移除行首 # 避免被渲染成標題，統一為內文字級）
         if summary:
             summary_short = "\n".join(summary.split("\n")[:3]) if "\n" in summary else (summary[:200] + "…" if len(summary) > 200 else summary)
-            st.write(summary_short)
+            summary_short = re.sub(r"^#+\s*", "", summary_short, flags=re.MULTILINE).strip()
+            if summary_short:
+                st.write(summary_short)
         # Strategic Angle（若有）
         if strategic_angle:
             st.caption(f"**戰略視角**：{strategic_angle[:120]}{'…' if len(strategic_angle) > 120 else ''}")
