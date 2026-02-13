@@ -5463,7 +5463,7 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
 
 def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源以節省 API。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；按鈕觸發才執行取得。
     """
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
@@ -5484,11 +5484,36 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     if use_tavily and not (tavily_key and tavily_key.strip()):
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條」免用 Tavily。")
         return
-    with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if use_tavily else "約 20 秒（1 次 API）")):
-        feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
+    # 切換來源時清除已載入的資料，需重新按鈕取得
+    current_source_key = "tavily" if use_tavily else "rss"
+    if "intelligence_feed_source" not in st.session_state:
+        st.session_state["intelligence_feed_source"] = None
+    if st.session_state.get("intelligence_feed_source") != current_source_key:
+        st.session_state["intelligence_feed_data"] = None
+        st.session_state["intelligence_feed_source"] = current_source_key
+    # 僅在按下按鈕時執行取得
+    run_fetch = st.button("📡 載入全球情報", type="primary", key="feed_fetch_btn")
+    if run_fetch:
+        with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if use_tavily else "約 20 秒（1 次 API）")):
+            feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
+        st.session_state["intelligence_feed_data"] = feed if feed else None
+        st.rerun()
+    feed = st.session_state.get("intelligence_feed_data")
+    if feed is None:
+        st.info("請選擇取得方式後，點擊上方 **「📡 載入全球情報」** 按鈕執行取得。")
+        return
     if not feed:
         st.info("無法載入情報，請稍後再試或檢查 API 金鑰與網路。")
         return
+    col_info, col_refresh = st.columns([3, 1])
+    with col_info:
+        st.success(f"已載入 {len(feed)} 則要聞。")
+    with col_refresh:
+        if st.button("🔄 重新載入", key="feed_refresh_btn"):
+            with st.spinner("重新取得中…"):
+                feed_new = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
+            st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+            st.rerun()
     # 依洲 → 類型分組
     grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for item in feed:
