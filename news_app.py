@@ -5269,6 +5269,15 @@ def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
 # 全球情報摘要 (Global Intelligence Feed)：五大洲 × 政治/經濟/科技
 # ==========================================
 
+# 全球情報「僅從白名單來源」時的網域：台灣藍綠官方＋國際（通訊社／亞洲／歐美），最多 50 個以符合 Tavily 建議
+def _feed_whitelist_domains() -> List[str]:
+    merged = list(dict.fromkeys(
+        list(BLUE_WHITELIST) + list(GREEN_WHITELIST) + list(OFFICIAL_WHITELIST) +
+        list(INTL_WIRES_WHITELIST) + list(INTL_ASIA_WHITELIST)[:15] + list(INTL_EUROPE_WHITELIST)[:8] + list(INTL_AMERICAS_WHITELIST)[:8]
+    ))
+    return merged[:50]
+
+
 # 每洲一組查詢（合併政治/經濟/科技），大幅減少 API 次數：5 次 Tavily + 5 次 Gemini
 FEED_BY_CONTINENT = [
     ("亞洲", "Asia top important politics economy technology news today headline"),
@@ -5453,12 +5462,17 @@ def _summarize_continent_feed_with_llm(
     if not api_key or not (raw_news_text or "").strip():
         return []
     system_prompt = """你是資深情報編輯。請將提供的原始新聞**綜整**成「今日重要要聞」：可合併相似主題，並為每則標註類型與**戰略視角**（Why does this matter?）。
+
+**風格要求（重要）**：
+- **平衡報導**：標題與摘要請採中性、多元觀點，避免單一立場或煽動用語；可並陳不同看法或「A 方主張…B 方則…」。
+- **避免戰爭／軍事框架**：除非事件本身為武裝衝突，否則勿以「開戰」「對決」「攻防」「烽火」等戰爭隱喻描述；改以「政策討論」「立場差異」「協商」「爭議」等中性表述。標題勿過度戲劇化。
+
 每則請產出：
 - topic：必須為「政治」「經濟」「科技」其中之一
 - emoji：代表該則主題的 emoji
-- title：吸引人的繁體中文標題
-- summary：2～3 句繁體中文摘要
-- strategic_angle：一句話說明「戰略視角／為何重要」
+- title：吸引人、中性平衡的繁體中文標題（勿戰爭風）
+- summary：2～3 句繁體中文摘要（平衡報導風格）
+- strategic_angle：一句話說明「戰略視角／為何重要」（中性表述）
 - source：來源網域或媒體名
 - url：從原文「URL:」後方**原樣複製**的完整連結，若無則 ""
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
@@ -5526,28 +5540,37 @@ def fetch_intelligence_feed_tavily(
     llm_provider: str,
     llm_api_key: Optional[str],
     llm_model: str,
+    use_whitelist: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 LLM 摘要）。
     依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要；額度不足或未提供時改顯示 Tavily 原文。快取 1 小時。
+    use_whitelist=True 時，僅從白名單網域（台灣藍綠官方＋國際媒體）取得結果。
     """
     if not tavily_key:
         return []
     all_items: List[Dict[str, Any]] = []
     use_llm = bool(llm_api_key and (llm_api_key or "").strip())
+    include_domains: Optional[List[str]] = None
+    if use_whitelist:
+        include_domains = _feed_whitelist_domains()
+        logger.info("fetch_intelligence_feed_tavily: 使用白名單網域 %d 個", len(include_domains))
     try:
         tavily = TavilyClient(api_key=tavily_key)
         for continent, query in FEED_BY_CONTINENT:
             raw_items: List[Dict[str, Any]] = []
             for time_range in ("day", "week"):
                 try:
-                    resp = tavily.search(
-                        query=query,
-                        max_results=12,
-                        search_depth="basic",
-                        topic="news",
-                        time_range=time_range,
-                    )
+                    search_kw: Dict[str, Any] = {
+                        "query": query,
+                        "max_results": 12,
+                        "search_depth": "basic",
+                        "topic": "news",
+                        "time_range": time_range,
+                    }
+                    if include_domains:
+                        search_kw["include_domains"] = include_domains
+                    resp = tavily.search(**search_kw)
                     results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
                     for r in results:
                         if isinstance(r, dict):
@@ -5810,7 +5833,14 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
-    # 取得方式僅保留 Tavily（RSS 選項已移除）
+    # 僅從白名單來源取得：台灣藍綠官方＋國際媒體（與深度分析相同白名單）
+    feed_use_whitelist = st.checkbox(
+        "僅從白名單來源取得（台灣藍綠官方＋國際媒體）",
+        value=st.session_state.get("feed_use_whitelist", False),
+        key="feed_use_whitelist",
+        help="勾選後，Tavily 搜尋會限制在您建立的白名單網域內，與「全域分析」使用的藍/綠/官方/國際白名單一致。",
+    )
+    st.session_state["feed_use_whitelist"] = feed_use_whitelist
     use_tavily = True
     current_source_key = "tavily"
     if not feed_llm_key:
@@ -5829,7 +5859,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         st.session_state["feed_do_fetch"] = False
         try:
             with st.spinner("正在載入情報…約 1 分鐘（Tavily + LLM 摘要）"):
-                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model)
+                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5866,7 +5896,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model)
+                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
