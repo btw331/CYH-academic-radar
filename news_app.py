@@ -5230,11 +5230,15 @@ def _extract_json_from_llm_raw(raw: str) -> Optional[Dict[str, Any]]:
 def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
     """
     從 LLM 回傳文字中萃取出 JSON 陣列。容忍 markdown 程式碼區塊、前後說明文字。
+    支援 OpenRouter thinking 模型（如 liquid/lfm-2.5-1.2b-thinking）：會先移除 <think> 區塊再解析。
     用於全球情報摘要等回傳 list 的場景。
     """
     if not raw or not isinstance(raw, str):
         return None
     text = raw.strip()
+    # 移除 thinking 模型輸出的 <think>...</think> 區塊，避免 JSON 被當成前綴而解析失敗
+    if "<think>" in text:
+        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
     if "```" in text:
         match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
         if match:
@@ -5806,29 +5810,15 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
-    feed_source = st.radio(
-        "取得方式",
-        options=[
-            "🔍 Tavily 即時（約 10 次 API，需 Tavily Key）",
-            "📡 RSS 頭條（約 1 次 API，免 Tavily）",
-            "📋 RSS 原始列表（0 次 API，僅頭條與連結）",
-        ],
-        index=0,
-        horizontal=True,
-        key="feed_source_radio",
-    )
-    use_tavily = "Tavily" in feed_source
-    use_rss_raw = "原始列表" in feed_source or "0 次" in feed_source
-    use_rss_headline = not use_tavily and not use_rss_raw
-    # 需要 LLM 時（RSS 頭條或 Tavily 摘要）必須有對應所選 LLM 的 Key；RSS 原始列表不需任何 Key
-    if not use_rss_raw and not feed_llm_key:
-        st.warning("⚠️ 請在側邊欄選擇「分析使用 LLM」並輸入對應 **API Key**（Gemini / Grok / OpenRouter）以產生繁體中文摘要；或改選「RSS 原始列表」不消耗 API。")
+    # 取得方式僅保留 Tavily（RSS 選項已移除）
+    use_tavily = True
+    current_source_key = "tavily"
+    if not feed_llm_key:
+        st.warning("⚠️ 請在側邊欄選擇「分析使用 LLM」並輸入對應 **API Key**（Gemini / Grok / OpenRouter）以產生繁體中文摘要。")
         return
-    if use_tavily and not (tavily_key and tavily_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條／原始列表」。")
+    if not (tavily_key and tavily_key.strip()):
+        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**。")
         return
-    # 切換來源時清除已載入的資料
-    current_source_key = "tavily" if use_tavily else ("rss_raw" if use_rss_raw else "rss")
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
@@ -5837,24 +5827,9 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     # 載入請求：由 on_click 寫入，此處讀取並執行（確保點擊一定觸發）
     if st.session_state.get("feed_do_fetch"):
         st.session_state["feed_do_fetch"] = False
-        _src = st.session_state.get("feed_source_radio", "")
-        _use_tavily = "Tavily" in _src
-        _use_rss_raw = "原始列表" in _src or "0 次" in _src
         try:
-            if _use_tavily:
-                spinner_msg = "約 1 分鐘（10 次 API）"
-            elif _use_rss_raw:
-                spinner_msg = "數秒（0 次 API）"
-            else:
-                spinner_msg = "約 20 秒（1 次 API）"
-            with st.spinner("正在載入情報…" + spinner_msg):
-                if _use_tavily:
-                    feed = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
-                elif _use_rss_raw:
-                    raw = _fetch_rss_raw()
-                    feed = _rss_fallback_from_raw(raw)
-                else:
-                    feed = fetch_intelligence_feed_rss(llm_provider, feed_llm_key, feed_llm_model)
+            with st.spinner("正在載入情報…約 1 分鐘（Tavily + LLM 摘要）"):
+                feed = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5877,9 +5852,8 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         st.warning("**取得完成，但沒有產出任何要聞。**")
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
-- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額；或改選 **RSS 頭條／原始列表** 再試。
-- **RSS／RSS 原始列表**：RSS 來源暫時無法連線或解析失敗 → 稍後再按「重新載入」。若選「原始列表」仍 0 則，表示目前所有 RSS 連結皆無法取得。
-- **LLM 摘要**（RSS 頭條／Tavily）：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／OpenRouter）的 Key 與配額；或改選 **RSS 原始列表** 不消耗 API。
+- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額。
+- **LLM 摘要**：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／OpenRouter）的 Key 與配額；若使用 OpenRouter thinking 模型，請確認回傳為 JSON 陣列格式。
             """)
         if st.button("🔄 重新載入", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
@@ -5892,13 +5866,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
-                if use_tavily:
-                    feed_new = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
-                elif use_rss_raw:
-                    raw = _fetch_rss_raw()
-                    feed_new = _rss_fallback_from_raw(raw)
-                else:
-                    feed_new = fetch_intelligence_feed_rss(llm_provider, feed_llm_key, feed_llm_model)
+                feed_new = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
