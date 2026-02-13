@@ -5353,15 +5353,41 @@ def _summarize_continent_feed_with_llm(
         return []
 
 
+def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -> List[Dict[str, Any]]:
+    """
+    Gemini 額度不足或摘要失敗時，將 Tavily 回傳的原文轉成與摘要相同格式的卡片資料。
+    至少顯示 title、url、簡短 content，避免完全沒有結果。
+    """
+    out: List[Dict[str, Any]] = []
+    for r in raw_items[:20]:
+        title = (r.get("title") or "").strip() or "（無標題）"
+        url = (r.get("url") or "").strip()
+        content = (r.get("content") or r.get("snippet") or "").strip()[:300]
+        domain = get_domain_name(url) if url else ""
+        out.append({
+            "continent": continent,
+            "topic": "政治",
+            "emoji": "📌",
+            "title": title,
+            "summary": content or "",
+            "strategic_angle": "Tavily 原文（Gemini 額度不足或未摘要時顯示）",
+            "source": domain,
+            "url": url,
+            "analysis_keywords": title,
+        })
+    return out
+
+
 @st.cache_data(ttl=3600)
 def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
     """
     彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 Gemini，共約 10 次 API）。
-    快取 1 小時。
+    Gemini 額度不足或未提供時，改顯示 Tavily 原文 title／url，避免完全沒結果。快取 1 小時。
     """
-    if not tavily_key or not google_key:
+    if not tavily_key:
         return []
     all_items: List[Dict[str, Any]] = []
+    use_gemini = bool(google_key and google_key.strip())
     try:
         tavily = TavilyClient(api_key=tavily_key)
         for continent, query in FEED_BY_CONTINENT:
@@ -5399,7 +5425,14 @@ def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dic
                 content = r.get("content", "") or r.get("snippet", "") or ""
                 lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
             raw_news_text = "\n\n".join(lines)
-            summarized = _summarize_continent_feed_with_llm(raw_news_text, google_key, continent)
+            if use_gemini:
+                summarized = _summarize_continent_feed_with_llm(raw_news_text, google_key, continent)
+                if not summarized:
+                    # Gemini 額度不足或摘要失敗時，改顯示 Tavily 原文的 title + url
+                    summarized = _tavily_raw_to_feed_items(raw_items, continent)
+            else:
+                # 未提供 Gemini Key 時，直接顯示 Tavily 原文
+                summarized = _tavily_raw_to_feed_items(raw_items, continent)
             for it in summarized:
                 it["continent"] = continent
                 if not (it.get("url") or "").strip() and raw_items:
@@ -5608,9 +5641,9 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     feed_source = st.radio(
         "取得方式",
         options=[
+            "🔍 Tavily 即時（約 10 次 API，需 Tavily Key）",
             "📡 RSS 頭條（約 1 次 API，免 Tavily）",
             "📋 RSS 原始列表（0 次 API，僅頭條與連結）",
-            "🔍 Tavily 即時（約 10 次 API，需 Tavily Key）",
         ],
         index=0,
         horizontal=True,
@@ -5618,12 +5651,13 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     )
     use_tavily = "Tavily" in feed_source
     use_rss_raw = "原始列表" in feed_source or "0 次" in feed_source
-    # 僅在會呼叫 API 的選項時要求對應 Key
-    if not use_rss_raw and (not google_key or not google_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要；或改選「RSS 原始列表」不消耗 API。")
+    use_rss_headline = not use_tavily and not use_rss_raw
+    # 僅「RSS 頭條」必須要 Gemini；Tavily 可只用 Tavily Key（顯示原文），RSS 原始列表不需任何 Key
+    if use_rss_headline and (not google_key or not google_key.strip()):
+        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要；或改選「Tavily 即時」或「RSS 原始列表」。")
         return
     if use_tavily and not (tavily_key and tavily_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條／原始列表」免用 Tavily。")
+        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條／原始列表」。")
         return
     # 切換來源時清除已載入的資料
     current_source_key = "tavily" if use_tavily else ("rss_raw" if use_rss_raw else "rss")
