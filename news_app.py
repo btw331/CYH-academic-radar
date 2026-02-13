@@ -5514,10 +5514,22 @@ def _summarize_continent_feed_with_llm(
         return []
 
 
+def _infer_topic_from_text(title: str, content: str) -> str:
+    """依標題與內容關鍵字推斷 政治/經濟/科技，供原文 fallback 使用。"""
+    text = (title + " " + content).lower()
+    economy_keywords = ("economy", "economic", "market", "stock", "gdp", "inflation", "trade", "經濟", "股市", "市場", "通膨", "貿易", "財經")
+    tech_keywords = ("tech", "technology", "ai", "software", "digital", "robot", "科技", "人工智慧", "半導體", "軟體", "數位")
+    if any(k in text for k in economy_keywords):
+        return "經濟"
+    if any(k in text for k in tech_keywords):
+        return "科技"
+    return "政治"
+
+
 def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -> List[Dict[str, Any]]:
     """
-    Gemini 額度不足或摘要失敗時，將 Tavily 回傳的原文轉成與摘要相同格式的卡片資料。
-    至少顯示 title、url、簡短 content，避免完全沒有結果。
+    LLM 額度不足或摘要失敗時，將 Tavily 回傳的原文轉成與摘要相同格式的卡片資料。
+    依標題/內容關鍵字分配 topic（政治／經濟／科技），避免全部顯示為政治。
     """
     out: List[Dict[str, Any]] = []
     for r in raw_items[:20]:
@@ -5525,9 +5537,10 @@ def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -
         url = (r.get("url") or "").strip()
         content = (r.get("content") or r.get("snippet") or "").strip()[:300]
         domain = get_domain_name(url) if url else ""
+        topic = _infer_topic_from_text(title, content)
         out.append({
             "continent": continent,
-            "topic": "政治",
+            "topic": topic,
             "emoji": "📌",
             "title": title,
             "summary": content or "",
@@ -5831,10 +5844,18 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         feed_llm_key = st.session_state.get("openrouter_api_key")
         feed_llm_provider = "OpenRouter"
         feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    if feed_llm_key is None:
+    if feed_llm_key is None or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
         feed_llm_key = (google_key or "").strip() or st.session_state.get("google_api_key") or None
         feed_llm_provider = "Gemini"
         feed_llm_model = gemini_model or "gemini-2.5-flash"
+    # 執行載入前再次用 session 備援：若目前 provider 為 OpenRouter/Grok 但 key 為空，用已存 key 補上
+    _provider = st.session_state.get("llm_provider", "Gemini")
+    if (feed_llm_provider == "OpenRouter" and (not feed_llm_key or not str(feed_llm_key).strip())) and st.session_state.get("openrouter_api_key"):
+        feed_llm_key = st.session_state["openrouter_api_key"]
+        feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+    if (feed_llm_provider == "Grok" and (not feed_llm_key or not str(feed_llm_key).strip())) and st.session_state.get("grok_api_key"):
+        feed_llm_key = st.session_state["grok_api_key"]
+        feed_llm_model = "grok-2"
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
@@ -5847,7 +5868,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     )
     use_tavily = True
     current_source_key = "tavily"
-    if not feed_llm_key:
+    if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
         st.warning("⚠️ 請在側邊欄選擇「分析使用 LLM」並輸入對應 **API Key**（Gemini / Grok / OpenRouter）以產生繁體中文摘要。")
         return
     if not (tavily_key and tavily_key.strip()):
@@ -6365,10 +6386,13 @@ with st.sidebar:
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
         llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
-        # 持久化 Key（同一 session 內 rerun 時 password 欄位會清空，用 session 保留供全球情報摘要使用）
-        st.session_state["google_api_key"] = (google_key or "").strip() or None
-        st.session_state["grok_api_key"] = (grok_key or "").strip() or None
-        st.session_state["openrouter_api_key"] = (openrouter_key or "").strip() or None
+        # 持久化 Key：僅在「本次有輸入」時寫入，避免 rerun 時密碼欄位清空後把已存 key 蓋掉
+        if (google_key or "").strip():
+            st.session_state["google_api_key"] = (google_key or "").strip()
+        if (grok_key or "").strip():
+            st.session_state["grok_api_key"] = (grok_key or "").strip()
+        if (openrouter_key or "").strip():
+            st.session_state["openrouter_api_key"] = (openrouter_key or "").strip()
         if llm_provider == "Gemini":
             model_name = st.selectbox(
                 "Gemini 模型",
