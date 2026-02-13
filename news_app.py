@@ -5484,17 +5484,17 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     if use_tavily and not (tavily_key and tavily_key.strip()):
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條」免用 Tavily。")
         return
-    # 切換來源時清除已載入的資料，需重新按鈕取得
+    # 切換來源時清除已載入的資料
     current_source_key = "tavily" if use_tavily else "rss"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
-        st.session_state["feed_pending_fetch"] = False
-    # 兩階段：按鈕只設旗標並 rerun，下一輪再執行取得，避免按鈕狀態遺失
-    if st.session_state.get("feed_pending_fetch"):
-        st.session_state["feed_pending_fetch"] = False
+    # 使用 form：表單送出時才執行取得，避免一般 button 在 rerun 時遺失點擊
+    with st.form(key="feed_load_form"):
+        submitted = st.form_submit_button("📡 載入全球情報")
+    if submitted:
         try:
             with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if use_tavily else "約 20 秒（1 次 API）")):
                 feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
@@ -5502,9 +5502,6 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         except Exception as e:
             logger.exception("載入全球情報失敗")
             st.error(f"載入失敗：{str(e)[:200]}。請檢查 API 金鑰與網路後重試。")
-        st.rerun()
-    if st.button("📡 載入全球情報", type="primary", key="feed_fetch_btn"):
-        st.session_state["feed_pending_fetch"] = True
         st.rerun()
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
