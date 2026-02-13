@@ -5804,7 +5804,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         feed_llm_provider = "OpenRouter"
         feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
     if feed_llm_key is None:
-        feed_llm_key = (google_key or "").strip() or None
+        feed_llm_key = (google_key or "").strip() or st.session_state.get("google_api_key") or None
         feed_llm_provider = "Gemini"
         feed_llm_model = gemini_model or "gemini-2.5-flash"
 
@@ -5829,7 +5829,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         st.session_state["feed_do_fetch"] = False
         try:
             with st.spinner("正在載入情報…約 1 分鐘（Tavily + LLM 摘要）"):
-                feed = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
+                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5866,7 +5866,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
+                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
@@ -5957,7 +5957,8 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
         if st.button("🔍 深度戰略分析 (Deep Dive)", key=f"btn_{news_id}", type="primary"):
             st.session_state["query"] = keywords
             st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
-            st.session_state["nav_page"] = "🚀 全域分析 (Deep Analysis)"
+            # 不直接寫入 nav_page（該 key 由側欄 radio 擁有，會觸發 StreamlitAPIException），改由側欄在下一輪 rerun 前同步
+            st.session_state["pending_nav_to_analysis"] = True
             # 重置分析相關狀態，避免沿用上一輪的關鍵字／報告／來源（Ghost Data）
             st.session_state["keyword_plan"] = None
             st.session_state["result"] = None
@@ -6298,6 +6299,9 @@ with st.sidebar:
     st.title("全域觀點解析 V38.0")
     st.caption("✨ 新增：Tavily 搜尋 UI + 學術方法論詳解")
     page_options = ["🚀 全域分析 (Deep Analysis)", "📰 全球情報 (News Feed)"]
+    # 由「深度戰略分析」按鈕觸發的跳轉：在 radio 渲染前同步 nav_page，避免直接寫入 widget key 觸發 StreamlitAPIException
+    if st.session_state.pop("pending_nav_to_analysis", False):
+        st.session_state["nav_page"] = "🚀 全域分析 (Deep Analysis)"
     page_index = 0 if st.session_state["current_page"] == page_options[0] else 1
     current_page = st.radio(
         "導航",
@@ -6327,6 +6331,8 @@ with st.sidebar:
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
         llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
+        # 持久化 Key（同一 session 內 rerun 時 password 欄位會清空，用 session 保留供全球情報摘要使用）
+        st.session_state["google_api_key"] = (google_key or "").strip() or None
         st.session_state["grok_api_key"] = (grok_key or "").strip() or None
         st.session_state["openrouter_api_key"] = (openrouter_key or "").strip() or None
         if llm_provider == "Gemini":
@@ -6374,18 +6380,21 @@ with st.sidebar:
         else:
             st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
 
-        # 供「全球情報」News Feed 使用的 LLM：與側欄選擇一致，確保摘要真的用選定的 Grok/OpenRouter/Gemini
-        if llm_provider == "Grok" and (grok_key or "").strip():
+        # 供「全球情報」News Feed 使用的 LLM：與側欄選擇一致。Key 以 session 為準（rerun 時 password 欄位會清空，需用 session 保留）
+        grok_key_effective = (grok_key or "").strip() or st.session_state.get("grok_api_key") or ""
+        openrouter_key_effective = (openrouter_key or "").strip() or st.session_state.get("openrouter_api_key") or ""
+        google_key_effective = (google_key or "").strip() or st.session_state.get("google_api_key") or ""
+        if llm_provider == "Grok" and grok_key_effective:
             st.session_state["feed_llm_provider"] = "Grok"
-            st.session_state["feed_llm_key"] = (grok_key or "").strip()
+            st.session_state["feed_llm_key"] = grok_key_effective
             st.session_state["feed_llm_model"] = "grok-2"
-        elif llm_provider == "OpenRouter" and (openrouter_key or "").strip():
+        elif llm_provider == "OpenRouter" and openrouter_key_effective:
             st.session_state["feed_llm_provider"] = "OpenRouter"
-            st.session_state["feed_llm_key"] = (openrouter_key or "").strip()
+            st.session_state["feed_llm_key"] = openrouter_key_effective
             st.session_state["feed_llm_model"] = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
         else:
             st.session_state["feed_llm_provider"] = "Gemini"
-            st.session_state["feed_llm_key"] = (google_key or "").strip() or None
+            st.session_state["feed_llm_key"] = google_key_effective or None
             st.session_state["feed_llm_model"] = model_name or "gemini-2.5-flash"
 
         # API Key 驗證按鈕（Tavily Key 在下方「Tavily 搜尋設定」輸入）
