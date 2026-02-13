@@ -5181,9 +5181,13 @@ CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
 TOPIC_ORDER = ["政治", "經濟", "科技"]
 CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
 
-# RSS 來源（免 Tavily，僅需 1 次 Gemini 摘要）
+# RSS 來源（免 Tavily）：涵蓋全球＋各區域，讓 LLM 有足夠素材可分配至五大洲
 RSS_FEED_URLS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/asia/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/europe/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/us_and_canada/rss.xml",
+    "https://feeds.bbci.co.uk/news/world/africa/rss.xml",
     "https://feeds.reuters.com/reuters/worldNews",
     "https://feeds.bbci.co.uk/news/business/rss.xml",
     "https://feeds.reuters.com/reuters/technologyNews",
@@ -5416,8 +5420,15 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
         lines.append(f"[{i}] Title: {r.get('title','')}\nURL: {r.get('url','')}\nContent: {r.get('content','')[:300]}")
     raw_text = "\n\n".join(lines)
     system_prompt = """你是資深情報編輯。請將提供的 RSS 新聞整理成「今日重要要聞」，並為每則標註**洲別**與**類型**。
+**洲別判斷規則（依新聞主題所涉主要地區）**：
+- 美洲：美國、加拿大、拉丁美洲、巴西、墨西哥等
+- 歐洲：歐盟、英國、法國、德國、俄羅斯、烏克蘭等
+- 亞洲：中國、日本、韓國、印度、東南亞、台灣等
+- 非洲：非洲各國、南非、奈及利亞等
+- 大洋洲：澳洲、紐西蘭、太平洋島國等
+**硬性要求**：五大洲（亞洲、歐洲、美洲、非洲、大洋洲）**每洲至少 2 則**，總計約 15～25 則。勿將多數都標為同一洲。
 每則請產出：
-- continent：必須為「亞洲」「歐洲」「美洲」「非洲」「大洋洲」其中之一（依內容判斷）
+- continent：必須為「亞洲」「歐洲」「美洲」「非洲」「大洋洲」其中之一（依上述規則）
 - topic：必須為「政治」「經濟」「科技」其中之一
 - emoji：代表該則主題的 emoji
 - title：吸引人的繁體中文標題
@@ -5426,8 +5437,8 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
 - url：從原文「URL:」後方**原樣複製**的完整連結
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-請「只」輸出一個 JSON 陣列，每則一筆。鍵名：continent, topic, emoji, title, summary, source, url, analysis_keywords。盡量覆蓋五大洲與政治/經濟/科技，精選 15～25 則。"""
-    user_prompt = f"""以下為國際 RSS 頭條。請精選最重要 15～25 則，並為每則標註 continent（亞洲/歐洲/美洲/非洲/大洋洲）與 topic（政治/經濟/科技），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
+請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, source, url, analysis_keywords。"""
+    user_prompt = f"""以下為國際 RSS 頭條（含亞洲、歐洲、美洲、非洲等區域來源）。請精選 15～25 則，**務必讓五大洲每洲至少 2 則**，並依新聞主題正確標註 continent 與 topic，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
     try:
         raw_out = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", google_key)
         if not raw_out:
