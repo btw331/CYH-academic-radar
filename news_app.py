@@ -5168,28 +5168,26 @@ def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
 # 全球情報摘要 (Global Intelligence Feed)：五大洲 × 政治/經濟/科技
 # ==========================================
 
-# (洲名_繁中, 類型_繁中, Tavily 搜尋查詢) — 查詢強調「今日／最新」與「重要／頭條」
-FEED_CATEGORIES = [
-    ("亞洲", "政治", "Asia top important politics news today headline"),
-    ("亞洲", "經濟", "Asia top important economy business news today"),
-    ("亞洲", "科技", "Asia top important technology innovation news today"),
-    ("歐洲", "政治", "Europe top important politics EU news today headline"),
-    ("歐洲", "經濟", "Europe top important economy business news today"),
-    ("歐洲", "科技", "Europe top important technology news today"),
-    ("美洲", "政治", "Americas USA top important politics news today headline"),
-    ("美洲", "經濟", "Americas top important economy market news today"),
-    ("美洲", "科技", "Americas top important technology news today"),
-    ("非洲", "政治", "Africa top important politics news today"),
-    ("非洲", "經濟", "Africa top important economy business news today"),
-    ("非洲", "科技", "Africa top important technology news today"),
-    ("大洋洲", "政治", "Oceania Australia top important politics news today"),
-    ("大洋洲", "經濟", "Oceania Australia top important economy news today"),
-    ("大洋洲", "科技", "Oceania top important technology news today"),
+# 每洲一組查詢（合併政治/經濟/科技），大幅減少 API 次數：5 次 Tavily + 5 次 Gemini
+FEED_BY_CONTINENT = [
+    ("亞洲", "Asia top important politics economy technology news today headline"),
+    ("歐洲", "Europe top important politics economy technology EU news today"),
+    ("美洲", "Americas USA top important politics economy technology news today"),
+    ("非洲", "Africa top important politics economy technology news today"),
+    ("大洋洲", "Oceania Australia top important politics economy technology news today"),
 ]
 
 CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
 TOPIC_ORDER = ["政治", "經濟", "科技"]
 CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
+
+# RSS 來源（免 Tavily，僅需 1 次 Gemini 摘要）
+RSS_FEED_URLS = [
+    "https://feeds.bbci.co.uk/news/world/rss.xml",
+    "https://feeds.reuters.com/reuters/worldNews",
+    "https://feeds.bbci.co.uk/news/business/rss.xml",
+    "https://feeds.reuters.com/reuters/technologyNews",
+]
 
 
 def _summarize_feed_with_llm(
@@ -5255,32 +5253,73 @@ def _summarize_feed_with_llm(
         return []
 
 
-@st.cache_data(ttl=3600)
-def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
+def _summarize_continent_feed_with_llm(
+    raw_news_text: str, api_key: str, continent: str
+) -> List[Dict[str, Any]]:
     """
-    彙整五大洲 × 政治/經濟/科技「每日最新重要」頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
-    搜尋邏輯：Tavily topic=news、time_range=day（當日／24h），查詢含 top/important/headline；LLM 精選具影響力要聞。
-    快取 1 小時以節省 API 配額。
+    單一洲別合併摘要：一次 LLM 產出該洲「政治／經濟／科技」三類要聞，每則帶 topic 欄位。
+    用於省 API：每洲 1 次 Tavily + 1 次 Gemini。
+    """
+    if not api_key or not (raw_news_text or "").strip():
+        return []
+    system_prompt = """你是資深情報編輯。請將提供的原始新聞整理成「今日重要要聞」，並為每則標註類型。
+每則請產出：
+- topic：必須為「政治」「經濟」「科技」其中之一（依內容判斷）
+- emoji：代表該則主題的 emoji
+- title：吸引人的繁體中文標題
+- summary：2～3 句繁體中文摘要
+- source：來源網域或媒體名
+- url：從原文「URL:」後方**原樣複製**的完整連結，若無則 ""
+- analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-    Args:
-        tavily_key: Tavily API Key（搜尋）
-        google_key: Google Gemini API Key（摘要）
+請「只」輸出一個 JSON 陣列，每則一筆。鍵名：topic, emoji, title, summary, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
+    user_prompt = f"""以下為「{continent}」今日搜尋結果。請精選最重要 6～9 則，並為每則標註 topic（政治/經濟/科技），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
+    try:
+        raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
+        if not raw:
+            return []
+        items = _extract_json_list_from_llm_raw(raw)
+        if not items or not isinstance(items, list):
+            return []
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            topic = (it.get("topic") or "").strip()
+            if topic not in TOPIC_ORDER:
+                topic = "政治"
+            out.append({
+                "topic": topic,
+                "emoji": it.get("emoji", "📌"),
+                "title": (it.get("title") or "").strip() or "（無標題）",
+                "summary": (it.get("summary") or "").strip() or "",
+                "source": (it.get("source") or "").strip() or "",
+                "url": (it.get("url") or "").strip() or "",
+                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+            })
+        return out
+    except Exception as e:
+        logger.error("_summarize_continent_feed_with_llm: 摘要失敗: %s", str(e))
+        return []
 
-    Returns:
-        每筆含 continent, topic, emoji, title, summary, source, analysis_keywords 的字典列表；失敗時返回空列表或部分結果。
+
+@st.cache_data(ttl=3600)
+def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
+    """
+    彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 Gemini，共約 10 次 API）。
+    快取 1 小時。
     """
     if not tavily_key or not google_key:
         return []
     all_items: List[Dict[str, Any]] = []
     try:
         tavily = TavilyClient(api_key=tavily_key)
-        for continent, topic, query in FEED_CATEGORIES:
+        for continent, query in FEED_BY_CONTINENT:
             raw_items: List[Dict[str, Any]] = []
             try:
-                # 鎖定「每天最新」：time_range=day；「重要新聞」：topic=news、查詢含 top/important
                 resp = tavily.search(
                     query=query,
-                    max_results=5,
+                    max_results=12,
                     search_depth="basic",
                     topic="news",
                     time_range="day",
@@ -5296,7 +5335,7 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
                             "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
                         })
             except Exception as e:
-                logger.warning("fetch_intelligence_feed: Tavily %s %s 失敗: %s", continent, topic, str(e))
+                logger.warning("fetch_intelligence_feed_tavily: Tavily %s 失敗: %s", continent, str(e))
                 continue
             if not raw_items:
                 continue
@@ -5307,11 +5346,9 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
                 content = r.get("content", "") or r.get("snippet", "") or ""
                 lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
             raw_news_text = "\n\n".join(lines)
-            summarized = _summarize_feed_with_llm(raw_news_text, google_key, continent=continent, topic=topic)
+            summarized = _summarize_continent_feed_with_llm(raw_news_text, google_key, continent)
             for it in summarized:
                 it["continent"] = continent
-                it["topic"] = topic
-                # 若 LLM 未回傳 url，依標題從原始結果匹配並附上連結
                 if not (it.get("url") or "").strip() and raw_items:
                     llm_title = (it.get("title") or "").strip()
                     for raw in raw_items:
@@ -5321,25 +5358,134 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
                             break
                 all_items.append(it)
     except Exception as e:
-        logger.error("fetch_intelligence_feed: Tavily 初始化或搜尋失敗: %s", str(e))
+        logger.error("fetch_intelligence_feed_tavily: 失敗: %s", str(e))
         return []
     return all_items
 
 
+def _fetch_rss_raw() -> List[Dict[str, Any]]:
+    """從 RSS_FEED_URLS 抓取標題／連結／摘要，不依賴 Tavily。使用 requests + xml 解析。"""
+    entries: List[Dict[str, Any]] = []
+    for url in RSS_FEED_URLS:
+        try:
+            r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; NewsFeed/1.0)"})
+            r.raise_for_status()
+            text = r.text
+        except Exception as e:
+            logger.warning("_fetch_rss_raw: %s 失敗: %s", url, str(e))
+            continue
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(text)
+            # 支援 RSS 2.0 (channel/item) 與 Atom (feed/entry)
+            items = list(root.iter("item")) or list(root.iter("{http://www.w3.org/2005/Atom}entry"))
+            for item in items:
+                title_el = item.find("title") or item.find("{http://www.w3.org/2005/Atom}title")
+                link_el = item.find("link") or item.find("{http://www.w3.org/2005/Atom}link")
+                if link_el is not None and link_el.get("href"):
+                    link = link_el.get("href", "").strip()
+                else:
+                    link = (link_el.text or "").strip() if link_el is not None else ""
+                desc_el = item.find("description") or item.find("{http://www.w3.org/2005/Atom}summary") or item.find("content", namespaces={"": "", "http://purl.org/rss/1.0/modules/content": "content"})
+                if desc_el is not None and desc_el.text:
+                    desc = (desc_el.text or "").strip()[:400]
+                else:
+                    desc = (ET.tostring(desc_el, encoding="unicode", method="text") if desc_el is not None else "")[:400]
+                title = (title_el.text or "").strip() if title_el is not None else ""
+                if title or link:
+                    entries.append({"title": title, "url": link, "content": desc})
+        except ET.ParseError as e:
+            logger.warning("_fetch_rss_raw: 解析 %s 失敗: %s", url, str(e))
+            continue
+    return entries[:60]
+
+
+@st.cache_data(ttl=3600)
+def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
+    """
+    以 RSS 頭條為來源，僅用 1 次 Gemini 摘要並分類為五大洲 × 政治/經濟/科技（約 1 次 API，免 Tavily）。
+    快取 1 小時。
+    """
+    if not google_key:
+        return []
+    raw = _fetch_rss_raw()
+    if not raw:
+        return []
+    lines = []
+    for i, r in enumerate(raw[:50], 1):
+        lines.append(f"[{i}] Title: {r.get('title','')}\nURL: {r.get('url','')}\nContent: {r.get('content','')[:300]}")
+    raw_text = "\n\n".join(lines)
+    system_prompt = """你是資深情報編輯。請將提供的 RSS 新聞整理成「今日重要要聞」，並為每則標註**洲別**與**類型**。
+每則請產出：
+- continent：必須為「亞洲」「歐洲」「美洲」「非洲」「大洋洲」其中之一（依內容判斷）
+- topic：必須為「政治」「經濟」「科技」其中之一
+- emoji：代表該則主題的 emoji
+- title：吸引人的繁體中文標題
+- summary：2～3 句繁體中文摘要
+- source：來源網域或媒體名（可從 URL 推斷）
+- url：從原文「URL:」後方**原樣複製**的完整連結
+- analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
+
+請「只」輸出一個 JSON 陣列，每則一筆。鍵名：continent, topic, emoji, title, summary, source, url, analysis_keywords。盡量覆蓋五大洲與政治/經濟/科技，精選 15～25 則。"""
+    user_prompt = f"""以下為國際 RSS 頭條。請精選最重要 15～25 則，並為每則標註 continent（亞洲/歐洲/美洲/非洲/大洋洲）與 topic（政治/經濟/科技），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
+    try:
+        raw_out = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", google_key)
+        if not raw_out:
+            return []
+        items = _extract_json_list_from_llm_raw(raw_out)
+        if not items or not isinstance(items, list):
+            return []
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            cont = (it.get("continent") or "").strip()
+            if cont not in CONTINENT_ORDER:
+                cont = "其他"
+            topic = (it.get("topic") or "").strip()
+            if topic not in TOPIC_ORDER:
+                topic = "政治"
+            out.append({
+                "continent": cont,
+                "topic": topic,
+                "emoji": it.get("emoji", "📌"),
+                "title": (it.get("title") or "").strip() or "（無標題）",
+                "summary": (it.get("summary") or "").strip() or "",
+                "source": (it.get("source") or "").strip() or "",
+                "url": (it.get("url") or "").strip() or "",
+                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+            })
+        return out
+    except Exception as e:
+        logger.error("fetch_intelligence_feed_rss: 摘要失敗: %s", str(e))
+        return []
+
+
 def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，每則提供「深度分析」一鍵跳轉至全域分析並帶入查詢。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源以節省 API。
     """
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
-    if not tavily_key or not tavily_key.strip():
-        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key** 以載入全球情報。")
-        return
     if not google_key or not google_key.strip():
         st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要。")
         return
-    with st.spinner("正在載入情報摘要（五大洲 × 政治/經濟/科技，約需 1～2 分鐘）…"):
-        feed = fetch_intelligence_feed(tavily_key, google_key)
+    feed_source = st.radio(
+        "取得方式",
+        options=[
+            "📡 RSS 頭條（約 1 次 API，免 Tavily）",
+            "🔍 Tavily 即時（約 10 次 API，需 Tavily Key）",
+        ],
+        index=0,
+        horizontal=True,
+        key="feed_source_radio",
+    )
+    use_tavily = "Tavily" in feed_source
+    if use_tavily and not (tavily_key and tavily_key.strip()):
+        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條」免用 Tavily。")
+        return
+    with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if use_tavily else "約 20 秒（1 次 API）")):
+        feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
     if not feed:
         st.info("無法載入情報，請稍後再試或檢查 API 金鑰與網路。")
         return
