@@ -4791,6 +4791,26 @@ def call_openrouter(system_prompt: str, user_text: str, model_name: str = "googl
         raise Exception(f"OpenRouter API 調用失敗: {error_msg[:200]}") from e
 
 
+def _call_llm_for_feed(
+    system_prompt: str,
+    user_text: str,
+    model_name: str,
+    provider: str,
+    api_key: Optional[str] = None,
+) -> str:
+    """
+    依側欄選擇的 LLM 來源（Gemini / Grok / OpenRouter）呼叫對應 API，供 News Feed 摘要與翻譯使用。
+    """
+    if not api_key or not api_key.strip():
+        raise ValueError("未提供 API Key")
+    provider = (provider or "Gemini").strip()
+    if provider == "Grok":
+        return call_grok(system_prompt, user_text, model_name or "grok-2", api_key)
+    if provider == "OpenRouter":
+        return call_openrouter(system_prompt, user_text, model_name or "google/gemini-2.0-flash-exp", api_key)
+    return call_gemini(system_prompt, user_text, model_name or "gemini-2.5-flash", api_key, openai_api_key=None)
+
+
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
     """
     呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
@@ -5379,11 +5399,15 @@ def _summarize_feed_with_llm(
 
 
 def _summarize_continent_feed_with_llm(
-    raw_news_text: str, api_key: str, continent: str
+    raw_news_text: str,
+    api_key: str,
+    continent: str,
+    llm_provider: str = "Gemini",
+    llm_model: str = "gemini-2.5-flash",
 ) -> List[Dict[str, Any]]:
     """
     單一洲別合併摘要：一次 LLM 產出該洲「政治／經濟／科技」三類要聞，每則帶 topic 欄位。
-    用於省 API：每洲 1 次 Tavily + 1 次 Gemini。
+    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要。
     """
     if not api_key or not (raw_news_text or "").strip():
         return []
@@ -5401,7 +5425,7 @@ def _summarize_continent_feed_with_llm(
 請「只」輸出一個 JSON 陣列。鍵名：topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
     user_prompt = f"""以下為「{continent}」今日搜尋結果。請綜整相似報導、精選 6～9 則，為每則標註 topic 與 strategic_angle，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
     try:
-        raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
+        raw = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_provider, api_key)
         if not raw:
             return []
         items = _extract_json_list_from_llm_raw(raw)
@@ -5447,7 +5471,7 @@ def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -
             "emoji": "📌",
             "title": title,
             "summary": content or "",
-            "strategic_angle": "Tavily 原文（Gemini 額度不足或未摘要時顯示）",
+            "strategic_angle": "Tavily 原文（LLM 額度不足或未摘要時顯示）",
             "source": domain,
             "url": url,
             "analysis_keywords": title,
@@ -5456,15 +5480,20 @@ def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -
 
 
 @st.cache_data(ttl=3600)
-def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
+def fetch_intelligence_feed_tavily(
+    tavily_key: str,
+    llm_provider: str,
+    llm_api_key: Optional[str],
+    llm_model: str,
+) -> List[Dict[str, Any]]:
     """
-    彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 Gemini，共約 10 次 API）。
-    Gemini 額度不足或未提供時，改顯示 Tavily 原文 title／url，避免完全沒結果。快取 1 小時。
+    彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 LLM 摘要）。
+    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要；額度不足或未提供時改顯示 Tavily 原文。快取 1 小時。
     """
     if not tavily_key:
         return []
     all_items: List[Dict[str, Any]] = []
-    use_gemini = bool(google_key and google_key.strip())
+    use_llm = bool(llm_api_key and (llm_api_key or "").strip())
     try:
         tavily = TavilyClient(api_key=tavily_key)
         for continent, query in FEED_BY_CONTINENT:
@@ -5502,13 +5531,16 @@ def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dic
                 content = r.get("content", "") or r.get("snippet", "") or ""
                 lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
             raw_news_text = "\n\n".join(lines)
-            if use_gemini:
-                summarized = _summarize_continent_feed_with_llm(raw_news_text, google_key, continent)
+            if use_llm:
+                summarized = _summarize_continent_feed_with_llm(
+                    raw_news_text, llm_api_key, continent,
+                    llm_provider=llm_provider, llm_model=llm_model,
+                )
                 if not summarized:
-                    # Gemini 額度不足或摘要失敗時，改顯示 Tavily 原文的 title + url
+                    # LLM 額度不足或摘要失敗時，改顯示 Tavily 原文的 title + url
                     summarized = _tavily_raw_to_feed_items(raw_items, continent)
             else:
-                # 未提供 Gemini Key 時，直接顯示 Tavily 原文
+                # 未提供 LLM Key 時，直接顯示 Tavily 原文
                 summarized = _tavily_raw_to_feed_items(raw_items, continent)
             for it in summarized:
                 it["continent"] = continent
@@ -5644,12 +5676,16 @@ def _rss_fallback_from_raw(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 @st.cache_data(ttl=3600)
-def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
+def fetch_intelligence_feed_rss(
+    llm_provider: str,
+    llm_api_key: Optional[str],
+    llm_model: str,
+) -> List[Dict[str, Any]]:
     """
-    以 RSS 頭條為來源，僅用 1 次 Gemini 摘要並分類為五大洲 × 政治/經濟/科技（約 1 次 API，免 Tavily）。
-    快取 1 小時。
+    以 RSS 頭條為來源，用 1 次 LLM 摘要並分類為五大洲 × 政治/經濟/科技（約 1 次 API，免 Tavily）。
+    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要。快取 1 小時。
     """
-    if not google_key:
+    if not llm_api_key or not (llm_api_key or "").strip():
         return []
     raw = _fetch_rss_raw()
     if not raw:
@@ -5676,7 +5712,7 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
 請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。"""
     user_prompt = f"""以下為國際 RSS 頭條。請**綜整**相似報導、精選 15～25 則，五大洲每洲至少 2 則，並為每則填寫 strategic_angle（為何重要），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
     try:
-        raw_out = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", google_key)
+        raw_out = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_provider, llm_api_key)
         if not raw_out:
             return _rss_fallback_from_raw(raw)
         items = _extract_json_list_from_llm_raw(raw_out)
@@ -5709,12 +5745,26 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
         return _rss_fallback_from_raw(raw)
 
 
-def render_news_feed_page(google_key: str, tavily_key: str) -> None:
+def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = "gemini-2.5-flash") -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；按鈕觸發才執行取得。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；摘要與翻譯依側欄選擇的 LLM（Gemini/Grok/OpenRouter）執行。
     """
+    llm_provider = st.session_state.get("llm_provider", "Gemini")
+    grok_key = st.session_state.get("grok_api_key")
+    openrouter_key = st.session_state.get("openrouter_api_key")
+    openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+    if llm_provider == "Grok" and grok_key:
+        feed_llm_key = grok_key
+        feed_llm_model = "grok-2"
+    elif llm_provider == "OpenRouter" and openrouter_key:
+        feed_llm_key = openrouter_key
+        feed_llm_model = openrouter_model
+    else:
+        feed_llm_key = (google_key or "").strip() or None
+        feed_llm_model = gemini_model or "gemini-2.5-flash"
+
     st.markdown("## 📰 全球情報 (News Feed)")
-    st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
+    st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
     feed_source = st.radio(
         "取得方式",
         options=[
@@ -5729,9 +5779,9 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     use_tavily = "Tavily" in feed_source
     use_rss_raw = "原始列表" in feed_source or "0 次" in feed_source
     use_rss_headline = not use_tavily and not use_rss_raw
-    # 僅「RSS 頭條」必須要 Gemini；Tavily 可只用 Tavily Key（顯示原文），RSS 原始列表不需任何 Key
-    if use_rss_headline and (not google_key or not google_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要；或改選「Tavily 即時」或「RSS 原始列表」。")
+    # 需要 LLM 時（RSS 頭條或 Tavily 摘要）必須有對應所選 LLM 的 Key；RSS 原始列表不需任何 Key
+    if not use_rss_raw and not feed_llm_key:
+        st.warning("⚠️ 請在側邊欄選擇「分析使用 LLM」並輸入對應 **API Key**（Gemini / Grok / OpenRouter）以產生繁體中文摘要；或改選「RSS 原始列表」不消耗 API。")
         return
     if use_tavily and not (tavily_key and tavily_key.strip()):
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**，或改選「RSS 頭條／原始列表」。")
@@ -5758,12 +5808,12 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
                 spinner_msg = "約 20 秒（1 次 API）"
             with st.spinner("正在載入情報…" + spinner_msg):
                 if _use_tavily:
-                    feed = fetch_intelligence_feed_tavily(tavily_key, google_key)
+                    feed = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
                 elif _use_rss_raw:
                     raw = _fetch_rss_raw()
                     feed = _rss_fallback_from_raw(raw)
                 else:
-                    feed = fetch_intelligence_feed_rss(google_key)
+                    feed = fetch_intelligence_feed_rss(llm_provider, feed_llm_key, feed_llm_model)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5788,7 +5838,7 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
             st.markdown("""
 - **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額；或改選 **RSS 頭條／原始列表** 再試。
 - **RSS／RSS 原始列表**：RSS 來源暫時無法連線或解析失敗 → 稍後再按「重新載入」。若選「原始列表」仍 0 則，表示目前所有 RSS 連結皆無法取得。
-- **Gemini**（僅 RSS 頭條）：摘要階段失敗或回傳空陣列 → 檢查側欄 Gemini Key 是否有效、配額是否足夠；或改選 **RSS 原始列表** 不消耗 API。
+- **LLM 摘要**（RSS 頭條／Tavily）：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／OpenRouter）的 Key 與配額；或改選 **RSS 原始列表** 不消耗 API。
             """)
         if st.button("🔄 重新載入", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
@@ -5801,12 +5851,12 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
                 if use_tavily:
-                    feed_new = fetch_intelligence_feed_tavily(tavily_key, google_key)
+                    feed_new = fetch_intelligence_feed_tavily(tavily_key, llm_provider, feed_llm_key, feed_llm_model)
                 elif use_rss_raw:
                     raw = _fetch_rss_raw()
                     feed_new = _rss_fallback_from_raw(raw)
                 else:
-                    feed_new = fetch_intelligence_feed_rss(google_key)
+                    feed_new = fetch_intelligence_feed_rss(llm_provider, feed_llm_key, feed_llm_model)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
@@ -6969,7 +7019,7 @@ flowchart LR
             st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
 if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
-    render_news_feed_page(google_key, tavily_key)
+    render_news_feed_page(google_key, tavily_key, model_name)
 else:
     st.title(f"{analysis_mode.split(' ')[0]}")
     query = st.text_input(
