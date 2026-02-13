@@ -45,25 +45,6 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
     # logger 尚未定義，使用 print 或稍後記錄
-try:
-    import plotly.graph_objects as go
-    import plotly.express as px
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    PLOTLY_AVAILABLE = False
-
-try:
-    import graphviz
-    GRAPHVIZ_AVAILABLE = True
-except ImportError:
-    GRAPHVIZ_AVAILABLE = False
-
-try:
-    import networkx as nx
-    NETWORKX_AVAILABLE = True
-except ImportError:
-    NETWORKX_AVAILABLE = False
-
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -5149,425 +5130,194 @@ def _extract_json_from_llm_raw(raw: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def generate_visual_data(report_text: str, api_key: str) -> Optional[Dict[str, Any]]:
+def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
     """
-    使用 LLM 從文字報告中萃取結構化 JSON，供視覺化戰情室使用。
-    理論基礎：資訊視覺化 (Information Visualization)，將 ACH、Cui Bono、影響力網絡等
-    章節轉為節點/邊/立場座標/時間軸事件，以支援網絡圖、政治光譜圖、時間軸圖表。
+    從 LLM 回傳文字中萃取出 JSON 陣列。容忍 markdown 程式碼區塊、前後說明文字。
+    用於全球情報摘要等回傳 list 的場景。
+    """
+    if not raw or not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        if match:
+            text = match.group(1).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+    # 陣列：第一個 [ 到最後一個 ]
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end != -1 and end > start:
+        text = text[start : end + 1]
+    text = re.sub(r",\s*]", "]", text)
+    text = re.sub(r",\s*}", "}", text)
+    try:
+        out = json.loads(text)
+        if isinstance(out, list):
+            return out
+        if isinstance(out, dict) and ("items" in out or "stories" in out):
+            key = "items" if "items" in out else "stories"
+            return out[key] if isinstance(out[key], list) else None
+        return None
+    except json.JSONDecodeError:
+        return None
+
+
+# ==========================================
+# 全球情報摘要 (Global Intelligence Feed)
+# ==========================================
+
+FEED_CATEGORIES = [
+    ("Global Geopolitics", "top geopolitical news world US China Russia today"),
+    ("Taiwan Cross-Strait", "台灣 兩岸 重大新聞"),
+    ("Global Economy", "global market finance news today"),
+    ("Frontier Tech", "AI technology breakthrough news today"),
+]
+
+
+def _summarize_feed_with_llm(raw_news_text: str, api_key: str) -> List[Dict[str, Any]]:
+    """
+    使用 Gemini 將原始搜尋結果整理為結構化 JSON 列表（繁體中文標題與摘要）。
+    理論基礎：資訊摘要與多源整合，供全球情報儀表板使用。
 
     Args:
-        report_text: 戰略分析報告全文（[REPORT_TEXT] 區塊）
+        raw_news_text: 來自 Tavily 的原始新聞片段彙總文字
         api_key: Google Gemini API Key
 
     Returns:
-        含 "network"（nodes, edges）、"stance_map"（items）、"timeline"（events）的字典；
-        失敗或無 api_key 時返回 None。
+        含 title、summary、source、analysis_keywords（及可選 emoji）的字典列表；失敗時返回空列表。
     """
-    if not api_key or not (report_text or "").strip():
-        logger.warning("generate_visual_data: 缺少 api_key 或 report_text 為空")
-        return None
+    if not api_key or not (raw_news_text or "").strip():
+        logger.warning("_summarize_feed_with_llm: 缺少 api_key 或 raw_news_text 為空")
+        return []
+    system_prompt = """你是資深情報編輯（Senior Intelligence Editor）。請將提供的原始新聞片段整理成「精選要聞」清單。
+每則請產出：
+- emoji：一個代表該則主題的 emoji（如 🇺🇸 🇹🇼 📉 🤖）
+- title：吸引人的繁體中文標題
+- summary：2～3 句繁體中文摘要
+- source：來源網域或媒體名（從原文擷取或推斷）
+- analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準，例如：川普 關稅 影響）
 
-    text_input = (report_text.strip())[:25000]
-    system_prompt = """你是資料視覺化專家。報告中「一定」包含以下章節，請從中萃取資料：
-- **第 6 節 Cui Bono 與利益分析**：列出「利益相關者」與「核心動機」「機制」→ 轉成 network 的 nodes，以及 stance_map 的 items（依立場給 x: 親中-10～親美+10, y: 鴿派-10～鷹派+10）。
-- **第 8 節 影響力網絡與預警指標**：其中「代理人與網絡分析」有「陣營 A 網絡」「陣營 B 滲透路徑」或「高市陣營網絡」「台日連結網絡」等，常以「A -> B -> C」表示關係 → 轉成 network 的 nodes 與 edges（type: support/oppose/money）。
-- **時間軸或未來情境**：有日期的關鍵事件 → 轉成 timeline.events。
-**重要**：network 的 nodes 只填「具體人名、組織名、國家或陣營名」，勿填章節標題或抽象概念（如核心共識、知識論風險、核心敘事）。stance_map 的 items 請「每個實體一筆」，勿將多個勢力合併成一個 name（例如勿用「俄羅斯/中東/非盟」一筆，應拆成三筆）。
-請「只」輸出一個 JSON 物件，鍵名必須為 network、stance_map、timeline。不要任何前言、不要 markdown 程式碼區塊。"""
-
-    user_prompt = f"""請從下方報告的「Cui Bono」「影響力網絡與預警指標」「代理人與網絡分析」等章節，萃取出 network（nodes 與 edges）、stance_map（items）、timeline（events）。至少從 Cui Bono 或 影響力網絡 產出 3 個以上 nodes、2 個以上 edges。
-
-輸出格式（單一 JSON，鍵名固定）：
-{{"network": {{"nodes": [{{"id": "角色或組織名", "group": "陣營/國家", "size": 5}}], "edges": [{{"source": "名稱1", "target": "名稱2", "label": "關係", "type": "support或oppose或money"}}]}}, "stance_map": {{"items": [{{"name": "名稱", "x": 數字-10~10, "y": 數字-10~10, "desc": "簡短理由"}}]}}, "timeline": {{"events": [{{"date": "YYYY-MM-DD", "event": "事件標題", "category": "Politics或Military或Economy"}}]}}}}
-
-報告內容：
-{text_input}
-
-請直接輸出上述格式的單一 JSON，不要其他文字。"""
-
+請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, analysis_keywords。"""
+    user_prompt = f"""請將以下原始新聞整理成精選要聞（最多精選 5～8 則，去除重複與次要），輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
-        if not raw or not isinstance(raw, str):
-            logger.warning("generate_visual_data: call_gemini 返回為空或非字串")
-            return None
-        raw = raw.strip()
-        data = _extract_json_from_llm_raw(raw)
-        if not data:
-            logger.warning("generate_visual_data: 無法從回傳中解析 JSON，原始長度=%s 前 500 字=%s", len(raw), (raw[:500] if raw else ""))
-            return None
-        # 正規化結構，確保前端需要的鍵存在
-        if "network" not in data or not isinstance(data["network"], dict):
-            data["network"] = {"nodes": [], "edges": []}
-        else:
-            data["network"].setdefault("nodes", [])
-            data["network"].setdefault("edges", [])
-        if "stance_map" not in data or not isinstance(data["stance_map"], dict):
-            data["stance_map"] = {"items": []}
-        else:
-            data["stance_map"].setdefault("items", [])
-        if "timeline" not in data or not isinstance(data["timeline"], dict):
-            data["timeline"] = {"events": []}
-        else:
-            data["timeline"].setdefault("events", [])
-        return data
+        if not raw:
+            return []
+        items = _extract_json_list_from_llm_raw(raw)
+        if not items or not isinstance(items, list):
+            return []
+        out = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            out.append({
+                "emoji": it.get("emoji", "📌"),
+                "title": (it.get("title") or "").strip() or "（無標題）",
+                "summary": (it.get("summary") or "").strip() or "",
+                "source": (it.get("source") or "").strip() or "",
+                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+            })
+        return out
     except Exception as e:
-        logger.error("generate_visual_data: 視覺化資料萃取失敗: %s", str(e))
-        return None
+        logger.error("_summarize_feed_with_llm: 摘要失敗: %s", str(e))
+        return []
 
 
-# 規則萃取時排除的粗體文字：章節標題、抽象概念，非具體人物/組織/陣營
-_NETWORK_STANCE_BLOCKLIST = frozenset({
-    "核心共識", "知識論風險", "核心敘事", "代理人與網絡分析", "權力結構重組", "踐踏國際正義",
-    "正常國家", "結構性遺漏", "隱含前提", "狗哨", "知識論", "利益相關者", "核心動機", "機制",
-    "協同行為特徵", "語義旋轉", "風險評估", "早期預警", "攻擊目標", "傳播載體", "預期效果",
-    "甲方論述", "乙方反制", "Proxy Network", "Early Warning", "Cui Bono", "陣營 A", "陣營 B",
-    "邏輯謬誤", "事實查核", "媒體框架", "共識與分歧", "敘事操縱", "認知戰", "法理戰",
-    "錯誤歸因", "滑坡謬誤", "關鍵分歧", "同盟關係", "國際法理戰", "對話前提", "認知戰戰術解構",
-    "早期預警指標", "事實查核結果", "邏輯謬誤偵測", "甲方", "乙方", "北京滲透路徑", "勝選主因",
-    "軍國主義", "戰敗國", "經濟授權", "語義旋轉", "狗哨/暗語",
-})
-# 節點/立場名稱若「包含」以下關鍵字則不顯示（避免概念當成實體）
-_NETWORK_STANCE_KEYWORD_BLOCK = frozenset({
-    "謬誤", "歸因", "論述", "反制", "解構", "偵測", "查核", "預警", "分歧", "推演", "授權",
-    "網絡分析", "利益相關者 A", "利益相關者 B", "利益相關者 C", "陣營 A:", "陣營 B:",
-})
-
-
-def _is_likely_entity_name(name: str) -> bool:
-    """排除章節標題與抽象詞，只保留像「人名/組織/陣營」的粗體。"""
-    if not name or len(name) < 2 or len(name) > 40:
-        return False
-    if name in _NETWORK_STANCE_BLOCKLIST:
-        return False
-    if name.startswith(("H1:", "H2:", "H3:")) or "假設" in name or "證據" in name:
-        return False
-    for block in _NETWORK_STANCE_BLOCKLIST:
-        if block in name and name != block:
-            if name.strip() in (block, "陣營 A 網絡", "陣營 B 滲透路徑"):
-                return False
-    for kw in _NETWORK_STANCE_KEYWORD_BLOCK:
-        if kw in name:
-            return False
-    return True
-
-
-def _filter_entity_nodes(nodes: List[Dict], edges: List[Dict]) -> List[Dict]:
-    """過濾掉明顯為概念/章節的節點；有邊時只保留出現在邊上的節點，使圖表表達「誰與誰的關係」。"""
-    out = []
-    has_edges = len(edges) > 0
-    valid_from_edges = set()
-    for e in edges:
-        valid_from_edges.add((e.get("source") or "").strip())
-        valid_from_edges.add((e.get("target") or "").strip())
-    for n in nodes:
-        nid = (n.get("id") or "").strip()
-        if not nid:
-            continue
-        if nid in _NETWORK_STANCE_BLOCKLIST:
-            continue
-        if any(kw in nid for kw in _NETWORK_STANCE_KEYWORD_BLOCK):
-            continue
-        if has_edges and nid not in valid_from_edges:
-            continue
-        out.append(n)
-    if has_edges and not out and valid_from_edges:
-        return [{"id": nid, "group": "報告", "size": 5} for nid in valid_from_edges if nid]
-    return out if out else nodes
-
-
-def _filter_stance_items(items: List[Dict]) -> List[Dict]:
-    """過濾掉概念型名稱，只保留像實體的立場點。"""
-    out = []
-    for it in items:
-        name = (it.get("name") or "").strip()
-        if not name or name in _NETWORK_STANCE_BLOCKLIST:
-            continue
-        if any(kw in name for kw in _NETWORK_STANCE_KEYWORD_BLOCK):
-            continue
-        if "狗哨" in name or "謬誤" in name or "歸因" in name or "論述" in name or "反制" in name:
-            continue
-        out.append(it)
-    return out
-
-
-def _parse_network_and_stance_from_report(report_text: str) -> Tuple[List[Dict], List[Dict], List[Dict]]:
+@st.cache_data(ttl=3600)
+def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
     """
-    從報告內文以規則萃取出 network nodes/edges 與 stance_map items。
-    用於 fallback：當 LLM 未回傳時，至少能從「Cui Bono」「影響力網絡」等章節撈出結構。
-    """
-    nodes: List[Dict] = []
-    edges: List[Dict] = []
-    items: List[Dict] = []
-    if not report_text or not isinstance(report_text, str):
-        return nodes, edges, items
-    text = report_text.strip()
-    node_ids: Set[str] = set()
-    # 1) 從 "A -> B" 或 "A->B" 萃取邊與節點（常見於影響力網絡、代理人與網絡分析）
-    for m in re.finditer(r"([^\s\[\]\(\)]+?)\s*->\s*([^\s\[\]\(\)]+?)(?:\s*->|\s*[,\.\)]|\s*$)", text):
-        src, tgt = m.group(1).strip(), m.group(2).strip()
-        if len(src) > 1 and len(tgt) > 1 and len(src) < 80 and len(tgt) < 80:
-            if not any(e.get("source") == src and e.get("target") == tgt for e in edges):
-                node_ids.add(src)
-                node_ids.add(tgt)
-                edges.append({"source": src, "target": tgt, "label": "影響/連結", "type": "support"})
-    # 多段 A -> B -> C
-    for part in re.split(r"[\n。；]", text):
-        segs = [s.strip() for s in re.split(r"\s*->\s*", part) if s.strip()]
-        for i in range(len(segs) - 1):
-            a, b = segs[i][:60], segs[i + 1][:60]
-            if a and b and a != b:
-                node_ids.add(a)
-                node_ids.add(b)
-                if not any(e.get("source") == a and e.get("target") == b for e in edges):
-                    edges.append({"source": a, "target": b, "label": "→", "type": "support"})
-    # 2) 從 Cui Bono 小標 **XXX**： 僅保留像實體的名稱（排除章節名、抽象詞）
-    for m in re.finditer(r"\*\*([^*]+?)\*\*\s*[：:（(]?", text):
-        name = m.group(1).strip()
-        if _is_likely_entity_name(name):
-            node_ids.add(name)
-            if not any(it.get("name") == name for it in items):
-                items.append({"name": name, "x": 0, "y": 0, "desc": "報告內角色"})
-    # 3) 補齊 nodes 列表（來自 edges 的 source/target 與上述名稱）
-    for nid in node_ids:
-        nodes.append({"id": nid, "group": "報告", "size": 5})
-    # 去重 nodes（同一 id 只保留一筆）
-    seen: Set[str] = set()
-    uniq_nodes = []
-    for n in nodes:
-        i = n.get("id", "")
-        if i and i not in seen:
-            seen.add(i)
-            uniq_nodes.append(n)
-    return uniq_nodes, edges, items
+    彙整四大類別頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
+    快取 1 小時以節省 API 配額。
 
+    Args:
+        tavily_key: Tavily API Key（搜尋）
+        google_key: Google Gemini API Key（摘要）
 
-def build_visual_data_fallback(
-    parsed_result: Dict[str, Any],
-    sources: Optional[List[Dict]] = None,
-    report_text: Optional[str] = None,
-) -> Dict[str, Any]:
+    Returns:
+        每筆含 emoji, title, summary, source, analysis_keywords 的字典列表；失敗時返回空列表或部分結果。
     """
-    當 LLM 萃取失敗時，從已解析的報告時間軸、來源列表與報告內文組出視覺化資料。
-    若提供 report_text，會以規則從「Cui Bono」「影響力網絡」等章節萃出 network 與 stance_map。
-    """
-    events = []
-    timeline = parsed_result.get("timeline") or []
-    for item in timeline:
-        if isinstance(item, dict):
-            events.append({
-                "date": item.get("date", ""),
-                "event": item.get("title", item.get("media", "")) or "—",
-                "category": "Politics",
-            })
-        else:
-            continue
-    if not events and isinstance(timeline, list):
-        for i, row in enumerate(timeline[:20]):
-            if isinstance(row, dict):
-                events.append({
-                    "date": row.get("date", "—"),
-                    "event": row.get("title", row.get("media", str(i + 1))),
-                    "category": "Politics",
-                })
-    if sources and not events:
-        for i, s in enumerate(sources[:15]):
-            events.append({
-                "date": (s.get("final_date") or s.get("published_date") or "—")[:10],
-                "event": (s.get("title") or "報導")[:80],
-                "category": "Politics",
-            })
-    nodes, edge_list, stance_items = [], [], []
-    if report_text and report_text.strip():
-        nodes, edge_list, stance_items = _parse_network_and_stance_from_report(report_text)
-    return {
-        "network": {"nodes": nodes, "edges": edge_list},
-        "stance_map": {"items": stance_items},
-        "timeline": {"events": events},
-        "_fallback": True,
-    }
-
-
-def _draw_network_plotly(nodes: List[Dict], edges: List[Dict]) -> Optional[go.Figure]:
-    """
-    使用 NetworkX 計算版面 + Plotly 繪製網絡圖。不依賴 Graphviz，錯誤率低、相容性高。
-    """
-    if not NETWORKX_AVAILABLE or not PLOTLY_AVAILABLE or (not nodes and not edges):
-        return None
-    valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
-    if not valid_ids and edges:
-        for e in edges:
-            valid_ids.add((e.get("source") or "").strip())
-            valid_ids.add((e.get("target") or "").strip())
-    G = nx.Graph()
-    for n in nodes:
-        nid = (n.get("id") or "").strip()
-        if nid:
-            G.add_node(nid)
-    for e in edges:
-        src = (e.get("source") or "").strip()
-        tgt = (e.get("target") or "").strip()
-        if src and tgt and (src in valid_ids or not valid_ids) and (tgt in valid_ids or not valid_ids):
-            G.add_edge(src, tgt)
-    if not G.nodes:
-        return None
+    if not tavily_key or not google_key:
+        return []
+    raw_items: List[Dict[str, Any]] = []
     try:
-        pos = nx.kamada_kawai_layout(G)
-    except Exception:
-        pos = nx.spring_layout(G, seed=42)
-    # 邊：線段
-    edge_x, edge_y = [], []
-    for u, v in G.edges():
-        x0, y0 = pos.get(u, (0, 0))
-        x1, y1 = pos.get(v, (0, 0))
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=edge_x, y=edge_y, mode="lines", line=dict(width=1.5, color="#888"), hoverinfo="none"))
-    # 節點：散點 + 標籤
-    node_x = [pos[n][0] for n in G.nodes()]
-    node_y = [pos[n][1] for n in G.nodes()]
-    node_ids = list(G.nodes())
-    colors = []
-    for nid in node_ids:
-        node_dict = next((n for n in nodes if (n.get("id") or "").strip() == nid), {})
-        group = node_dict.get("group", "") or ""
-        colors.append("rgba(66,135,245,0.9)" if "US" in group or "Japan" in group or "美" in group or "日" in group else "rgba(229,57,53,0.9)")
-    fig.add_trace(go.Scatter(
-        x=node_x, y=node_y, mode="markers+text",
-        marker=dict(size=14, color=colors, line=dict(width=1, color="white")),
-        text=[n[:12] + ("…" if len(n) > 12 else "") for n in node_ids],
-        textposition="top center",
-        textfont=dict(size=10),
-        hovertext=node_ids,
-        hoverinfo="text",
-    ))
-    fig.update_layout(
-        showlegend=False,
-        margin=dict(b=20, l=20, r=20, t=40),
-        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        plot_bgcolor="rgba(0,0,0,0)",
-    )
-    return fig
+        tavily = TavilyClient(api_key=tavily_key)
+        for _label, query in FEED_CATEGORIES:
+            try:
+                resp = tavily.search(query=query, max_results=5, search_depth="basic")
+                results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
+                for r in results:
+                    if isinstance(r, dict):
+                        raw_items.append(r)
+                    else:
+                        raw_items.append({
+                            "title": getattr(r, "title", ""),
+                            "url": getattr(r, "url", ""),
+                            "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
+                        })
+            except Exception as e:
+                logger.warning("fetch_intelligence_feed: Tavily 類別 %s 失敗: %s", _label, str(e))
+                continue
+    except Exception as e:
+        logger.error("fetch_intelligence_feed: Tavily 初始化或搜尋失敗: %s", str(e))
+        return []
+    if not raw_items:
+        return []
+    # 組合成一段文字供 LLM 摘要
+    lines = []
+    for i, r in enumerate(raw_items[:40], 1):
+        title = r.get("title", "")
+        url = r.get("url", "")
+        content = r.get("content", "") or r.get("snippet", "") or ""
+        lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
+    raw_news_text = "\n\n".join(lines)
+    return _summarize_feed_with_llm(raw_news_text, google_key)
 
 
-def render_visual_war_room(visual_data: Dict[str, Any]) -> None:
+def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     """
-    在 Streamlit 中渲染視覺化戰情室：影響力網絡圖、政治光譜圖、未來時間軸。
-    網絡圖優先使用 NetworkX + Plotly（錯誤率低），其次 Graphviz。
+    渲染「全球情報」儀表板：顯示彙整頭條，每則提供「深度分析」一鍵跳轉至全域分析並帶入查詢。
     """
-    st.markdown("## 📊 視覺化戰情室 (Visual Intelligence)")
-    with st.expander("📌 本系統使用的繪圖工具與替代方案（錯誤率低、穩定）", expanded=False):
-        st.markdown("""
-| 圖表類型 | 目前優先使用 | 替代方案 | 說明 |
-|:---|:---|:---|:---|
-| **影響力網絡** | **NetworkX + Plotly** | Graphviz、PyVis | 節點與邊由 NetworkX 計算版面，Plotly 繪製，不需額外系統依賴，錯誤率低。 |
-| **政治光譜圖** | **Plotly** (散點圖) | Matplotlib、Altair | 專案已使用 Plotly，相容性高。 |
-| **未來時間軸** | **Pandas DataFrame** | Plotly 時間軸/甘特圖 | 表格呈現最穩定。 |
+    st.markdown("## 📰 全球情報 (News Feed)")
+    st.caption("彙整地緣政治、兩岸、經濟、前沿科技要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
+    if not tavily_key or not tavily_key.strip():
+        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key** 以載入全球情報。")
+        return
+    if not google_key or not google_key.strip():
+        st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要。")
+        return
+    with st.spinner("正在載入情報摘要（約需 30 秒）…"):
+        feed = fetch_intelligence_feed(tavily_key, google_key)
+    if not feed:
+        st.info("無法載入情報，請稍後再試或檢查 API 金鑰與網路。")
+        return
+    for i in range(0, len(feed), 2):
+        col1, col2 = st.columns(2)
+        with col1:
+            _render_feed_card(feed[i], i, len(feed))
+        with col2:
+            if i + 1 < len(feed):
+                _render_feed_card(feed[i + 1], i + 1, len(feed))
 
-**其他可選工具（若需自行擴充）：**
-- **PyVis**：互動 HTML 網絡圖，`pip install pyvis`，適合中大型節點數。
-- **NetworkX + Matplotlib**：靜態網絡圖，`pip install networkx`，無需瀏覽器渲染。
-- **Cytoscape.js / vis.js**：前端 JS 圖庫，可透過 `st.components.v1.html()` 嵌入。
-        """)
-    tabs = st.tabs(["🕸️ 影響力網絡", "⚖️ 政治光譜圖", "⏳ 未來時間軸"])
 
-    with tabs[0]:
-        st.caption("分析利益相關者、代理人與資金/影響力流向")
-        st.markdown("**圖表說明**：每個圓點＝報告中的**角色或組織**，連線＝彼此之間的**支持／資金／對立**關係（有連線時較易解讀「誰影響誰」）。")
-        if visual_data.get("network"):
-            nodes = visual_data["network"].get("nodes") or []
-            edges = visual_data["network"].get("edges") or []
-            nodes = _filter_entity_nodes(nodes, edges)
-            if nodes or edges:
-                fig_net = _draw_network_plotly(nodes, edges)
-                if fig_net is not None:
-                    st.plotly_chart(fig_net, use_container_width=True)
-                    if not edges:
-                        st.info("目前僅萃取出節點，尚無關係線，因此無法呈現「誰與誰」的連結。若報告中有「A → B」或「A 支持/反對 B」等敘述，可改善萃取結果。")
-                elif GRAPHVIZ_AVAILABLE:
-                    graph = graphviz.Digraph()
-                    graph.attr(rankdir="LR", nodesep="0.4", ranksep="0.5")
-                    valid_ids = {n.get("id", "").strip() for n in nodes if n.get("id")}
-                    max_label_len = 14
-                    for node in nodes:
-                        nid = (node.get("id") or "?").strip()
-                        if not nid:
-                            continue
-                        label = nid if len(nid) <= max_label_len else nid[: max_label_len - 1] + "…"
-                        group = node.get("group", "") or ""
-                        color = "lightblue" if "US" in group or "Japan" in group or "美" in group or "日" in group else "lightcoral"
-                        graph.node(nid, label=label, style="filled", fillcolor=color)
-                    for edge in edges:
-                        src = (edge.get("source") or "").strip()
-                        tgt = (edge.get("target") or "").strip()
-                        if src not in valid_ids or tgt not in valid_ids:
-                            continue
-                        etype = edge.get("type") or ""
-                        color = "red" if etype == "oppose" else "green"
-                        graph.edge(src, tgt, label=(edge.get("label") or "")[:8], color=color)
-                    st.graphviz_chart(graph)
-                    if not edges:
-                        st.info("目前僅萃取出節點，尚無關係線。若報告中有「A → B」或「A 支持/反對 B」等敘述，可改善萃取結果。")
-                else:
-                    st.warning("請安裝網絡圖套件（二擇一）：`pip install networkx`（推薦）或 `pip install graphviz`")
-            else:
-                st.info("報告中未萃取出網絡節點與邊，請確認報告包含 Cui Bono 或影響力網絡章節。")
-        else:
-            st.info("報告中未萃取出網絡資料，請先執行「啟動視覺化戰情室」並確認報告內容。")
-
-    with tabs[1]:
-        st.caption("各方勢力在「美中光譜 (X)」與「鷹鴿光譜 (Y)」的定位")
-        st.markdown("**圖表說明**：X 軸＝**親中(左)～親美(右)**，Y 軸＝**經濟務實(下)～安全鷹派(上)**。每個點代表報告中的一個實體（國家、陣營、人物），位置表示其立場。")
-        if visual_data.get("stance_map") and visual_data["stance_map"].get("items"):
-            raw_items = _filter_stance_items(visual_data["stance_map"]["items"])
-            # 將「A/B/C」合併標籤拆成多筆，每勢力一點，避免單一長標籤
-            expanded = []
-            for it in raw_items:
-                name = it.get("name") or ""
-                x = it.get("x") if isinstance(it.get("x"), (int, float)) else 0
-                y = it.get("y") if isinstance(it.get("y"), (int, float)) else 0
-                desc = it.get("desc") or ""
-                if "/" in name:
-                    parts = [p.strip() for p in name.split("/") if p.strip()]
-                    for i, p in enumerate(parts[:10]):
-                        jitter = (i - len(parts) / 2) * 0.08
-                        expanded.append({"name": p, "name_short": p[:10] + ("…" if len(p) > 10 else ""), "x": x + jitter, "y": y, "desc": desc})
-                else:
-                    expanded.append({"name": name, "name_short": name[:10] + ("…" if len(name) > 10 else ""), "x": x, "y": y, "desc": desc})
-            df = pd.DataFrame(expanded)
-            if df.empty:
-                st.info("立場資料不足或多為概念詞已過濾，無法繪製光譜圖。請確認報告「Cui Bono」或立場分析段落有列出**多個具體角色**並標註親中/親美、鴿派/鷹派。")
-            else:
-                for col in ["x", "y"]:
-                    if col not in df.columns:
-                        df[col] = 0
-                fig = px.scatter(
-                    df,
-                    x="x",
-                    y="y",
-                    text="name_short",
-                    color="x",
-                    labels={"x": "← 親中 | 親美 →", "y": "← 經濟務實 | 安全鷹派 →"},
-                    title="地緣政治立場分佈圖",
-                )
-                fig.update_traces(textposition="top center")
-                fig.update_traces(hovertemplate="%{text}<br>x: %{x}<br>y: %{y}<extra></extra>")
-                fig.add_vline(x=0, line_dash="dash", line_color="gray")
-                fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                st.plotly_chart(fig, use_container_width=True)
-                if len(df) <= 1:
-                    st.info("目前僅萃取出 1 個實體，無法呈現光譜「分布」。請確認報告中「Cui Bono」或立場段落有列出**多個角色**並標註其親中/親美、鴿派/鷹派位置。")
-        else:
-            st.info("報告中未萃取出立場地圖資料。")
-
-    with tabs[2]:
-        st.caption("從報告時間軸或未來情境章節萃取之關鍵事件")
-        if visual_data.get("timeline") and visual_data["timeline"].get("events"):
-            df_time = pd.DataFrame(visual_data["timeline"]["events"])
-            st.dataframe(df_time, use_container_width=True)
-        else:
-            st.info("報告中未萃取出時間軸事件。")
+def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
+    """單一情報卡：標題、摘要、來源與「深度分析」按鈕。"""
+    emoji = item.get("emoji", "📌")
+    title = item.get("title", "（無標題）")
+    summary = item.get("summary", "")
+    source = item.get("source", "")
+    keywords = item.get("analysis_keywords", "") or title
+    with st.container():
+        st.markdown(f"### {emoji} {title}")
+        if source:
+            st.caption(f"來源：{source}")
+        if summary:
+            st.write(summary)
+        if st.button("🔍 深度分析 (Deep Dive)", key=f"feed_deep_dive_{index}", type="primary"):
+            st.session_state["query"] = keywords
+            st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
+            st.rerun()
 
 
 def parse_gemini_data(text: str) -> Dict[str, Any]:
@@ -5891,10 +5641,23 @@ def convert_data_to_md(data):
 # ==========================================
 # 5. UI
 # ==========================================
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
+
 with st.sidebar:
     st.title("全域觀點解析 V38.0")
     st.caption("✨ 新增：Tavily 搜尋 UI + 學術方法論詳解")
-    
+    page_options = ["🚀 全域分析 (Deep Analysis)", "📰 全球情報 (News Feed)"]
+    page_index = 0 if st.session_state["current_page"] == page_options[0] else 1
+    current_page = st.radio(
+        "導航",
+        options=page_options,
+        index=page_index,
+        key="nav_page",
+        label_visibility="collapsed",
+    )
+    st.session_state["current_page"] = current_page
+    st.markdown("---")
     analysis_mode = st.radio(
         "選擇分析引擎：",
         options=["全域深度解析 (Fusion)", "未來發展推演 (Scenario)"],
@@ -6634,819 +6397,686 @@ flowchart LR
         if export_data is not None:
             st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
-st.title(f"{analysis_mode.split(' ')[0]}")
-query = st.text_input("輸入議題關鍵字", placeholder="例如：台積電美國設廠爭議")
-focus_instruction = st.text_input(
-    "意圖導向 (選填)",
-    placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
-    help="引導關鍵字生成方向，留空則由系統自動生成。可填「請產出英文關鍵字」或「請同時給出英文搜尋詞」以加強非中文檢索。"
-)
-
-if 'result' not in st.session_state: st.session_state.result = None
-if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
-if 'sources' not in st.session_state: st.session_state.sources = None
-if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
-if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
-if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
-if 'keyword_plan' not in st.session_state: st.session_state.keyword_plan = None
-
-# ---------- Step 1: Generate Search Strategy ----------
-gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
-if gen_btn and query:
-    use_cache_enabled = st.session_state.get('use_cache', True)
-    if google_key:
-        with st.spinner("正在生成搜尋關鍵字..."):
-            expanded = generate_expanded_queries(
-                query, google_key, max_expansions=15, use_cache=use_cache_enabled,
-                focus_instruction=focus_instruction.strip() or None
-            )
-        kw_list = [q["query"] for q in expanded]
-    else:
-        kw_list = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析", f"{query} 最新發展", f"{query} 分析"]
-    st.session_state.keyword_plan = pd.DataFrame({"Keyword": kw_list, "Active": [True] * len(kw_list)})
-    st.success(f"已生成 {len(kw_list)} 個關鍵字，請在下方檢視並編輯後再執行搜尋。")
-    st.rerun()
-
-# ---------- Step 2: Review Strategy (editable table) ----------
-final_keywords = []
-if st.session_state.keyword_plan is not None:
-    st.markdown("**🕵️ 檢視與編輯搜尋策略**（勾選保留、取消勾選排除；可新增/刪除列）")
-    edited_df = st.data_editor(
-        st.session_state.keyword_plan,
-        num_rows="dynamic",
-        column_config={"Keyword": st.column_config.TextColumn("關鍵字", width="large"), "Active": st.column_config.CheckboxColumn("使用", default=True)},
-        use_container_width=True,
-        key="keyword_plan_editor"
+if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
+    render_news_feed_page(google_key, tavily_key)
+else:
+    st.title(f"{analysis_mode.split(' ')[0]}")
+    query = st.text_input(
+        "輸入議題關鍵字",
+        value=st.session_state.get("query", ""),
+        placeholder="例如：台積電美國設廠爭議",
+        key="query_input",
     )
-    st.session_state.keyword_plan = edited_df
-    final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
-    final_keywords = [k for k in final_keywords if k and k.strip()]
-    # 建議三：顯示上次執行時使用的英文/日文/韓文檢索關鍵字（僅供參考，不可編輯）
-    last_en = st.session_state.get("last_english_queries", [])
-    last_ja = st.session_state.get("last_japanese_queries", [])
-    last_ko = st.session_state.get("last_korean_queries", [])
-    if last_en and isinstance(last_en, list) and len(last_en) > 0:
-        with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
-            st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
-            for i, q in enumerate(last_en, 1):
-                st.text(f"{i}. {q}")
-    if (last_ja and isinstance(last_ja, list) and len(last_ja) > 0) or (last_ko and isinstance(last_ko, list) and len(last_ko) > 0):
-        with st.expander("🌏 日文／韓文檢索關鍵字（上次執行）", expanded=False):
-            st.caption("勾選亞洲並執行分析後，系統會自動產出日文與韓文查詢用於日本/韓國媒體檢索；僅供參考。")
-            if last_ja and len(last_ja) > 0:
-                st.markdown("**日文**")
-                for i, q in enumerate(last_ja, 1):
-                    st.text(f"{i}. {q}")
-            if last_ko and len(last_ko) > 0:
-                st.markdown("**韓文**")
-                for i, q in enumerate(last_ko, 1):
-                    st.text(f"{i}. {q}")
+    focus_instruction = st.text_input(
+        "意圖導向 (選填)",
+        placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
+        help="引導關鍵字生成方向，留空則由系統自動生成。可填「請產出英文關鍵字」或「請同時給出英文搜尋詞」以加強非中文檢索。"
+    )
 
-# ---------- Step 3: Execute Analysis ----------
-search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
+    if 'result' not in st.session_state: st.session_state.result = None
+    if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
+    if 'sources' not in st.session_state: st.session_state.sources = None
+    if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
+    if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
+    if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
+    if 'keyword_plan' not in st.session_state: st.session_state.keyword_plan = None
 
-if search_btn and query and tavily_key:
-    st.session_state.result = None
-    st.session_state.scenario_result = None
-    
-    # 決定使用的關鍵字：若有檢視過的策略則用編輯後列表，否則即時生成
-    if final_keywords:
-        dynamic_keywords = final_keywords
-    else:
-        dynamic_keywords = None  # 將在 status 內生成
-    
-    with st.status("🚀 啟動 V38.0 平衡報導分析引擎...", expanded=True) as status:
-        
-        if dynamic_keywords is None:
-            st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
-            use_cache_enabled = st.session_state.get('use_cache', True)
-            if google_key:
-                dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
-            else:
-                dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
-        else:
-            st.write("🧠 1. 使用您檢視/編輯後的搜尋策略...")
-        st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords[:10])}{' ...' if len(dynamic_keywords) > 10 else ''}")
-        
-        regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
-        st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-        _has_japan = any(kw in query for kw in ["日本", "自民黨", "岸田", "東京", "nhk", "日經"])
-        _has_asia = "亞洲" in str(selected_regions)
-        guard_desc = "分眾保底 (藍/綠/官方)"
-        if _has_japan or _has_asia:
-            guard_desc += " + 亞洲/日本國際媒體保底"
-        st.write(f"   ↳ 啟動機制：{guard_desc} + 熱度補完 (動態三軌)")
-        
-        # 驗證 Tavily Key
-        if not tavily_key:
-            st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
-            status.update(label="❌ 搜尋失敗", state="error", expanded=False)
-            st.stop()
-        
-        # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
+    # ---------- Step 1: Generate Search Strategy ----------
+    gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
+    if gen_btn and query:
         use_cache_enabled = st.session_state.get('use_cache', True)
-        
-        # === 測試搜尋功能（診斷用）===
-        # 先執行一個簡單的測試搜尋，驗證 API 是否正常
-        st.write("🧪 執行 API 連接測試...")
-        try:
-            test_tavily = TavilyClient(api_key=tavily_key)
-            test_response = test_tavily.search(query="台灣新聞", max_results=3, search_depth="basic")
-            if isinstance(test_response, dict) and 'results' in test_response:
-                test_count = len(test_response.get('results', []))
-                if test_count > 0:
-                    st.success(f"✅ API 測試成功：找到 {test_count} 筆測試結果")
-                    logger.info(f"API 測試成功：找到 {test_count} 筆結果")
-                else:
-                    st.warning(f"⚠️ API 測試：查詢 '台灣新聞' 返回 0 筆結果（API 可能正常，但查詢無結果）")
-                    logger.warning(f"API 測試：查詢 '台灣新聞' 返回 0 筆結果")
-            else:
-                st.error(f"❌ API 測試失敗：回應格式異常 - {type(test_response).__name__}")
-                logger.error(f"API 測試失敗：回應格式異常 - {type(test_response).__name__}")
-        except Exception as e:
-            error_str = str(e)
-            st.error(f"❌ API 測試失敗：{error_str[:200]}")
-            logger.error(f"API 測試失敗：{error_str[:300]}")
-            if "401" in error_str or "Unauthorized" in error_str:
-                st.error("認證失敗：請檢查 API Key 是否正確")
-            elif "429" in error_str:
-                st.error("配額問題：API 配額可能已用完")
-        
-        # 執行搜尋（整合所有功能）
-        st.write("🔍 開始執行完整搜尋...")
-        search_result = get_search_context(
-            query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
-            use_cache=use_cache_enabled, google_api_key=google_key,
-            enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
-        )
-        
-        if len(search_result) >= 8:
-            context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text = search_result[:8]
-        elif len(search_result) == 7:
-            context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
-            manipulation_signals_text = ""
-        else:
-            # 向後相容
-            context_text, sources, actual_query, is_strict_tw = search_result[:4]
-            stance_analysis = None
-            fact_check_results = None
-            consensus_analysis = None
-            manipulation_signals_text = ""
-        
-        st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
-        if is_strict_tw:
-            st.write(f"🛡️ 網域圍籬已啟動。")
-        
-        st.session_state.sources = sources
-        
-        # 顯示立場平衡分析結果
-        if stance_analysis and isinstance(stance_analysis, dict) and stance_analysis.get('missing_stances'):
-            st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
-            if isinstance(stance_analysis, dict) and stance_analysis.get('recommendations'):
-                with st.expander("🔍 查看平衡性建議", expanded=False):
-                    for rec in stance_analysis['recommendations']:
-                        st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
-        
-        st.session_state.stance_analysis = stance_analysis
-        st.session_state.fact_check_results = fact_check_results
-        st.session_state.consensus_analysis = consensus_analysis
-        
-        st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
-        cofacts_txt, cofacts_rumors = search_cofacts(query)
-        if cofacts_txt: 
-            context_text += f"\n{cofacts_txt}\n"
-            st.session_state.cofacts_rumors = cofacts_rumors
-        else:
-            st.session_state.cofacts_rumors = []
-        
-        # 事實查核結果顯示（方案 1）
-        if fact_check_results and isinstance(fact_check_results, dict):
-            false_count = len(fact_check_results.get('false_claims', []))
-            misleading_count = len(fact_check_results.get('misleading_claims', []))
-            if false_count > 0 or misleading_count > 0:
-                st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
-        
-        # 聲量權重分析
-        if sources:
-            st.write("📊 4. 執行聲量權重校正分析...")
-            volume_analysis = analyze_volume_weight(sources)
-            st.write(f"   ↳ 發現 {volume_analysis['duplicate_count']} 組重複論述，{volume_analysis['unique_count']} 篇獨特觀點")
-            st.session_state.volume_analysis = volume_analysis
-        else:
-            st.session_state.volume_analysis = None
-        
-        # 共識分析結果顯示（方案 3.3）
-        if consensus_analysis and isinstance(consensus_analysis, dict):
-            consensus_score = consensus_analysis.get('consensus_score', 0)
-            consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
-            st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
-        
-        # === 檢查來源數量是否足夠進行分析 ===
-        MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
-        sources_count = len(sources) if sources else 0
-        context_length = len(context_text) if context_text else 0
-        
-        if sources_count < MIN_SOURCES_REQUIRED:
-            # 檢查日誌以獲取更詳細的錯誤資訊
-            debug_info = ""
-            if sources_count == 0:
-                # 檢查查詢關鍵字是否可能太特定
-                query_words = query.split()
-                is_specific_query = len(query_words) >= 3
-                
-                debug_info = f"""
-                
-                **🔍 調試資訊：**
-                - 所有 Tavily API 搜尋任務都未返回結果
-                - API 測試：✅ 成功（說明 API 本身正常）
-                - 查詢關鍵字：`{query}` ({len(query_words)} 個關鍵字)
-                - 這可能表示：
-                  * 查詢關鍵字過於特定（{len(query_words)} 個關鍵字），在指定時間範圍內找不到相關資料
-                  * 網域過濾條件過於嚴格（已選定：{', '.join(selected_regions) if selected_regions else '無'}），排除了所有結果
-                  * 搜尋時間範圍過短（目前：{search_days} 天），相關內容可能不在這個時間範圍內
-                
-                **🧪 診斷步驟：**
-                1. 📅 **擴大搜尋時間範圍**：將「搜尋天數」改為 90 或 180 天
-                2. 🌐 **放寬區域限制**：暫時取消「僅限台灣來源」選項
-                3. 🔍 **簡化查詢關鍵字**：嘗試只使用主要關鍵字（例如：「周冠男」或「巨人傑」）
-                4. 📋 **檢查終端機日誌**：查看詳細的搜尋任務執行情況
-                """
-            
-            st.error(f"""
-            ❌ **搜尋結果不足，無法進行深度分析**
-            
-            **目前狀況：**
-            - 搜尋到 {sources_count} 篇來源（最少需要 {MIN_SOURCES_REQUIRED} 篇）
-            - Context 長度：{context_length} 字元
-            {debug_info}
-            
-            **可能原因：**
-            1. 查詢關鍵字過於特定或冷門，找不到足夠的相關資料
-            2. Tavily API 搜尋結果不足或 API 服務異常
-            3. 搜尋時間範圍設定過短（目前：{search_days} 天）
-            4. 網域圍籬過於嚴格（已選定區域：{', '.join(selected_regions) if selected_regions else '無'}）
-            5. Tavily API Key 無效、配額用完或服務暫時不可用
-            
-            **建議解決方案：**
-            1. 🔍 **調整查詢關鍵字**：使用更廣泛的關鍵字或同義詞
-            2. 📅 **擴大搜尋時間範圍**：增加「搜尋天數」設定（例如：改為 90 天或 180 天）
-            3. 🌐 **放寬區域限制**：取消「僅限台灣來源」選項，或選擇更多區域
-            4. 🔑 **檢查 API Key**：
-               - 在側邊欄點擊「驗證 API Key」按鈕
-               - 確認 Tavily API Key 是否有效且有足夠配額
-               - 檢查 [Tavily Dashboard](https://app.tavily.com/) 查看配額使用情況
-            5. 🔄 **重新搜尋**：點擊「開始分析」按鈕重新執行搜尋
-            6. 🧪 **測試搜尋**：嘗試使用簡單的關鍵字（如「台灣新聞」）測試 API 是否正常
-            
-            **注意：** 即使來源不足，系統仍可嘗試分析，但結果可能不夠完整。
-            """)
-            
-            # 詢問用戶是否仍要繼續分析
-            continue_anyway = st.checkbox("⚠️ 我了解風險，仍要繼續分析（不建議）", value=False)
-            if not continue_anyway:
-                status.update(label="❌ 分析已取消：來源不足", state="error", expanded=False)
-                st.stop()
-            else:
-                st.warning("⚠️ 您選擇繼續分析，但結果可能不夠完整或準確。")
-        
-        elif context_length < 500:
-            st.warning(f"""
-            ⚠️ **Context 內容過短**
-            
-            **目前狀況：**
-            - Context 長度：{context_length} 字元（建議至少 500 字元）
-            - 來源數量：{sources_count} 篇
-            
-            **可能原因：**
-            - 來源內容過短或無法取得完整內容
-            - 搜尋結果品質不佳
-            
-            **建議：** 嘗試調整搜尋參數或使用不同的查詢關鍵字。
-            """)
-        
-        st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
-        
-        mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-        analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
-
-        # 獲取 OpenAI API Key（如果有的話）
-        openai_api_key = st.session_state.get('openai_api_key', None)
-        openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
-        
-        try:
-            raw_report = run_strategic_analysis(
-                query, analysis_context, model_name, google_key,
-                mode=mode_code, fast_mode=False,
-                openai_api_key=openai_api_key, openai_model=openai_model,
-                manipulation_signals=manipulation_signals_text
-            )
-        except ChatGoogleGenerativeAIError as e:
-            # Gemini API 特定錯誤（通常是配額相關）
-            error_msg = str(e)
-            st.error(f"""
-            ❌ **API 錯誤**
-            
-            {error_msg}
-            
-            **額外建議：**
-            1. 如果已提供 OpenAI API Key，系統應該已自動嘗試降級
-            2. 檢查側邊欄是否已正確設定 OpenAI API Key
-            3. 確認 OpenAI API Key 是否有效
-            """)
-            status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-            logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
-            st.stop()
-        except Exception as e:
-            # 其他錯誤（包括 RetryError）
-            from tenacity import RetryError
-            error_msg = str(e)
-            error_type = type(e).__name__
-            
-            # 檢查是否為重試錯誤
-            if isinstance(e, RetryError) or "RetryError" in error_type:
-                # 提取原始錯誤
-                last_attempt = None
-                original_error = None
-                if hasattr(e, 'last_attempt') and e.last_attempt:
-                    try:
-                        if hasattr(e.last_attempt, 'exception'):
-                            original_error = e.last_attempt.exception()
-                            last_attempt = str(original_error) if original_error else None
-                        elif hasattr(e.last_attempt, 'result'):
-                            # 某些版本的 tenacity
-                            original_error = e.last_attempt.result()
-                            last_attempt = str(original_error) if original_error else None
-                    except:
-                        pass
-                
-                original_error_msg = last_attempt if last_attempt else error_msg
-                
-                # 檢查是否為配額相關錯誤，如果是且提供了 OpenAI API Key，嘗試降級
-                is_quota_error = (
-                    "RESOURCE_EXHAUSTED" in original_error_msg or 
-                    "quota" in original_error_msg.lower() or 
-                    "429" in original_error_msg or
-                    isinstance(original_error, ChatGoogleGenerativeAIError) and (
-                        "RESOURCE_EXHAUSTED" in str(original_error) or 
-                        "quota" in str(original_error).lower()
-                    )
+        if google_key:
+            with st.spinner("正在生成搜尋關鍵字..."):
+                expanded = generate_expanded_queries(
+                    query, google_key, max_expansions=15, use_cache=use_cache_enabled,
+                    focus_instruction=focus_instruction.strip() or None
                 )
-                
-                if is_quota_error and openai_api_key and OPENAI_AVAILABLE:
-                    try:
-                        status.update(label="🔄 Gemini 配額耗盡，自動切換到 OpenAI...", state="running")
-                        logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
-                        # 直接使用 OpenAI 完成分析
-                        raw_report = run_strategic_analysis(
-                            query, analysis_context, model_name, google_key,
-                            mode=mode_code, fast_mode=False,
-                            openai_api_key=openai_api_key, openai_model=openai_model,
-                            manipulation_signals=manipulation_signals_text
-                        )
-                        # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
-                        status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
-                        logger.info(f"成功降級到 OpenAI {openai_model} 並完成分析")
-                        # 繼續執行後續邏輯
-                    except Exception as e2:
-                        logger.error(f"降級到 OpenAI 失敗: {str(e2)}")
-                        st.error(f"""
-                        ❌ **API 調用失敗（重試後仍失敗）**
-                        
-                        **錯誤類型**：{error_type}
-                        
-                        **配額錯誤檢測**：已檢測到 Gemini API 配額耗盡
-                        
-                        **自動降級嘗試**：嘗試使用 OpenAI {openai_model} 降級，但失敗
-                        
-                        **降級錯誤**：{str(e2)[:300]}
-                        
-                        **解決方案：**
-                        1. 檢查 OpenAI API Key 是否正確
-                        2. 檢查 OpenAI 配額使用情況
-                        3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
-                        4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）
-                        
-                        **原始錯誤**：{original_error_msg[:500]}
-                        """)
-                        status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                        st.stop()
+            kw_list = [q["query"] for q in expanded]
+        else:
+            kw_list = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析", f"{query} 最新發展", f"{query} 分析"]
+        st.session_state.keyword_plan = pd.DataFrame({"Keyword": kw_list, "Active": [True] * len(kw_list)})
+        st.success(f"已生成 {len(kw_list)} 個關鍵字，請在下方檢視並編輯後再執行搜尋。")
+        st.rerun()
+
+    # ---------- Step 2: Review Strategy (editable table) ----------
+    final_keywords = []
+    if st.session_state.keyword_plan is not None:
+        st.markdown("**🕵️ 檢視與編輯搜尋策略**（勾選保留、取消勾選排除；可新增/刪除列）")
+        edited_df = st.data_editor(
+            st.session_state.keyword_plan,
+            num_rows="dynamic",
+            column_config={"Keyword": st.column_config.TextColumn("關鍵字", width="large"), "Active": st.column_config.CheckboxColumn("使用", default=True)},
+            use_container_width=True,
+            key="keyword_plan_editor"
+        )
+        st.session_state.keyword_plan = edited_df
+        final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
+        final_keywords = [k for k in final_keywords if k and k.strip()]
+        # 建議三：顯示上次執行時使用的英文/日文/韓文檢索關鍵字（僅供參考，不可編輯）
+        last_en = st.session_state.get("last_english_queries", [])
+        last_ja = st.session_state.get("last_japanese_queries", [])
+        last_ko = st.session_state.get("last_korean_queries", [])
+        if last_en and isinstance(last_en, list) and len(last_en) > 0:
+            with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
+                st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
+                for i, q in enumerate(last_en, 1):
+                    st.text(f"{i}. {q}")
+        if (last_ja and isinstance(last_ja, list) and len(last_ja) > 0) or (last_ko and isinstance(last_ko, list) and len(last_ko) > 0):
+            with st.expander("🌏 日文／韓文檢索關鍵字（上次執行）", expanded=False):
+                st.caption("勾選亞洲並執行分析後，系統會自動產出日文與韓文查詢用於日本/韓國媒體檢索；僅供參考。")
+                if last_ja and len(last_ja) > 0:
+                    st.markdown("**日文**")
+                    for i, q in enumerate(last_ja, 1):
+                        st.text(f"{i}. {q}")
+                if last_ko and len(last_ko) > 0:
+                    st.markdown("**韓文**")
+                    for i, q in enumerate(last_ko, 1):
+                        st.text(f"{i}. {q}")
+
+    # ---------- Step 3: Execute Analysis ----------
+    search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
+
+    if search_btn and query and tavily_key:
+        st.session_state.result = None
+        st.session_state.scenario_result = None
+
+        # 決定使用的關鍵字：若有檢視過的策略則用編輯後列表，否則即時生成
+        if final_keywords:
+            dynamic_keywords = final_keywords
+        else:
+            dynamic_keywords = None  # 將在 status 內生成
+
+        with st.status("🚀 啟動 V38.0 平衡報導分析引擎...", expanded=True) as status:
+
+            if dynamic_keywords is None:
+                st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
+                use_cache_enabled = st.session_state.get('use_cache', True)
+                if google_key:
+                    dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
                 else:
-                    # 不是配額錯誤，或沒有提供 OpenAI API Key
-                    error_display = f"""
-                    ❌ **API 調用失敗（重試後仍失敗）**
-                    
-                    **錯誤類型**：{error_type}
-                    
-                    **可能的原因：**
-                    1. API 配額已耗盡
-                    2. API Key 無效
-                    3. 網路連接問題
-                    4. API 服務暫時不可用
-                    
-                    **解決方案：**
-                    1. 檢查 API Key 是否正確
-                    2. 檢查配額使用情況：https://ai.dev/rate-limit
-                    3. 等待一段時間後重試
-                    """
-                    if not openai_api_key:
-                        error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
-                    error_display += f"5. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
-                    error_display += f"**原始錯誤**：{original_error_msg[:500]}"
-                    
-                    st.error(error_display)
-                    status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                    logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
-                    st.stop()
-            elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
-                st.error(f"""
-                ❌ **API 配額已耗盡**
-                
-                **錯誤詳情**：{error_msg[:300]}
-                
-                **解決方案：**
-                1. 檢查配額：https://ai.dev/rate-limit
-                2. 等待配額重置（通常每分鐘/每天重置）
-                3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
-                4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash
-                """)
+                    dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
             else:
-                st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
-            
-            status.update(label="❌ 分析失敗", state="error", expanded=False)
-            logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
-            with st.expander("🔍 錯誤詳情", expanded=False):
-                st.code(f"錯誤類型: {error_type}\n錯誤訊息: {error_msg}")
-            st.stop()
-        
-        # 驗證 AI 輸出格式
-        validation = validate_ai_output_format(raw_report, mode_code)
-        if validation['score'] < 70:
-            st.warning(f"⚠️ AI 輸出格式驗證分數: {validation['score']:.1f}/100")
-            if validation['missing_sections']:
-                st.warning(f"缺少章節: {', '.join(validation['missing_sections'])}")
-            if not validation['has_timeline']:
-                st.warning("⚠️ 未檢測到時間軸區塊")
-            if not validation['has_report']:
-                st.warning("⚠️ 未檢測到報告文本區塊")
-        
-        # 解析報告數據（確保 raw_report 不為 None）
-        if raw_report is None:
-            logger.error("raw_report 為 None，無法解析")
-            st.error("❌ AI 分析返回空結果，請重試")
-            status.update(label="❌ 分析失敗：返回空結果", state="error", expanded=False)
-            st.stop()
-        
-        parsed_data = parse_gemini_data(raw_report)
-        parsed_data['validation'] = validation  # 保存驗證結果
-        
-        # 驗證解析結果（安全檢查 report_text 類型）
-        report_text = parsed_data.get("report_text", "")
-        # 確保 report_text 是字符串類型
-        if not isinstance(report_text, str):
-            logger.warning(f"report_text 不是字符串類型: {type(report_text).__name__}，嘗試轉換")
+                st.write("🧠 1. 使用您檢視/編輯後的搜尋策略...")
+            st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords[:10])}{' ...' if len(dynamic_keywords) > 10 else ''}")
+
+            regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
+            st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
+            _has_japan = any(kw in query for kw in ["日本", "自民黨", "岸田", "東京", "nhk", "日經"])
+            _has_asia = "亞洲" in str(selected_regions)
+            guard_desc = "分眾保底 (藍/綠/官方)"
+            if _has_japan or _has_asia:
+                guard_desc += " + 亞洲/日本國際媒體保底"
+            st.write(f"   ↳ 啟動機制：{guard_desc} + 熱度補完 (動態三軌)")
+
+            # 驗證 Tavily Key
+            if not tavily_key:
+                st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
+                status.update(label="❌ 搜尋失敗", state="error", expanded=False)
+                st.stop()
+
+            # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
+            use_cache_enabled = st.session_state.get('use_cache', True)
+
+            # === 測試搜尋功能（診斷用）===
+            # 先執行一個簡單的測試搜尋，驗證 API 是否正常
+            st.write("🧪 執行 API 連接測試...")
             try:
-                report_text = str(report_text)
-                parsed_data["report_text"] = report_text
-            except Exception as e:
-                logger.error(f"無法將 report_text 轉換為字符串: {str(e)}")
-                report_text = ""
-        
-        if not report_text or (isinstance(report_text, str) and not report_text.strip()):
-            st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
-            # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
-            if raw_report:
-                # 移除 [DATA_TIMELINE] 區塊
-                if "### [DATA_TIMELINE]" in raw_report:
-                    parts = raw_report.split("### [DATA_TIMELINE]")
-                    if len(parts) > 1:
-                        remaining = parts[1]
-                        if "### [REPORT_TEXT]" in remaining:
-                            parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
-                        else:
-                            # 移除時間軸行
-                            lines = remaining.split('\n')
-                            report_lines = []
-                            for line in lines:
-                                if "|" in line and len(line.split("|")) >= 3:
-                                    parts_line = line.split("|")
-                                    if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
-                                        continue
-                                report_lines.append(line)
-                            parsed_data["report_text"] = '\n'.join(report_lines).strip()
+                test_tavily = TavilyClient(api_key=tavily_key)
+                test_response = test_tavily.search(query="台灣新聞", max_results=3, search_depth="basic")
+                if isinstance(test_response, dict) and 'results' in test_response:
+                    test_count = len(test_response.get('results', []))
+                    if test_count > 0:
+                        st.success(f"✅ API 測試成功：找到 {test_count} 筆測試結果")
+                        logger.info(f"API 測試成功：找到 {test_count} 筆結果")
+                    else:
+                        st.warning(f"⚠️ API 測試：查詢 '台灣新聞' 返回 0 筆結果（API 可能正常，但查詢無結果）")
+                        logger.warning(f"API 測試：查詢 '台灣新聞' 返回 0 筆結果")
                 else:
-                    # 如果完全沒有標記，使用整個文本
-                    parsed_data["report_text"] = raw_report.strip()
+                    st.error(f"❌ API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+                    logger.error(f"API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+            except Exception as e:
+                error_str = str(e)
+                st.error(f"❌ API 測試失敗：{error_str[:200]}")
+                logger.error(f"API 測試失敗：{error_str[:300]}")
+                if "401" in error_str or "Unauthorized" in error_str:
+                    st.error("認證失敗：請檢查 API Key 是否正確")
+                elif "429" in error_str:
+                    st.error("配額問題：API 配額可能已用完")
         
-        st.session_state.result = parsed_data
-        st.session_state.visual_war_room_data = None  # 新分析完成，清除舊視覺化快取
-
-        # 顯示解析統計
-        timeline_count = len(parsed_data.get("timeline", []))
-        report_length = len(parsed_data.get("report_text", ""))
-        st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
+            # 執行搜尋（整合所有功能）
+            st.write("🔍 開始執行完整搜尋...")
+            search_result = get_search_context(
+                query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
+                use_cache=use_cache_enabled, google_api_key=google_key,
+                enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
+            )
+        
+            if len(search_result) >= 8:
+                context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text = search_result[:8]
+            elif len(search_result) == 7:
+                context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
+                manipulation_signals_text = ""
+            else:
+                # 向後相容
+                context_text, sources, actual_query, is_strict_tw = search_result[:4]
+                stance_analysis = None
+                fact_check_results = None
+                consensus_analysis = None
+                manipulation_signals_text = ""
+        
+            st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
+            if is_strict_tw:
+                st.write(f"🛡️ 網域圍籬已啟動。")
+        
+            st.session_state.sources = sources
+        
+            # 顯示立場平衡分析結果
+            if stance_analysis and isinstance(stance_analysis, dict) and stance_analysis.get('missing_stances'):
+                st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
+                if isinstance(stance_analysis, dict) and stance_analysis.get('recommendations'):
+                    with st.expander("🔍 查看平衡性建議", expanded=False):
+                        for rec in stance_analysis['recommendations']:
+                            st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
+        
+            st.session_state.stance_analysis = stance_analysis
+            st.session_state.fact_check_results = fact_check_results
+            st.session_state.consensus_analysis = consensus_analysis
+        
+            st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
+            cofacts_txt, cofacts_rumors = search_cofacts(query)
+            if cofacts_txt: 
+                context_text += f"\n{cofacts_txt}\n"
+                st.session_state.cofacts_rumors = cofacts_rumors
+            else:
+                st.session_state.cofacts_rumors = []
+        
+            # 事實查核結果顯示（方案 1）
+            if fact_check_results and isinstance(fact_check_results, dict):
+                false_count = len(fact_check_results.get('false_claims', []))
+                misleading_count = len(fact_check_results.get('misleading_claims', []))
+                if false_count > 0 or misleading_count > 0:
+                    st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
+        
+            # 聲量權重分析
+            if sources:
+                st.write("📊 4. 執行聲量權重校正分析...")
+                volume_analysis = analyze_volume_weight(sources)
+                st.write(f"   ↳ 發現 {volume_analysis['duplicate_count']} 組重複論述，{volume_analysis['unique_count']} 篇獨特觀點")
+                st.session_state.volume_analysis = volume_analysis
+            else:
+                st.session_state.volume_analysis = None
+        
+            # 共識分析結果顯示（方案 3.3）
+            if consensus_analysis and isinstance(consensus_analysis, dict):
+                consensus_score = consensus_analysis.get('consensus_score', 0)
+                consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
+                st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
+        
+            # === 檢查來源數量是否足夠進行分析 ===
+            MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
+            sources_count = len(sources) if sources else 0
+            context_length = len(context_text) if context_text else 0
+        
+            if sources_count < MIN_SOURCES_REQUIRED:
+                # 檢查日誌以獲取更詳細的錯誤資訊
+                debug_info = ""
+                if sources_count == 0:
+                    # 檢查查詢關鍵字是否可能太特定
+                    query_words = query.split()
+                    is_specific_query = len(query_words) >= 3
+                
+                    debug_info = f"""
+                
+                    **🔍 調試資訊：**
+                    - 所有 Tavily API 搜尋任務都未返回結果
+                    - API 測試：✅ 成功（說明 API 本身正常）
+                    - 查詢關鍵字：`{query}` ({len(query_words)} 個關鍵字)
+                    - 這可能表示：
+                      * 查詢關鍵字過於特定（{len(query_words)} 個關鍵字），在指定時間範圍內找不到相關資料
+                      * 網域過濾條件過於嚴格（已選定：{', '.join(selected_regions) if selected_regions else '無'}），排除了所有結果
+                      * 搜尋時間範圍過短（目前：{search_days} 天），相關內容可能不在這個時間範圍內
+                
+                    **🧪 診斷步驟：**
+                    1. 📅 **擴大搜尋時間範圍**：將「搜尋天數」改為 90 或 180 天
+                    2. 🌐 **放寬區域限制**：暫時取消「僅限台灣來源」選項
+                    3. 🔍 **簡化查詢關鍵字**：嘗試只使用主要關鍵字（例如：「周冠男」或「巨人傑」）
+                    4. 📋 **檢查終端機日誌**：查看詳細的搜尋任務執行情況
+                    """
             
-        status.update(label="✅ 分析完成", state="complete", expanded=False)
-        
-    st.rerun()
-
-# Cofacts 謠言警告區塊
-if st.session_state.get('cofacts_rumors'):
-    st.markdown("---")
-    with st.container():
-        st.markdown("### ⚠️ Cofacts 查核警告")
-        st.warning("⚠️ 發現相關謠言或爭議訊息，請注意查證")
-        for rumor in st.session_state.cofacts_rumors:
-            rumor_type_emoji = "❌" if rumor.get('type') == 'NOT_ARTICLE' else "⚠️"
-            with st.expander(f"{rumor_type_emoji} {rumor.get('text', '')[:100]}... (判定: {rumor.get('type', 'UNKNOWN')})"):
-                st.write(f"**謠言內容**：{rumor.get('text', '')}")
-                if rumor.get('reply'):
-                    st.write(f"**查核回應**：{rumor.get('reply', '')}")
-
-# 聲量權重分析區塊
-if st.session_state.get('volume_analysis') and st.session_state.get('sources'):
-    st.markdown("---")
-    st.markdown("### 📊 聲量權重分析")
-    vol_analysis = st.session_state.volume_analysis
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("重複論述組數", vol_analysis['duplicate_count'])
-    with col2:
-        st.metric("獨特觀點數", vol_analysis['unique_count'])
-    
-    if vol_analysis['duplicate_groups']:
-        with st.expander("🔍 查看重複論述詳情", expanded=False):
-            for group in vol_analysis['duplicate_groups']:
-                st.write(f"**重複組 #{len(group)} 篇相似報導：**")
-                for idx in group[:5]:  # 只顯示前5篇
-                    source = st.session_state.sources[idx]
-                    st.write(f"- [{idx+1}] {source.get('title', 'No Title')}")
-                if len(group) > 5:
-                    st.caption(f"... 還有 {len(group)-5} 篇相似報導")
-
-if st.session_state.result:
-    # 確保 result 是字典類型
-    result = st.session_state.result
-    if isinstance(result, dict):
-        data = result
-    else:
-        logger.error(f"st.session_state.result 不是字典類型: {type(result).__name__}")
-        st.error(f"❌ 資料格式錯誤：預期字典類型，但收到 {type(result).__name__}")
-        st.stop()
-    
-    render_html_timeline(data.get("timeline", []), st.session_state.sources, blind_mode)
-    
-    # 視覺化圖表區塊
-    if PLOTLY_AVAILABLE and st.session_state.get('sources'):
-        st.markdown("---")
-        st.markdown("### 📊 資料視覺化分析")
-        
-        sources = st.session_state.sources
-        if sources:
-            tab1, tab2, tab3 = st.tabs(["📅 時間軸分佈", "🏛️ 媒體立場分佈", "📈 證據強度分佈"])
+                st.error(f"""
+                ❌ **搜尋結果不足，無法進行深度分析**
             
-            with tab1:
-                # 時間軸分佈圖
-                timeline_dates = []
-                for source in sources:
-                    date_str = source.get('final_date') or source.get('published_date', '')
-                    if date_str and date_str != "Missing":
+                **目前狀況：**
+                - 搜尋到 {sources_count} 篇來源（最少需要 {MIN_SOURCES_REQUIRED} 篇）
+                - Context 長度：{context_length} 字元
+                {debug_info}
+            
+                **可能原因：**
+                1. 查詢關鍵字過於特定或冷門，找不到足夠的相關資料
+                2. Tavily API 搜尋結果不足或 API 服務異常
+                3. 搜尋時間範圍設定過短（目前：{search_days} 天）
+                4. 網域圍籬過於嚴格（已選定區域：{', '.join(selected_regions) if selected_regions else '無'}）
+                5. Tavily API Key 無效、配額用完或服務暫時不可用
+            
+                **建議解決方案：**
+                1. 🔍 **調整查詢關鍵字**：使用更廣泛的關鍵字或同義詞
+                2. 📅 **擴大搜尋時間範圍**：增加「搜尋天數」設定（例如：改為 90 天或 180 天）
+                3. 🌐 **放寬區域限制**：取消「僅限台灣來源」選項，或選擇更多區域
+                4. 🔑 **檢查 API Key**：
+                   - 在側邊欄點擊「驗證 API Key」按鈕
+                   - 確認 Tavily API Key 是否有效且有足夠配額
+                   - 檢查 [Tavily Dashboard](https://app.tavily.com/) 查看配額使用情況
+                5. 🔄 **重新搜尋**：點擊「開始分析」按鈕重新執行搜尋
+                6. 🧪 **測試搜尋**：嘗試使用簡單的關鍵字（如「台灣新聞」）測試 API 是否正常
+            
+                **注意：** 即使來源不足，系統仍可嘗試分析，但結果可能不夠完整。
+                """)
+            
+                # 詢問用戶是否仍要繼續分析
+                continue_anyway = st.checkbox("⚠️ 我了解風險，仍要繼續分析（不建議）", value=False)
+                if not continue_anyway:
+                    status.update(label="❌ 分析已取消：來源不足", state="error", expanded=False)
+                    st.stop()
+                else:
+                    st.warning("⚠️ 您選擇繼續分析，但結果可能不夠完整或準確。")
+        
+            elif context_length < 500:
+                st.warning(f"""
+                ⚠️ **Context 內容過短**
+            
+                **目前狀況：**
+                - Context 長度：{context_length} 字元（建議至少 500 字元）
+                - 來源數量：{sources_count} 篇
+            
+                **可能原因：**
+                - 來源內容過短或無法取得完整內容
+                - 搜尋結果品質不佳
+            
+                **建議：** 嘗試調整搜尋參數或使用不同的查詢關鍵字。
+                """)
+        
+            st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
+        
+            mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
+            analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
+
+            # 獲取 OpenAI API Key（如果有的話）
+            openai_api_key = st.session_state.get('openai_api_key', None)
+            openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
+        
+            try:
+                raw_report = run_strategic_analysis(
+                    query, analysis_context, model_name, google_key,
+                    mode=mode_code, fast_mode=False,
+                    openai_api_key=openai_api_key, openai_model=openai_model,
+                    manipulation_signals=manipulation_signals_text
+                )
+            except ChatGoogleGenerativeAIError as e:
+                # Gemini API 特定錯誤（通常是配額相關）
+                error_msg = str(e)
+                st.error(f"""
+                ❌ **API 錯誤**
+            
+                {error_msg}
+            
+                **額外建議：**
+                1. 如果已提供 OpenAI API Key，系統應該已自動嘗試降級
+                2. 檢查側邊欄是否已正確設定 OpenAI API Key
+                3. 確認 OpenAI API Key 是否有效
+                """)
+                status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
+                st.stop()
+            except Exception as e:
+                # 其他錯誤（包括 RetryError）
+                from tenacity import RetryError
+                error_msg = str(e)
+                error_type = type(e).__name__
+            
+                # 檢查是否為重試錯誤
+                if isinstance(e, RetryError) or "RetryError" in error_type:
+                    # 提取原始錯誤
+                    last_attempt = None
+                    original_error = None
+                    if hasattr(e, 'last_attempt') and e.last_attempt:
                         try:
-                            date_obj = datetime.strptime(date_str[:10], "%Y-%m-%d")
-                            timeline_dates.append(date_obj)
+                            if hasattr(e.last_attempt, 'exception'):
+                                original_error = e.last_attempt.exception()
+                                last_attempt = str(original_error) if original_error else None
+                            elif hasattr(e.last_attempt, 'result'):
+                                # 某些版本的 tenacity
+                                original_error = e.last_attempt.result()
+                                last_attempt = str(original_error) if original_error else None
                         except:
                             pass
                 
-                if timeline_dates:
-                    fig = go.Figure()
-                    fig.add_trace(go.Histogram(
-                        x=timeline_dates,
-                        nbinsx=20,
-                        marker_color='#673ab7',
-                        name='報導數量'
-                    ))
-                    fig.update_layout(
-                        title='報導時間分佈',
-                        xaxis_title='日期',
-                        yaxis_title='報導數量',
-                        template='plotly_white'
-                    )
-                    st.plotly_chart(fig, width='stretch')
-                else:
-                    st.info("無有效日期資料可供視覺化")
-            
-            with tab2:
-                # 媒體立場分佈圓餅圖
-                category_counts = Counter()
-                for source in sources:
-                    category = source.get('source_category', 'OTHER')
-                    if category:
-                        category_counts[category] += 1
+                    original_error_msg = last_attempt if last_attempt else error_msg
                 
-                if category_counts:
-                    labels = []
-                    values = []
-                    colors_map = {
-                        'OFFICIAL': '#546e7a',
-                        'NEUTRAL': '#78909c',
-                        'BLUE': '#1565c0',
-                        'GREEN': '#2e7d32',
-                        'INDIE': '#fbc02d',
-                        'INTL': '#f57c00',
-                        'CHINA': '#d32f2f',
-                        'FARM': '#ef6c00',
-                        'SOCIAL': '#607d8b',
-                        'OTHER': '#9e9e9e'
-                    }
-                    
-                    colors = []
-                    for cat, count in category_counts.most_common():
-                        labels.append(get_category_meta(cat)[0])
-                        values.append(count)
-                        colors.append(colors_map.get(cat, '#9e9e9e'))
-                    
-                    fig = go.Figure(data=[go.Pie(
-                        labels=labels,
-                        values=values,
-                        marker=dict(colors=colors),
-                        hole=0.4
-                    )])
-                    fig.update_layout(
-                        title='媒體立場分佈',
-                        template='plotly_white'
+                    # 檢查是否為配額相關錯誤，如果是且提供了 OpenAI API Key，嘗試降級
+                    is_quota_error = (
+                        "RESOURCE_EXHAUSTED" in original_error_msg or 
+                        "quota" in original_error_msg.lower() or 
+                        "429" in original_error_msg or
+                        isinstance(original_error, ChatGoogleGenerativeAIError) and (
+                            "RESOURCE_EXHAUSTED" in str(original_error) or 
+                            "quota" in str(original_error).lower()
+                        )
                     )
-                    st.plotly_chart(fig, width='stretch')
-                else:
-                    st.info("無媒體分類資料")
-            
-            with tab3:
-                # 證據強度分佈直方圖
-                evidence_counts = Counter()
-                for source in sources:
-                    level = source.get('evidence_level', '中等')
-                    evidence_counts[level] += 1
                 
-                if evidence_counts:
-                    levels = ['強', '中等', '弱']
-                    counts = [evidence_counts.get(level, 0) for level in levels]
-                    colors = ['#4caf50', '#ffc107', '#f44336']
+                    if is_quota_error and openai_api_key and OPENAI_AVAILABLE:
+                        try:
+                            status.update(label="🔄 Gemini 配額耗盡，自動切換到 OpenAI...", state="running")
+                            logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
+                            # 直接使用 OpenAI 完成分析
+                            raw_report = run_strategic_analysis(
+                                query, analysis_context, model_name, google_key,
+                                mode=mode_code, fast_mode=False,
+                                openai_api_key=openai_api_key, openai_model=openai_model,
+                                manipulation_signals=manipulation_signals_text
+                            )
+                            # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
+                            status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
+                            logger.info(f"成功降級到 OpenAI {openai_model} 並完成分析")
+                            # 繼續執行後續邏輯
+                        except Exception as e2:
+                            logger.error(f"降級到 OpenAI 失敗: {str(e2)}")
+                            st.error(f"""
+                            ❌ **API 調用失敗（重試後仍失敗）**
+                        
+                            **錯誤類型**：{error_type}
+                        
+                            **配額錯誤檢測**：已檢測到 Gemini API 配額耗盡
+                        
+                            **自動降級嘗試**：嘗試使用 OpenAI {openai_model} 降級，但失敗
+                        
+                            **降級錯誤**：{str(e2)[:300]}
+                        
+                            **解決方案：**
+                            1. 檢查 OpenAI API Key 是否正確
+                            2. 檢查 OpenAI 配額使用情況
+                            3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
+                            4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）
+                        
+                            **原始錯誤**：{original_error_msg[:500]}
+                            """)
+                            status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                            st.stop()
+                    else:
+                        # 不是配額錯誤，或沒有提供 OpenAI API Key
+                        error_display = f"""
+                        ❌ **API 調用失敗（重試後仍失敗）**
                     
-                    fig = go.Figure(data=[go.Bar(
-                        x=levels,
-                        y=counts,
-                        marker_color=colors,
-                        text=counts,
-                        textposition='auto'
-                    )])
-                    fig.update_layout(
-                        title='證據強度分佈',
-                        xaxis_title='證據強度',
-                        yaxis_title='報導數量',
-                        template='plotly_white'
-                    )
-                    st.plotly_chart(fig, width='stretch')
+                        **錯誤類型**：{error_type}
+                    
+                        **可能的原因：**
+                        1. API 配額已耗盡
+                        2. API Key 無效
+                        3. 網路連接問題
+                        4. API 服務暫時不可用
+                    
+                        **解決方案：**
+                        1. 檢查 API Key 是否正確
+                        2. 檢查配額使用情況：https://ai.dev/rate-limit
+                        3. 等待一段時間後重試
+                        """
+                        if not openai_api_key:
+                            error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
+                        error_display += f"5. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                        error_display += f"**原始錯誤**：{original_error_msg[:500]}"
+                    
+                        st.error(error_display)
+                        status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                        logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
+                        st.stop()
+                elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
+                    st.error(f"""
+                    ❌ **API 配額已耗盡**
+                
+                    **錯誤詳情**：{error_msg[:300]}
+                
+                    **解決方案：**
+                    1. 檢查配額：https://ai.dev/rate-limit
+                    2. 等待配額重置（通常每分鐘/每天重置）
+                    3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
+                    4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash
+                    """)
                 else:
-                    st.info("無證據強度資料")
+                    st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
+            
+                status.update(label="❌ 分析失敗", state="error", expanded=False)
+                logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
+                with st.expander("🔍 錯誤詳情", expanded=False):
+                    st.code(f"錯誤類型: {error_type}\n錯誤訊息: {error_msg}")
+                st.stop()
+        
+            # 驗證 AI 輸出格式
+            validation = validate_ai_output_format(raw_report, mode_code)
+            if validation['score'] < 70:
+                st.warning(f"⚠️ AI 輸出格式驗證分數: {validation['score']:.1f}/100")
+                if validation['missing_sections']:
+                    st.warning(f"缺少章節: {', '.join(validation['missing_sections'])}")
+                if not validation['has_timeline']:
+                    st.warning("⚠️ 未檢測到時間軸區塊")
+                if not validation['has_report']:
+                    st.warning("⚠️ 未檢測到報告文本區塊")
+        
+            # 解析報告數據（確保 raw_report 不為 None）
+            if raw_report is None:
+                logger.error("raw_report 為 None，無法解析")
+                st.error("❌ AI 分析返回空結果，請重試")
+                status.update(label="❌ 分析失敗：返回空結果", state="error", expanded=False)
+                st.stop()
+        
+            parsed_data = parse_gemini_data(raw_report)
+            parsed_data['validation'] = validation  # 保存驗證結果
+        
+            # 驗證解析結果（安全檢查 report_text 類型）
+            report_text = parsed_data.get("report_text", "")
+            # 確保 report_text 是字符串類型
+            if not isinstance(report_text, str):
+                logger.warning(f"report_text 不是字符串類型: {type(report_text).__name__}，嘗試轉換")
+                try:
+                    report_text = str(report_text)
+                    parsed_data["report_text"] = report_text
+                except Exception as e:
+                    logger.error(f"無法將 report_text 轉換為字符串: {str(e)}")
+                    report_text = ""
+        
+            if not report_text or (isinstance(report_text, str) and not report_text.strip()):
+                st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
+                # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
+                if raw_report:
+                    # 移除 [DATA_TIMELINE] 區塊
+                    if "### [DATA_TIMELINE]" in raw_report:
+                        parts = raw_report.split("### [DATA_TIMELINE]")
+                        if len(parts) > 1:
+                            remaining = parts[1]
+                            if "### [REPORT_TEXT]" in remaining:
+                                parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
+                            else:
+                                # 移除時間軸行
+                                lines = remaining.split('\n')
+                                report_lines = []
+                                for line in lines:
+                                    if "|" in line and len(line.split("|")) >= 3:
+                                        parts_line = line.split("|")
+                                        if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
+                                            continue
+                                    report_lines.append(line)
+                                parsed_data["report_text"] = '\n'.join(report_lines).strip()
+                    else:
+                        # 如果完全沒有標記，使用整個文本
+                        parsed_data["report_text"] = raw_report.strip()
+        
+            st.session_state.result = parsed_data
 
-    st.markdown("---")
-    st.markdown("### 📝 平衡報導分析")
-    
-    report_text = data.get("report_text", "")
-    
-    # 檢查報告內容是否為空
-    if not report_text or not report_text.strip():
-        st.warning("⚠️ 報告內容為空。可能的原因：")
-        st.info("""
-        1. AI 返回的格式不符合預期
-        2. 解析過程中出現錯誤
-        3. 請檢查終端機/控制台的錯誤訊息
-        
-        **建議：**
-        - 嘗試重新執行分析
-        - 檢查 API 金鑰是否正確
-        - 查看原始返回數據（可在調試模式下）
-        """)
-        
-        # 顯示調試信息
-        with st.expander("🔍 調試信息", expanded=False):
-            st.write("**原始數據結構：**")
-            st.json({
-                "has_timeline": len(data.get("timeline", [])) > 0,
-                "timeline_count": len(data.get("timeline", [])),
-                "report_text_length": len(report_text),
-                "report_text_preview": report_text[:500] if report_text else "（空）"
-            })
-    else:
-        # 清理報告文本中的過多破折號
-        cleaned_report = report_text
-        
-        # === 關鍵修復：處理轉義字符問題 ===
-        # 確保內容中的字面量 \n 已經完全消失
-        cleaned_report = cleaned_report.replace('\\n', '\n')
-        cleaned_report = cleaned_report.replace('\\"', '"')
-        
-        # 移除連續超過 10 個破折號的行
-        cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
-        
-        # 移除只有破折號的行（保留表格分隔符）
-        lines = cleaned_report.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            # 保留表格分隔符（|:---:| 格式）
-            if re.match(r'^\|[\s:-]+\|', line):
-                cleaned_lines.append(line)
-            # 跳過只有破折號的行（超過 5 個）
-            elif re.match(r'^-{5,}\s*$', line):
-                continue
-            else:
-                cleaned_lines.append(line)
-        cleaned_report = '\n'.join(cleaned_lines)
-        
-        # === 增強：確保表格前後有換行 ===
-        # 尋找表格行並在其前後添加空行，以助於 markdown 解析器識別
-        cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
-        cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
-        
-        formatted_text = format_citation_style(cleaned_report)
-        html_content = markdown.markdown(formatted_text, extensions=['tables'])
-        st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+            # 顯示解析統計
+            timeline_count = len(parsed_data.get("timeline", []))
+            report_length = len(parsed_data.get("report_text", ""))
+            st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
+            
+            status.update(label="✅ 分析完成", state="complete", expanded=False)
 
-    # 視覺化戰情室（Phase 3）：報告產出後可啟動
-    if report_text and report_text.strip():
+        st.rerun()
+
+    # Cofacts 謠言警告區塊
+    if st.session_state.get('cofacts_rumors'):
         st.markdown("---")
-        if st.session_state.get("visual_war_room_data"):
-            if st.session_state.get("visual_war_room_fallback"):
-                st.info("⚠️ 無法從報告中萃取出完整視覺化資料（網絡圖、立場圖需 LLM 解析）。以下僅顯示由「報告時間軸／來源列表」產生的部分內容。")
-            render_visual_war_room(st.session_state.visual_war_room_data)
-        if st.button("📊 啟動視覺化戰情室 (Visual War Room)", key="visual_war_room_btn"):
-            if not google_key or not google_key.strip():
-                st.error("請在側邊欄輸入 Gemini API Key 以啟用視覺化戰情室。")
-            else:
-                with st.spinner("正在從報告萃取視覺化資料…"):
-                    vdata = generate_visual_data(report_text, google_key)
-                if vdata:
-                    st.session_state.visual_war_room_data = vdata
-                    st.session_state.visual_war_room_fallback = False
-                    st.rerun()
-                else:
-                    # 從已解析的報告時間軸、來源與「報告內文」規則萃出 network/stance，至少顯示時間軸與部分網絡/立場
-                    fallback = build_visual_data_fallback(
-                        data,
-                        st.session_state.get("sources"),
-                        report_text=report_text,
-                    )
-                    st.session_state.visual_war_room_data = fallback
-                    st.session_state.visual_war_room_fallback = True
-                    st.rerun()
-    
-    if "未來" not in analysis_mode and not st.session_state.scenario_result:
+        with st.container():
+            st.markdown("### ⚠️ Cofacts 查核警告")
+            st.warning("⚠️ 發現相關謠言或爭議訊息，請注意查證")
+            for rumor in st.session_state.cofacts_rumors:
+                rumor_type_emoji = "❌" if rumor.get('type') == 'NOT_ARTICLE' else "⚠️"
+                with st.expander(f"{rumor_type_emoji} {rumor.get('text', '')[:100]}... (判定: {rumor.get('type', 'UNKNOWN')})"):
+                    st.write(f"**謠言內容**：{rumor.get('text', '')}")
+                    if rumor.get('reply'):
+                        st.write(f"**查核回應**：{rumor.get('reply', '')}")
+
+    # 聲量權重分析區塊
+    if st.session_state.get('volume_analysis') and st.session_state.get('sources'):
         st.markdown("---")
-        if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
-            with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
-                current_report = data.get("report_text", "")
-                # 獲取 OpenAI API Key（如果有的話）
-                openai_api_key = st.session_state.get('openai_api_key', None)
-                openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
+        st.markdown("### 📊 聲量權重分析")
+        vol_analysis = st.session_state.volume_analysis
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("重複論述組數", vol_analysis['duplicate_count'])
+        with col2:
+            st.metric("獨特觀點數", vol_analysis['unique_count'])
+    
+        if vol_analysis['duplicate_groups']:
+            with st.expander("🔍 查看重複論述詳情", expanded=False):
+                for group in vol_analysis['duplicate_groups']:
+                    st.write(f"**重複組 #{len(group)} 篇相似報導：**")
+                    for idx in group[:5]:  # 只顯示前5篇
+                        source = st.session_state.sources[idx]
+                        st.write(f"- [{idx+1}] {source.get('title', 'No Title')}")
+                    if len(group) > 5:
+                        st.caption(f"... 還有 {len(group)-5} 篇相似報導")
+
+    if st.session_state.result:
+        # 確保 result 是字典類型
+        result = st.session_state.result
+        if isinstance(result, dict):
+            data = result
+        else:
+            logger.error(f"st.session_state.result 不是字典類型: {type(result).__name__}")
+            st.error(f"❌ 資料格式錯誤：預期字典類型，但收到 {type(result).__name__}")
+            st.stop()
+    
+        render_html_timeline(data.get("timeline", []), st.session_state.sources, blind_mode)
+
+        st.markdown("---")
+        st.markdown("### 📝 平衡報導分析")
+    
+        report_text = data.get("report_text", "")
+    
+        # 檢查報告內容是否為空
+        if not report_text or not report_text.strip():
+            st.warning("⚠️ 報告內容為空。可能的原因：")
+            st.info("""
+            1. AI 返回的格式不符合預期
+            2. 解析過程中出現錯誤
+            3. 請檢查終端機/控制台的錯誤訊息
+        
+            **建議：**
+            - 嘗試重新執行分析
+            - 檢查 API 金鑰是否正確
+            - 查看原始返回數據（可在調試模式下）
+            """)
+        
+            # 顯示調試信息
+            with st.expander("🔍 調試信息", expanded=False):
+                st.write("**原始數據結構：**")
+                st.json({
+                    "has_timeline": len(data.get("timeline", [])) > 0,
+                    "timeline_count": len(data.get("timeline", [])),
+                    "report_text_length": len(report_text),
+                    "report_text_preview": report_text[:500] if report_text else "（空）"
+                })
+        else:
+            # 清理報告文本中的過多破折號
+            cleaned_report = report_text
+        
+            # === 關鍵修復：處理轉義字符問題 ===
+            # 確保內容中的字面量 \n 已經完全消失
+            cleaned_report = cleaned_report.replace('\\n', '\n')
+            cleaned_report = cleaned_report.replace('\\"', '"')
+        
+            # 移除連續超過 10 個破折號的行
+            cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
+        
+            # 移除只有破折號的行（保留表格分隔符）
+            lines = cleaned_report.split('\n')
+            cleaned_lines = []
+            for line in lines:
+                # 保留表格分隔符（|:---:| 格式）
+                if re.match(r'^\|[\s:-]+\|', line):
+                    cleaned_lines.append(line)
+                # 跳過只有破折號的行（超過 5 個）
+                elif re.match(r'^-{5,}\s*$', line):
+                    continue
+                else:
+                    cleaned_lines.append(line)
+            cleaned_report = '\n'.join(cleaned_lines)
+        
+            # === 增強：確保表格前後有換行 ===
+            # 尋找表格行並在其前後添加空行，以助於 markdown 解析器識別
+            cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
+            cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
+        
+            formatted_text = format_citation_style(cleaned_report)
+            html_content = markdown.markdown(formatted_text, extensions=['tables'])
+            st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+
+        if "未來" not in analysis_mode and not st.session_state.scenario_result:
+            st.markdown("---")
+            if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
+                with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
+                    current_report = data.get("report_text", "")
+                    # 獲取 OpenAI API Key（如果有的話）
+                    openai_api_key = st.session_state.get('openai_api_key', None)
+                    openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
                 
-                raw_text = run_strategic_analysis(
-                    query, current_report, model_name, google_key, 
-                    mode="DEEP_SCENARIO",
-                    openai_api_key=openai_api_key, openai_model=openai_model
-                )
-                st.session_state.scenario_result = parse_gemini_data(raw_text) 
-                st.rerun()
+                    raw_text = run_strategic_analysis(
+                        query, current_report, model_name, google_key, 
+                        mode="DEEP_SCENARIO",
+                        openai_api_key=openai_api_key, openai_model=openai_model
+                    )
+                    st.session_state.scenario_result = parse_gemini_data(raw_text) 
+                    st.rerun()
 
-if st.session_state.scenario_result:
-    st.markdown("---")
-    st.markdown("### 🔮 未來發展推演報告")
-    scenario_data = st.session_state.scenario_result
-    formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
-    html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
+    if st.session_state.scenario_result:
+        st.markdown("---")
+        st.markdown("### 🔮 未來發展推演報告")
+        scenario_data = st.session_state.scenario_result
+        formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
+        html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
+        st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
 
-if st.session_state.sources:
-    st.markdown("---")
-    st.markdown("### 📚 引用文獻列表")
-    md_table = "| 編號 | 媒體/網域 | 標題摘要 | 證據強度 | 連結 |\n|:---:|:---|:---|:---|:---|\n"
-    for i, s in enumerate(st.session_state.sources):
-        domain = get_domain_name(s.get('url'))
+    if st.session_state.sources:
+        st.markdown("---")
+        st.markdown("### 📚 引用文獻列表")
+        md_table = "| 編號 | 媒體/網域 | 標題摘要 | 證據強度 | 連結 |\n|:---:|:---|:---|:---|:---|\n"
+        for i, s in enumerate(st.session_state.sources):
+            domain = get_domain_name(s.get('url'))
         
-        media_name = domain
-        for k, v in DOMAIN_NAME_MAP.items():
-            if k in domain: media_name = v
+            media_name = domain
+            for k, v in DOMAIN_NAME_MAP.items():
+                if k in domain: media_name = v
             
-        if blind_mode: media_name = "*****"
+            if blind_mode: media_name = "*****"
         
-        title = s.get('title', 'No Title')
-        if len(title) > TITLE_TRUNCATE_LENGTH: title = title[:TITLE_TRUNCATE_LENGTH] + "..."
+            title = s.get('title', 'No Title')
+            if len(title) > TITLE_TRUNCATE_LENGTH: title = title[:TITLE_TRUNCATE_LENGTH] + "..."
         
-        # 顯示證據強度標記
-        evidence_level = s.get('evidence_level', '中等')
-        evidence_emoji = (
-            "🟢" if evidence_level in ("強", "極強") else
-            "🟡" if evidence_level in ("中等", "中強") else
-            "🟠" if evidence_level == "中弱" else "🔴"
-        )
-        url = s.get('url')
-        evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
-        md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
-    st.markdown(md_table)
+            # 顯示證據強度標記
+            evidence_level = s.get('evidence_level', '中等')
+            evidence_emoji = (
+                "🟢" if evidence_level in ("強", "極強") else
+                "🟡" if evidence_level in ("中等", "中強") else
+                "🟠" if evidence_level == "中弱" else "🔴"
+            )
+            url = s.get('url')
+            evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
+            md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
+        st.markdown(md_table)
