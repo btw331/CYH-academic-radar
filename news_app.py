@@ -5225,10 +5225,11 @@ def _summarize_feed_with_llm(
 - title：吸引人的繁體中文標題
 - summary：2～3 句繁體中文摘要
 - source：來源網域或媒體名（從原文擷取或推斷）
+- url：該則新聞的完整連結（從原文中「URL:」後面的網址**原樣複製**，若無則空字串 ""）
 - analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準）
 
-請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, analysis_keywords。"""
-    user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
+請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, url, analysis_keywords。"""
+    user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。**每則的 url 請從對應原文的「URL:」後方完整複製。**\n\n{raw_news_text[:20000]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
         if not raw:
@@ -5245,6 +5246,7 @@ def _summarize_feed_with_llm(
                 "title": (it.get("title") or "").strip() or "（無標題）",
                 "summary": (it.get("summary") or "").strip() or "",
                 "source": (it.get("source") or "").strip() or "",
+                "url": (it.get("url") or "").strip() or "",
                 "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
             })
         return out
@@ -5309,6 +5311,14 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
             for it in summarized:
                 it["continent"] = continent
                 it["topic"] = topic
+                # 若 LLM 未回傳 url，依標題從原始結果匹配並附上連結
+                if not (it.get("url") or "").strip() and raw_items:
+                    llm_title = (it.get("title") or "").strip()
+                    for raw in raw_items:
+                        raw_title = (raw.get("title") or "").strip()
+                        if raw_title and llm_title and (raw_title[:30] in llm_title or llm_title[:30] in raw_title or SequenceMatcher(None, llm_title[:50], raw_title[:50]).ratio() > 0.5):
+                            it["url"] = (raw.get("url") or "").strip()
+                            break
                 all_items.append(it)
     except Exception as e:
         logger.error("fetch_intelligence_feed: Tavily 初始化或搜尋失敗: %s", str(e))
@@ -5366,16 +5376,20 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
 
 
 def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
-    """單一情報卡：標題、摘要、來源與「深度分析」按鈕。"""
+    """單一情報卡：標題、摘要、來源（含連結）、「深度分析」按鈕。"""
     emoji = item.get("emoji", "📌")
     title = item.get("title", "（無標題）")
     summary = item.get("summary", "")
     source = item.get("source", "")
+    url = (item.get("url") or "").strip()
     keywords = item.get("analysis_keywords", "") or title
     with st.container():
         st.markdown(f"### {emoji} {title}")
-        if source:
-            st.caption(f"來源：{source}")
+        if source or url:
+            if url and url.startswith(("http://", "https://")):
+                st.caption(f"來源：[{source or url}]({url})")
+            else:
+                st.caption(f"來源：{source}" if source else "")
         if summary:
             st.write(summary)
         if st.button("🔍 深度分析 (Deep Dive)", key=f"feed_deep_dive_{index}", type="primary"):
