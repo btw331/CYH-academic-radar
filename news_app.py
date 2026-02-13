@@ -5465,7 +5465,7 @@ def _summarize_continent_feed_with_llm(
     依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要。
     """
     if not api_key or not (raw_news_text or "").strip():
-        return []
+        return [], "未提供 API Key 或無內容"
     system_prompt = """你是資深情報編輯。請將提供的原始新聞**綜整**成「今日重要要聞」：可合併相似主題，並為每則標註類型與**戰略視角**（Why does this matter?）。
 
 **風格要求（重要）**：
@@ -5487,10 +5487,10 @@ def _summarize_continent_feed_with_llm(
     try:
         raw = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_provider, api_key)
         if not raw:
-            return []
+            return [], f"{llm_provider} 回傳為空"
         items = _extract_json_list_from_llm_raw(raw)
         if not items or not isinstance(items, list):
-            return []
+            return [], f"{llm_provider} 回傳無法解析為 JSON 陣列（可能為 thinking 模型格式或截斷）"
         out = []
         for it in items:
             if not isinstance(it, dict):
@@ -5508,10 +5508,10 @@ def _summarize_continent_feed_with_llm(
                 "url": (it.get("url") or "").strip() or "",
                 "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
             })
-        return out
+        return out, None
     except Exception as e:
         logger.error("_summarize_continent_feed_with_llm: 摘要失敗: %s", str(e))
-        return []
+        return [], str(e)
 
 
 def _infer_topic_from_text(title: str, content: str) -> str:
@@ -5569,6 +5569,8 @@ def fetch_intelligence_feed_tavily(
         return []
     all_items: List[Dict[str, Any]] = []
     use_llm = bool(llm_api_key and (llm_api_key or "").strip())
+    if use_llm:
+        st.session_state.pop("feed_llm_last_error", None)
     include_domains: Optional[List[str]] = None
     if use_whitelist:
         include_domains = _feed_whitelist_domains()
@@ -5615,13 +5617,17 @@ def fetch_intelligence_feed_tavily(
             raw_news_text = "\n\n".join(lines)
             if use_llm:
                 logger.info("fetch_intelligence_feed_tavily: 使用 LLM 摘要 %s 模型=%s 洲=%s", llm_provider, llm_model, continent)
-                summarized = _summarize_continent_feed_with_llm(
+                summarized, llm_err = _summarize_continent_feed_with_llm(
                     raw_news_text, llm_api_key, continent,
                     llm_provider=llm_provider, llm_model=llm_model,
                 )
                 if not summarized:
-                    logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s provider=%s", continent, llm_provider)
+                    logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s provider=%s err=%s", continent, llm_provider, llm_err or "")
                     summarized = _tavily_raw_to_feed_items(raw_items, continent)
+                    if llm_err:
+                        st.session_state["feed_llm_last_error"] = llm_err
+                else:
+                    st.session_state.pop("feed_llm_last_error", None)
             else:
                 logger.info("fetch_intelligence_feed_tavily: 未提供 LLM Key，直接顯示 Tavily 原文 洲=%s", continent)
                 summarized = _tavily_raw_to_feed_items(raw_items, continent)
@@ -5828,29 +5834,38 @@ def fetch_intelligence_feed_rss(
         return _rss_fallback_from_raw(raw)
 
 
-def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = "gemini-2.5-flash") -> None:
+def render_news_feed_page(
+    google_key: str,
+    tavily_key: str,
+    gemini_model: str = "gemini-2.5-flash",
+    feed_llm_provider: Optional[str] = None,
+    feed_llm_key: Optional[str] = None,
+    feed_llm_model: Optional[str] = None,
+) -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；摘要與翻譯依側欄選擇的 LLM（Gemini/Grok/OpenRouter）執行。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技；摘要依傳入的 feed_llm_* 或 session 決定 LLM。
     """
-    # 強制以「目前選擇的 LLM」+ session 內已存的 key 決定用哪個 API（不依賴側欄本輪是否寫入 feed_llm_*）
-    llm_provider = st.session_state.get("llm_provider", "Gemini")
-    grok_key = (st.session_state.get("grok_api_key") or "").strip()
-    openrouter_key = (st.session_state.get("openrouter_api_key") or "").strip()
-    google_key_stored = (st.session_state.get("google_api_key") or "").strip()
-    google_key_this_run = (google_key or "").strip()
+    # 若呼叫端有傳入 feed_llm_* 則優先使用（與側欄同一輪計算）；否則從 session 推算
+    if feed_llm_provider is None or feed_llm_key is None or feed_llm_model is None:
+        llm_provider = st.session_state.get("llm_provider", "Gemini")
+        grok_key = (st.session_state.get("grok_api_key") or "").strip()
+        openrouter_key = (st.session_state.get("openrouter_api_key") or "").strip()
+        google_key_stored = (st.session_state.get("google_api_key") or "").strip()
+        google_key_this_run = (google_key or "").strip()
+        if llm_provider == "Grok" and grok_key:
+            feed_llm_provider = "Grok"
+            feed_llm_key = grok_key
+            feed_llm_model = "grok-2"
+        elif llm_provider == "OpenRouter" and openrouter_key:
+            feed_llm_provider = "OpenRouter"
+            feed_llm_key = openrouter_key
+            feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+        else:
+            feed_llm_provider = "Gemini"
+            feed_llm_key = google_key_this_run or google_key_stored or None
+            feed_llm_model = gemini_model or st.session_state.get("gemini_model", "gemini-2.5-flash")
 
-    if llm_provider == "Grok" and grok_key:
-        feed_llm_provider = "Grok"
-        feed_llm_key = grok_key
-        feed_llm_model = "grok-2"
-    elif llm_provider == "OpenRouter" and openrouter_key:
-        feed_llm_provider = "OpenRouter"
-        feed_llm_key = openrouter_key
-        feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    else:
-        feed_llm_provider = "Gemini"
-        feed_llm_key = google_key_this_run or google_key_stored or None
-        feed_llm_model = gemini_model or st.session_state.get("gemini_model", "gemini-2.5-flash")
+    llm_provider = st.session_state.get("llm_provider", "Gemini")
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
@@ -5918,6 +5933,9 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     with col_info:
         st.success(f"已載入 {len(feed)} 則要聞。")
         st.caption(f"📌 本頁摘要使用 LLM：**{feed_llm_provider}**（{feed_llm_model}）")
+        feed_err = st.session_state.pop("feed_llm_last_error", None)
+        if feed_err:
+            st.warning(f"⚠️ LLM 摘要曾失敗，部分改顯示 Tavily 原文。錯誤：{feed_err[:300]}")
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             fetch_intelligence_feed_tavily.clear()
@@ -7125,7 +7143,18 @@ flowchart LR
             st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
 if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
-    render_news_feed_page(google_key, tavily_key, model_name)
+    # 與側欄同一輪：用 session 決定 feed 用哪個 LLM，並直接傳入避免讀取時序問題
+    _lp = st.session_state.get("llm_provider", "Gemini")
+    _gk = (st.session_state.get("grok_api_key") or "").strip()
+    _ok = (st.session_state.get("openrouter_api_key") or "").strip()
+    _gkey = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+    if _lp == "Grok" and _gk:
+        _fp, _fk, _fm = "Grok", _gk, "grok-2"
+    elif _lp == "OpenRouter" and _ok:
+        _fp, _fk, _fm = "OpenRouter", _ok, st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+    else:
+        _fp, _fk, _fm = "Gemini", (_gkey or None), (model_name or st.session_state.get("gemini_model", "gemini-2.5-flash"))
+    render_news_feed_page(google_key, tavily_key, model_name, feed_llm_provider=_fp, feed_llm_key=_fk, feed_llm_model=_fm)
 else:
     st.title(f"{analysis_mode.split(' ')[0]}")
     query = st.text_input(
