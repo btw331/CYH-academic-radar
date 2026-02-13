@@ -5569,15 +5569,16 @@ def fetch_intelligence_feed_tavily(
                 lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
             raw_news_text = "\n\n".join(lines)
             if use_llm:
+                logger.info("fetch_intelligence_feed_tavily: 使用 LLM 摘要 %s 模型=%s 洲=%s", llm_provider, llm_model, continent)
                 summarized = _summarize_continent_feed_with_llm(
                     raw_news_text, llm_api_key, continent,
                     llm_provider=llm_provider, llm_model=llm_model,
                 )
                 if not summarized:
-                    # LLM 額度不足或摘要失敗時，改顯示 Tavily 原文的 title + url
+                    logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s provider=%s", continent, llm_provider)
                     summarized = _tavily_raw_to_feed_items(raw_items, continent)
             else:
-                # 未提供 LLM Key 時，直接顯示 Tavily 原文
+                logger.info("fetch_intelligence_feed_tavily: 未提供 LLM Key，直接顯示 Tavily 原文 洲=%s", continent)
                 summarized = _tavily_raw_to_feed_items(raw_items, continent)
             for it in summarized:
                 it["continent"] = continent
@@ -5786,18 +5787,21 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     """
     渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；摘要與翻譯依側欄選擇的 LLM（Gemini/Grok/OpenRouter）執行。
     """
-    llm_provider = st.session_state.get("llm_provider", "Gemini")
-    grok_key = st.session_state.get("grok_api_key")
-    openrouter_key = st.session_state.get("openrouter_api_key")
-    openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    if llm_provider == "Grok" and grok_key:
-        feed_llm_key = grok_key
+    # 使用側欄寫入的 feed_llm_*，確保與「分析使用 LLM」選擇一致（Grok/OpenRouter 會正確帶入）
+    feed_llm_provider = st.session_state.get("feed_llm_provider", "Gemini")
+    feed_llm_key = st.session_state.get("feed_llm_key")
+    feed_llm_model = st.session_state.get("feed_llm_model", gemini_model or "gemini-2.5-flash")
+    if feed_llm_key is None and (st.session_state.get("llm_provider") == "Grok" and st.session_state.get("grok_api_key")):
+        feed_llm_key = st.session_state.get("grok_api_key")
+        feed_llm_provider = "Grok"
         feed_llm_model = "grok-2"
-    elif llm_provider == "OpenRouter" and openrouter_key:
-        feed_llm_key = openrouter_key
-        feed_llm_model = openrouter_model
-    else:
+    if feed_llm_key is None and (st.session_state.get("llm_provider") == "OpenRouter" and st.session_state.get("openrouter_api_key")):
+        feed_llm_key = st.session_state.get("openrouter_api_key")
+        feed_llm_provider = "OpenRouter"
+        feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+    if feed_llm_key is None:
         feed_llm_key = (google_key or "").strip() or None
+        feed_llm_provider = "Gemini"
         feed_llm_model = gemini_model or "gemini-2.5-flash"
 
     st.markdown("## 📰 全球情報 (News Feed)")
@@ -5884,6 +5888,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
         st.success(f"已載入 {len(feed)} 則要聞。")
+        st.caption(f"📌 本頁摘要使用 LLM：**{feed_llm_provider}**（{feed_llm_model}）")
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             with st.spinner("重新取得中…"):
@@ -6338,7 +6343,32 @@ with st.sidebar:
         st.session_state["openai_api_key"] = None
         st.session_state["openai_model"] = "gpt-4o-mini"
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
-        tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）")
+        model_name = st.selectbox(
+            "模型選擇 (Gemini Series)",
+            [
+                "gemini-3-pro-preview",
+                "gemini-3-flash-preview",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gemini-2.5-flash-lite"
+            ],
+            index=1,
+            help="選擇用於分析的 Gemini 模型版本\n\n"
+                 "**Gemini 3 系列（Preview，推薦）**：\n"
+                 "• gemini-3-pro-preview：最強性能，適合複雜分析\n"
+                 "• gemini-3-flash-preview：平衡性能與速度，推薦使用\n\n"
+                 "**Gemini 2.5 系列（穩定版）**：\n"
+                 "• gemini-2.5-pro：高性能，配額限制嚴格\n"
+                 "• gemini-2.5-flash：速度與配額平衡\n"
+                 "• gemini-2.5-flash-lite：最輕量級\n\n"
+                 "⚠️ 注意：免費層對 pro 模型的配額限制較嚴格，建議使用 flash 版本"
+        )
+        if "3-pro" in model_name:
+            st.info("🚀 **Gemini 3 Pro Preview**：最新最強模型，具備增強的多模態理解能力，適合複雜分析任務")
+        elif "3-flash" in model_name:
+            st.info("⚡ **Gemini 3 Flash Preview**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
+        elif "2.5-pro" in model_name:
+            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議使用 gemini-3-flash-preview 或 gemini-2.5-flash。")
         grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
         llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
@@ -6368,56 +6398,41 @@ with st.sidebar:
         else:
             st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
 
-        # API Key 驗證按鈕
+        # 供「全球情報」News Feed 使用的 LLM：與側欄選擇一致，確保摘要真的用選定的 Grok/OpenRouter/Gemini
+        if llm_provider == "Grok" and (grok_key or "").strip():
+            st.session_state["feed_llm_provider"] = "Grok"
+            st.session_state["feed_llm_key"] = (grok_key or "").strip()
+            st.session_state["feed_llm_model"] = "grok-2"
+        elif llm_provider == "OpenRouter" and (openrouter_key or "").strip():
+            st.session_state["feed_llm_provider"] = "OpenRouter"
+            st.session_state["feed_llm_key"] = (openrouter_key or "").strip()
+            st.session_state["feed_llm_model"] = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+        else:
+            st.session_state["feed_llm_provider"] = "Gemini"
+            st.session_state["feed_llm_key"] = (google_key or "").strip() or None
+            st.session_state["feed_llm_model"] = model_name or "gemini-2.5-flash"
+
+        # API Key 驗證按鈕（Tavily Key 在下方「Tavily 搜尋設定」輸入）
         if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
-            if google_key and tavily_key:
+            tavily_key_for_check = st.session_state.get("tavily_key", "")
+            if google_key and tavily_key_for_check:
                 with st.spinner("正在驗證 API Key..."):
-                    is_valid, message = validate_api_keys(google_key, tavily_key)
+                    is_valid, message = validate_api_keys(google_key, tavily_key_for_check)
                     if is_valid:
                         st.success(message)
                     else:
                         st.error(message)
             else:
-                st.warning("⚠️ 請先輸入 API Key")
-        
-        # 顯示 Tavily 搜尋狀態
+                st.warning("⚠️ 請先輸入 Gemini Key 與下方「Tavily 搜尋設定」中的 Tavily Key")
+
+        st.markdown("---")
+        st.markdown("#### 🔍 Tavily 搜尋設定")
+        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，整合事實查核、公信力評分與平衡檢索")
+        tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）", key="tavily_key")
         if tavily_key:
             st.success("✅ Tavily 搜尋已啟用")
         else:
             st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
-            
-        model_name = st.selectbox(
-            "模型選擇 (Gemini Series)", 
-            [
-                "gemini-3-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-                "gemini-2.5-flash-lite"
-            ], 
-            index=1,  # 預設使用 gemini-3-flash-preview（配額限制較寬鬆）
-            help="選擇用於分析的 Gemini 模型版本\n\n"
-                 "**Gemini 3 系列（Preview，推薦）**：\n"
-                 "• gemini-3-pro-preview：最強性能，適合複雜分析\n"
-                 "• gemini-3-flash-preview：平衡性能與速度，推薦使用\n\n"
-                 "**Gemini 2.5 系列（穩定版）**：\n"
-                 "• gemini-2.5-pro：高性能，配額限制嚴格\n"
-                 "• gemini-2.5-flash：速度與配額平衡\n"
-                 "• gemini-2.5-flash-lite：最輕量級\n\n"
-                 "⚠️ 注意：免費層對 pro 模型的配額限制較嚴格，建議使用 flash 版本"
-        )
-        
-        # 顯示模型特性提示
-        if "3-pro" in model_name:
-            st.info("🚀 **Gemini 3 Pro Preview**：最新最強模型，具備增強的多模態理解能力，適合複雜分析任務")
-        elif "3-flash" in model_name:
-            st.info("⚡ **Gemini 3 Flash Preview**：推薦選擇！平衡性能與速度，配額限制較寬鬆，適合大多數分析任務")
-        elif "2.5-pro" in model_name:
-            st.warning("⚠️ 注意：免費層對 gemini-2.5-pro 的配額限制非常嚴格，可能很快耗盡。建議使用 gemini-3-flash-preview 或 gemini-2.5-flash。")
-        
-        st.markdown("---")
-        st.markdown("#### 🔍 Tavily 搜尋設定")
-        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，整合事實查核、公信力評分與平衡檢索")
         search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
         max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
         use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
