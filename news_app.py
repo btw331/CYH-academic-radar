@@ -5165,18 +5165,39 @@ def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
 
 
 # ==========================================
-# 全球情報摘要 (Global Intelligence Feed)
+# 全球情報摘要 (Global Intelligence Feed)：五大洲 × 政治/經濟/科技
 # ==========================================
 
+# (洲名_繁中, 類型_繁中, Tavily 搜尋查詢)
 FEED_CATEGORIES = [
-    ("Global Geopolitics", "top geopolitical news world US China Russia today"),
-    ("Taiwan Cross-Strait", "台灣 兩岸 重大新聞"),
-    ("Global Economy", "global market finance news today"),
-    ("Frontier Tech", "AI technology breakthrough news today"),
+    ("亞洲", "政治", "Asia politics news today"),
+    ("亞洲", "經濟", "Asia economy business news today"),
+    ("亞洲", "科技", "Asia technology innovation news today"),
+    ("歐洲", "政治", "Europe politics EU news today"),
+    ("歐洲", "經濟", "Europe economy business news today"),
+    ("歐洲", "科技", "Europe technology news today"),
+    ("美洲", "政治", "Americas USA politics news today"),
+    ("美洲", "經濟", "Americas economy market news today"),
+    ("美洲", "科技", "Americas technology news today"),
+    ("非洲", "政治", "Africa politics news today"),
+    ("非洲", "經濟", "Africa economy business news today"),
+    ("非洲", "科技", "Africa technology innovation news today"),
+    ("大洋洲", "政治", "Oceania Australia politics news today"),
+    ("大洋洲", "經濟", "Oceania Australia economy news today"),
+    ("大洋洲", "科技", "Oceania technology news today"),
 ]
 
+CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
+TOPIC_ORDER = ["政治", "經濟", "科技"]
+CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
 
-def _summarize_feed_with_llm(raw_news_text: str, api_key: str) -> List[Dict[str, Any]]:
+
+def _summarize_feed_with_llm(
+    raw_news_text: str,
+    api_key: str,
+    continent: Optional[str] = None,
+    topic: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """
     使用 Gemini 將原始搜尋結果整理為結構化 JSON 列表（繁體中文標題與摘要）。
     理論基礎：資訊摘要與多源整合，供全球情報儀表板使用。
@@ -5184,6 +5205,8 @@ def _summarize_feed_with_llm(raw_news_text: str, api_key: str) -> List[Dict[str,
     Args:
         raw_news_text: 來自 Tavily 的原始新聞片段彙總文字
         api_key: Google Gemini API Key
+        continent: 可選，洲名（如亞洲、歐洲）供 prompt 脈絡
+        topic: 可選，類型（政治/經濟/科技）供 prompt 脈絡
 
     Returns:
         含 title、summary、source、analysis_keywords（及可選 emoji）的字典列表；失敗時返回空列表。
@@ -5191,16 +5214,20 @@ def _summarize_feed_with_llm(raw_news_text: str, api_key: str) -> List[Dict[str,
     if not api_key or not (raw_news_text or "").strip():
         logger.warning("_summarize_feed_with_llm: 缺少 api_key 或 raw_news_text 為空")
         return []
+    context = ""
+    if continent or topic:
+        parts = [p for p in [continent, topic] if p]
+        context = f"（本批為「{' '.join(parts)}」類要聞）"
     system_prompt = """你是資深情報編輯（Senior Intelligence Editor）。請將提供的原始新聞片段整理成「精選要聞」清單。
 每則請產出：
 - emoji：一個代表該則主題的 emoji（如 🇺🇸 🇹🇼 📉 🤖）
 - title：吸引人的繁體中文標題
 - summary：2～3 句繁體中文摘要
 - source：來源網域或媒體名（從原文擷取或推斷）
-- analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準，例如：川普 關稅 影響）
+- analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準）
 
 請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, analysis_keywords。"""
-    user_prompt = f"""請將以下原始新聞整理成精選要聞（最多精選 5～8 則，去除重複與次要），輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
+    user_prompt = f"""請將以下原始新聞{context}整理成精選要聞（最多精選 5～8 則，去除重複與次要），輸出上述格式的 JSON 陣列。\n\n{raw_news_text[:20000]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
         if not raw:
@@ -5228,7 +5255,7 @@ def _summarize_feed_with_llm(raw_news_text: str, api_key: str) -> List[Dict[str,
 @st.cache_data(ttl=3600)
 def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, Any]]:
     """
-    彙整四大類別頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
+    彙整五大洲 × 政治/經濟/科技頭條新聞，並以 LLM 翻譯／摘要為繁體中文結構化清單。
     快取 1 小時以節省 API 配額。
 
     Args:
@@ -5236,14 +5263,15 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
         google_key: Google Gemini API Key（摘要）
 
     Returns:
-        每筆含 emoji, title, summary, source, analysis_keywords 的字典列表；失敗時返回空列表或部分結果。
+        每筆含 continent, topic, emoji, title, summary, source, analysis_keywords 的字典列表；失敗時返回空列表或部分結果。
     """
     if not tavily_key or not google_key:
         return []
-    raw_items: List[Dict[str, Any]] = []
+    all_items: List[Dict[str, Any]] = []
     try:
         tavily = TavilyClient(api_key=tavily_key)
-        for _label, query in FEED_CATEGORIES:
+        for continent, topic, query in FEED_CATEGORIES:
+            raw_items: List[Dict[str, Any]] = []
             try:
                 resp = tavily.search(query=query, max_results=5, search_depth="basic")
                 results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
@@ -5257,48 +5285,75 @@ def fetch_intelligence_feed(tavily_key: str, google_key: str) -> List[Dict[str, 
                             "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
                         })
             except Exception as e:
-                logger.warning("fetch_intelligence_feed: Tavily 類別 %s 失敗: %s", _label, str(e))
+                logger.warning("fetch_intelligence_feed: Tavily %s %s 失敗: %s", continent, topic, str(e))
                 continue
+            if not raw_items:
+                continue
+            lines = []
+            for i, r in enumerate(raw_items[:15], 1):
+                title = r.get("title", "")
+                url = r.get("url", "")
+                content = r.get("content", "") or r.get("snippet", "") or ""
+                lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
+            raw_news_text = "\n\n".join(lines)
+            summarized = _summarize_feed_with_llm(raw_news_text, google_key, continent=continent, topic=topic)
+            for it in summarized:
+                it["continent"] = continent
+                it["topic"] = topic
+                all_items.append(it)
     except Exception as e:
         logger.error("fetch_intelligence_feed: Tavily 初始化或搜尋失敗: %s", str(e))
         return []
-    if not raw_items:
-        return []
-    # 組合成一段文字供 LLM 摘要
-    lines = []
-    for i, r in enumerate(raw_items[:40], 1):
-        title = r.get("title", "")
-        url = r.get("url", "")
-        content = r.get("content", "") or r.get("snippet", "") or ""
-        lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
-    raw_news_text = "\n\n".join(lines)
-    return _summarize_feed_with_llm(raw_news_text, google_key)
+    return all_items
 
 
 def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     """
-    渲染「全球情報」儀表板：顯示彙整頭條，每則提供「深度分析」一鍵跳轉至全域分析並帶入查詢。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，每則提供「深度分析」一鍵跳轉至全域分析並帶入查詢。
     """
     st.markdown("## 📰 全球情報 (News Feed)")
-    st.caption("彙整地緣政治、兩岸、經濟、前沿科技要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
+    st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。")
     if not tavily_key or not tavily_key.strip():
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key** 以載入全球情報。")
         return
     if not google_key or not google_key.strip():
         st.warning("⚠️ 請在側邊欄輸入 **Gemini API Key** 以產生繁體中文摘要。")
         return
-    with st.spinner("正在載入情報摘要（約需 30 秒）…"):
+    with st.spinner("正在載入情報摘要（五大洲 × 政治/經濟/科技，約需 1～2 分鐘）…"):
         feed = fetch_intelligence_feed(tavily_key, google_key)
     if not feed:
         st.info("無法載入情報，請稍後再試或檢查 API 金鑰與網路。")
         return
-    for i in range(0, len(feed), 2):
-        col1, col2 = st.columns(2)
-        with col1:
-            _render_feed_card(feed[i], i, len(feed))
-        with col2:
-            if i + 1 < len(feed):
-                _render_feed_card(feed[i + 1], i + 1, len(feed))
+    # 依洲 → 類型分組
+    grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    for item in feed:
+        cont = item.get("continent", "其他")
+        topic = item.get("topic", "其他")
+        grouped.setdefault(cont, {}).setdefault(topic, []).append(item)
+    # 五大洲分頁
+    tab_labels = [f"{CONTINENT_EMOJI.get(c, '📌')} {c}" for c in CONTINENT_ORDER]
+    tabs = st.tabs(tab_labels)
+    card_index = [0]  # 用 list 以便在閉包內遞增
+
+    for tab, continent in zip(tabs, CONTINENT_ORDER):
+        with tab:
+            cont_data = grouped.get(continent, {})
+            for topic in TOPIC_ORDER:
+                items = cont_data.get(topic, [])
+                if not items:
+                    continue
+                st.markdown(f"### {topic}")
+                for i in range(0, len(items), 2):
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        idx = card_index[0]
+                        card_index[0] += 1
+                        _render_feed_card(items[i], idx, len(feed))
+                    with col2:
+                        if i + 1 < len(items):
+                            idx = card_index[0]
+                            card_index[0] += 1
+                            _render_feed_card(items[i + 1], idx, len(feed))
 
 
 def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
