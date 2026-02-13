@@ -5549,9 +5549,11 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         try:
             with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if _use_tavily else "約 20 秒（1 次 API）")):
                 feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if _use_tavily else fetch_intelligence_feed_rss(google_key)
-            st.session_state["intelligence_feed_data"] = feed if feed else None
+            # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
+            st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
             logger.exception("載入全球情報失敗")
+            st.session_state["intelligence_feed_data"] = []
             st.error(f"載入失敗：{str(e)[:200]}。請檢查 API 金鑰與網路後重試。")
         st.rerun()
     # 按鈕用 on_click 寫入旗標，點擊後下一輪執行取得
@@ -5566,7 +5568,16 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
         st.info("請選擇取得方式後，點擊上方 **「📡 載入全球情報」** 按鈕執行取得。")
         return
     if not feed:
-        st.info("無法載入情報，請稍後再試或檢查 API 金鑰與網路。")
+        st.warning("**取得完成，但沒有產出任何要聞。**")
+        with st.expander("🔍 可能原因與建議", expanded=True):
+            st.markdown("""
+- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額；或改選 **RSS 頭條** 再試。
+- **RSS**：RSS 來源暫時無法連線或解析失敗 → 稍後再按「重新載入」。
+- **Gemini**：摘要階段失敗或回傳空陣列 → 檢查側欄 Gemini Key 是否有效、配額是否足夠。
+            """)
+        if st.button("🔄 重新載入", key="feed_retry_empty"):
+            st.session_state["feed_do_fetch"] = True
+            st.rerun()
         return
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
