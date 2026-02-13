@@ -5099,7 +5099,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
 
 
-# --- Visual Intelligence Module (Phase 3: Visual War Room) ---
+# --- LLM JSON Parsing Helper (Used by News Feed & General Output) ---
 
 def _extract_json_from_llm_raw(raw: str) -> Optional[Dict[str, Any]]:
     """
@@ -5362,27 +5362,30 @@ def fetch_intelligence_feed_tavily(tavily_key: str, google_key: str) -> List[Dic
         tavily = TavilyClient(api_key=tavily_key)
         for continent, query in FEED_BY_CONTINENT:
             raw_items: List[Dict[str, Any]] = []
-            try:
-                resp = tavily.search(
-                    query=query,
-                    max_results=12,
-                    search_depth="basic",
-                    topic="news",
-                    time_range="day",
-                )
-                results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
-                for r in results:
-                    if isinstance(r, dict):
-                        raw_items.append(r)
-                    else:
-                        raw_items.append({
-                            "title": getattr(r, "title", ""),
-                            "url": getattr(r, "url", ""),
-                            "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
-                        })
-            except Exception as e:
-                logger.warning("fetch_intelligence_feed_tavily: Tavily %s 失敗: %s", continent, str(e))
-                continue
+            for time_range in ("day", "week"):
+                try:
+                    resp = tavily.search(
+                        query=query,
+                        max_results=12,
+                        search_depth="basic",
+                        topic="news",
+                        time_range=time_range,
+                    )
+                    results = resp.get("results", []) if isinstance(resp, dict) else getattr(resp, "results", None) or []
+                    for r in results:
+                        if isinstance(r, dict):
+                            raw_items.append(r)
+                        else:
+                            raw_items.append({
+                                "title": getattr(r, "title", ""),
+                                "url": getattr(r, "url", ""),
+                                "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
+                            })
+                    if raw_items:
+                        break
+                except Exception as e:
+                    logger.warning("fetch_intelligence_feed_tavily: Tavily %s (time_range=%s) 失敗: %s", continent, time_range, str(e))
+                    continue
             if not raw_items:
                 continue
             lines = []
@@ -5432,7 +5435,12 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                     link = link_el.get("href", "").strip()
                 else:
                     link = (link_el.text or "").strip() if link_el is not None else ""
-                desc_el = item.find("description") or item.find("{http://www.w3.org/2005/Atom}summary") or item.find("content", namespaces={"": "", "http://purl.org/rss/1.0/modules/content": "content"})
+                desc_el = (
+                    item.find("description")
+                    or item.find("{http://www.w3.org/2005/Atom}summary")
+                    or item.find("{http://www.w3.org/2005/Atom}content")
+                    or item.find("content")
+                )
                 if desc_el is not None and desc_el.text:
                     desc = (desc_el.text or "").strip()[:400]
                 else:
@@ -5444,6 +5452,51 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
             logger.warning("_fetch_rss_raw: 解析 %s 失敗: %s", url, str(e))
             continue
     return entries[:60]
+
+
+def _rss_fallback_from_raw(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    當 Gemini 摘要回傳空或失敗時，以原始 RSS 條目組出最少要聞（標題、連結、簡短摘要）。
+    用於避免「取得完成但 0 則」的狀況，至少顯示頭條與連結。
+    """
+    if not raw:
+        return []
+    out: List[Dict[str, Any]] = []
+    for r in raw[:25]:
+        url = (r.get("url") or "").strip()
+        title = (r.get("title") or "").strip() or "（無標題）"
+        content = (r.get("content") or "").strip()[:200]
+        u = url.lower()
+        if "asia" in u or "asia-pacific" in u or "china" in u or "japan" in u or "korea" in u:
+            continent = "亞洲"
+        elif "europe" in u or "eu." in u or "bbc.co.uk" in u:
+            continent = "歐洲"
+        elif "africa" in u:
+            continent = "非洲"
+        elif "australia" in u or "pacific" in u or "nz" in u:
+            continent = "大洋洲"
+        elif "us" in u or "americas" in u or "reuters.com" in u:
+            continent = "美洲"
+        else:
+            continent = "其他"
+        domain = ""
+        try:
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc or ""
+        except Exception:
+            pass
+        out.append({
+            "continent": continent,
+            "topic": "政治",
+            "emoji": "📌",
+            "title": title,
+            "summary": content or "",
+            "strategic_angle": "RSS 頭條（摘要未生成時顯示原文）",
+            "source": domain,
+            "url": url,
+            "analysis_keywords": title,
+        })
+    return out
 
 
 @st.cache_data(ttl=3600)
@@ -5481,10 +5534,10 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
     try:
         raw_out = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", google_key)
         if not raw_out:
-            return []
+            return _rss_fallback_from_raw(raw)
         items = _extract_json_list_from_llm_raw(raw_out)
         if not items or not isinstance(items, list):
-            return []
+            return _rss_fallback_from_raw(raw)
         out = []
         for it in items:
             if not isinstance(it, dict):
@@ -5509,7 +5562,7 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
         return out
     except Exception as e:
         logger.error("fetch_intelligence_feed_rss: 摘要失敗: %s", str(e))
-        return []
+        return _rss_fallback_from_raw(raw)
 
 
 def render_news_feed_page(google_key: str, tavily_key: str) -> None:
@@ -5663,6 +5716,15 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
             st.session_state["query"] = keywords
             st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
             st.session_state["nav_page"] = "🚀 全域分析 (Deep Analysis)"
+            # 重置分析相關狀態，避免沿用上一輪的關鍵字／報告／來源（Ghost Data）
+            st.session_state["keyword_plan"] = None
+            st.session_state["result"] = None
+            st.session_state["scenario_result"] = None
+            st.session_state["sources"] = None
+            st.session_state["manipulation_signals"] = None
+            st.session_state["cofacts_rumors"] = []
+            st.session_state["volume_analysis"] = None
+            st.session_state["stance_analysis"] = None
             st.rerun()
 
 
