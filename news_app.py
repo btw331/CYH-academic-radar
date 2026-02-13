@@ -5832,30 +5832,25 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     """
     渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技，可選 Tavily 或 RSS 來源；摘要與翻譯依側欄選擇的 LLM（Gemini/Grok/OpenRouter）執行。
     """
-    # 使用側欄寫入的 feed_llm_*，確保與「分析使用 LLM」選擇一致（Grok/OpenRouter 會正確帶入）
-    feed_llm_provider = st.session_state.get("feed_llm_provider", "Gemini")
-    feed_llm_key = st.session_state.get("feed_llm_key")
-    feed_llm_model = st.session_state.get("feed_llm_model", gemini_model or "gemini-2.5-flash")
-    if feed_llm_key is None and (st.session_state.get("llm_provider") == "Grok" and st.session_state.get("grok_api_key")):
-        feed_llm_key = st.session_state.get("grok_api_key")
+    # 強制以「目前選擇的 LLM」+ session 內已存的 key 決定用哪個 API（不依賴側欄本輪是否寫入 feed_llm_*）
+    llm_provider = st.session_state.get("llm_provider", "Gemini")
+    grok_key = (st.session_state.get("grok_api_key") or "").strip()
+    openrouter_key = (st.session_state.get("openrouter_api_key") or "").strip()
+    google_key_stored = (st.session_state.get("google_api_key") or "").strip()
+    google_key_this_run = (google_key or "").strip()
+
+    if llm_provider == "Grok" and grok_key:
         feed_llm_provider = "Grok"
+        feed_llm_key = grok_key
         feed_llm_model = "grok-2"
-    if feed_llm_key is None and (st.session_state.get("llm_provider") == "OpenRouter" and st.session_state.get("openrouter_api_key")):
-        feed_llm_key = st.session_state.get("openrouter_api_key")
+    elif llm_provider == "OpenRouter" and openrouter_key:
         feed_llm_provider = "OpenRouter"
+        feed_llm_key = openrouter_key
         feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    if feed_llm_key is None or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
-        feed_llm_key = (google_key or "").strip() or st.session_state.get("google_api_key") or None
+    else:
         feed_llm_provider = "Gemini"
-        feed_llm_model = gemini_model or "gemini-2.5-flash"
-    # 執行載入前再次用 session 備援：若目前 provider 為 OpenRouter/Grok 但 key 為空，用已存 key 補上
-    _provider = st.session_state.get("llm_provider", "Gemini")
-    if (feed_llm_provider == "OpenRouter" and (not feed_llm_key or not str(feed_llm_key).strip())) and st.session_state.get("openrouter_api_key"):
-        feed_llm_key = st.session_state["openrouter_api_key"]
-        feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    if (feed_llm_provider == "Grok" and (not feed_llm_key or not str(feed_llm_key).strip())) and st.session_state.get("grok_api_key"):
-        feed_llm_key = st.session_state["grok_api_key"]
-        feed_llm_model = "grok-2"
+        feed_llm_key = google_key_this_run or google_key_stored or None
+        feed_llm_model = gemini_model or st.session_state.get("gemini_model", "gemini-2.5-flash")
 
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
@@ -5869,7 +5864,12 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
     use_tavily = True
     current_source_key = "tavily"
     if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
-        st.warning("⚠️ 請在側邊欄選擇「分析使用 LLM」並輸入對應 **API Key**（Gemini / Grok / OpenRouter）以產生繁體中文摘要。")
+        if llm_provider == "OpenRouter":
+            st.warning("⚠️ 您已選擇 **OpenRouter**，請先在側欄展開「🔑 API 設定」、輸入 **OpenRouter API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
+        elif llm_provider == "Grok":
+            st.warning("⚠️ 您已選擇 **Grok**，請先在側欄展開「🔑 API 設定」、輸入 **Grok API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
+        else:
+            st.warning("⚠️ 請在側邊欄「🔑 API 設定」輸入 **Gemini API Key** 以產生繁體中文摘要。")
         return
     if not (tavily_key and tavily_key.strip()):
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**。")
@@ -5920,6 +5920,7 @@ def render_news_feed_page(google_key: str, tavily_key: str, gemini_model: str = 
         st.caption(f"📌 本頁摘要使用 LLM：**{feed_llm_provider}**（{feed_llm_model}）")
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
+            fetch_intelligence_feed_tavily.clear()
             with st.spinner("重新取得中…"):
                 feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
