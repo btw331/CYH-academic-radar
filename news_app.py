@@ -5194,6 +5194,46 @@ RSS_FEED_URLS = [
 ]
 
 
+def _get_feed_source_badges(url_or_domain: str) -> List[str]:
+    """
+    依來源 URL／網域對照白名單，回傳用於情報卡顯示的標籤列表。
+    用於 Intelligence Card 的 Meta Tags（泛藍／泛綠／官方／國際等）。
+    """
+    if not url_or_domain or not isinstance(url_or_domain, str):
+        return []
+    domain = get_domain_name(url_or_domain) if url_or_domain.startswith(("http://", "https://")) else url_or_domain.strip().lower()
+    if not domain:
+        return []
+    badges = []
+    if any(domain in d or d in domain for d in BLUE_WHITELIST):
+        badges.append("🔵 泛藍觀點")
+    if any(domain in d or d in domain for d in GREEN_WHITELIST):
+        badges.append("🟢 泛綠觀點")
+    if any(domain in d or d in domain for d in OFFICIAL_WHITELIST):
+        badges.append("🏛️ 官方")
+    if any(domain in d or d in domain for d in NEUTRAL_WHITELIST):
+        badges.append("⚪ 中立")
+    if any(domain in d or d in domain for d in INDIE_WHITELIST):
+        badges.append("📰 獨立")
+    if any(domain in d or d in domain for d in INTL_WHITELIST):
+        badges.append("🇺🇸 國際視角")
+    if not badges:
+        badges.append("📌 其他來源")
+    return badges
+
+
+def _is_single_camp_source(url_or_domain: str) -> bool:
+    """若來源僅屬單一立場（僅藍或僅綠），回傳 True，用於同溫層警示。"""
+    if not url_or_domain:
+        return False
+    domain = get_domain_name(url_or_domain) if url_or_domain.startswith(("http://", "https://")) else url_or_domain.strip().lower()
+    if not domain:
+        return False
+    in_blue = any(domain in d or d in domain for d in BLUE_WHITELIST)
+    in_green = any(domain in d or d in domain for d in GREEN_WHITELIST)
+    return (in_blue and not in_green) or (in_green and not in_blue)
+
+
 def _summarize_feed_with_llm(
     raw_news_text: str,
     api_key: str,
@@ -5266,18 +5306,19 @@ def _summarize_continent_feed_with_llm(
     """
     if not api_key or not (raw_news_text or "").strip():
         return []
-    system_prompt = """你是資深情報編輯。請將提供的原始新聞整理成「今日重要要聞」，並為每則標註類型。
+    system_prompt = """你是資深情報編輯。請將提供的原始新聞**綜整**成「今日重要要聞」：可合併相似主題，並為每則標註類型與**戰略視角**（Why does this matter?）。
 每則請產出：
-- topic：必須為「政治」「經濟」「科技」其中之一（依內容判斷）
+- topic：必須為「政治」「經濟」「科技」其中之一
 - emoji：代表該則主題的 emoji
 - title：吸引人的繁體中文標題
 - summary：2～3 句繁體中文摘要
+- strategic_angle：一句話說明「戰略視角／為何重要」
 - source：來源網域或媒體名
 - url：從原文「URL:」後方**原樣複製**的完整連結，若無則 ""
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-請「只」輸出一個 JSON 陣列，每則一筆。鍵名：topic, emoji, title, summary, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
-    user_prompt = f"""以下為「{continent}」今日搜尋結果。請精選最重要 6～9 則，並為每則標註 topic（政治/經濟/科技），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
+請「只」輸出一個 JSON 陣列。鍵名：topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
+    user_prompt = f"""以下為「{continent}」今日搜尋結果。請綜整相似報導、精選 6～9 則，為每則標註 topic 與 strategic_angle，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
         if not raw:
@@ -5297,6 +5338,7 @@ def _summarize_continent_feed_with_llm(
                 "emoji": it.get("emoji", "📌"),
                 "title": (it.get("title") or "").strip() or "（無標題）",
                 "summary": (it.get("summary") or "").strip() or "",
+                "strategic_angle": (it.get("strategic_angle") or "").strip(),
                 "source": (it.get("source") or "").strip() or "",
                 "url": (it.get("url") or "").strip() or "",
                 "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
@@ -5419,26 +5461,23 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
     for i, r in enumerate(raw[:50], 1):
         lines.append(f"[{i}] Title: {r.get('title','')}\nURL: {r.get('url','')}\nContent: {r.get('content','')[:300]}")
     raw_text = "\n\n".join(lines)
-    system_prompt = """你是資深情報編輯。請將提供的 RSS 新聞整理成「今日重要要聞」，並為每則標註**洲別**與**類型**。
-**洲別判斷規則（依新聞主題所涉主要地區）**：
-- 美洲：美國、加拿大、拉丁美洲、巴西、墨西哥等
-- 歐洲：歐盟、英國、法國、德國、俄羅斯、烏克蘭等
-- 亞洲：中國、日本、韓國、印度、東南亞、台灣等
-- 非洲：非洲各國、南非、奈及利亞等
-- 大洋洲：澳洲、紐西蘭、太平洋島國等
-**硬性要求**：五大洲（亞洲、歐洲、美洲、非洲、大洋洲）**每洲至少 2 則**，總計約 15～25 則。勿將多數都標為同一洲。
+    system_prompt = """你是資深情報編輯。請將提供的 RSS 新聞**綜整**成「今日重要要聞」：可將相似主題合併為一則綜整稿，並標註**洲別**與**類型**。
+**綜整原則**：群組化相似報導、突出戰略意義；每則需有「戰略視角」（Why does this matter?）。
+**洲別判斷規則**：美洲（美加拉美）、歐洲（歐盟英俄烏等）、亞洲（中日韓東南亞台灣）、非洲、大洋洲（澳紐）。
+**硬性要求**：五大洲每洲至少 2 則，總計約 15～25 則。
 每則請產出：
-- continent：必須為「亞洲」「歐洲」「美洲」「非洲」「大洋洲」其中之一（依上述規則）
-- topic：必須為「政治」「經濟」「科技」其中之一
-- emoji：代表該則主題的 emoji
+- continent：亞洲／歐洲／美洲／非洲／大洋洲
+- topic：政治／經濟／科技
+- emoji：代表主題的 emoji
 - title：吸引人的繁體中文標題
-- summary：2～3 句繁體中文摘要
+- summary：2～3 句繁體中文摘要（綜整多源時可合併敘述）
+- strategic_angle：一句話說明「戰略視角／為何重要」（Why does this matter?）
 - source：來源網域或媒體名（可從 URL 推斷）
 - url：從原文「URL:」後方**原樣複製**的完整連結
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, source, url, analysis_keywords。"""
-    user_prompt = f"""以下為國際 RSS 頭條（含亞洲、歐洲、美洲、非洲等區域來源）。請精選 15～25 則，**務必讓五大洲每洲至少 2 則**，並依新聞主題正確標註 continent 與 topic，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
+請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。"""
+    user_prompt = f"""以下為國際 RSS 頭條。請**綜整**相似報導、精選 15～25 則，五大洲每洲至少 2 則，並為每則填寫 strategic_angle（為何重要），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
     try:
         raw_out = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", google_key)
         if not raw_out:
@@ -5462,6 +5501,7 @@ def fetch_intelligence_feed_rss(google_key: str) -> List[Dict[str, Any]]:
                 "emoji": it.get("emoji", "📌"),
                 "title": (it.get("title") or "").strip() or "（無標題）",
                 "summary": (it.get("summary") or "").strip() or "",
+                "strategic_angle": (it.get("strategic_angle") or "").strip(),
                 "source": (it.get("source") or "").strip() or "",
                 "url": (it.get("url") or "").strip() or "",
                 "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
@@ -5502,18 +5542,25 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
-    # 使用 form：表單送出時才執行取得，避免一般 button 在 rerun 時遺失點擊
-    with st.form(key="feed_load_form"):
-        submitted = st.form_submit_button("📡 載入全球情報")
-    if submitted:
+    # 載入請求：由 on_click 寫入，此處讀取並執行（確保點擊一定觸發）
+    if st.session_state.get("feed_do_fetch"):
+        st.session_state["feed_do_fetch"] = False
+        _use_tavily = "Tavily" in st.session_state.get("feed_source_radio", "")
         try:
-            with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if use_tavily else "約 20 秒（1 次 API）")):
-                feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if use_tavily else fetch_intelligence_feed_rss(google_key)
+            with st.spinner("正在載入情報摘要…" + ("約 1 分鐘（10 次 API）" if _use_tavily else "約 20 秒（1 次 API）")):
+                feed = fetch_intelligence_feed_tavily(tavily_key, google_key) if _use_tavily else fetch_intelligence_feed_rss(google_key)
             st.session_state["intelligence_feed_data"] = feed if feed else None
         except Exception as e:
             logger.exception("載入全球情報失敗")
             st.error(f"載入失敗：{str(e)[:200]}。請檢查 API 金鑰與網路後重試。")
         st.rerun()
+    # 按鈕用 on_click 寫入旗標，點擊後下一輪執行取得
+    st.button(
+        "📡 載入全球情報",
+        type="primary",
+        key="feed_fetch_btn",
+        on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
+    )
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
         st.info("請選擇取得方式後，點擊上方 **「📡 載入全球情報」** 按鈕執行取得。")
@@ -5563,26 +5610,47 @@ def render_news_feed_page(google_key: str, tavily_key: str) -> None:
 
 
 def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
-    """單一情報卡：標題、摘要、來源（含連結）、「深度分析」按鈕。"""
+    """
+    Intelligence Card：高資訊密度、可操作按鈕（Ground News / Particle 風格）。
+    含 Header、Meta 標籤、摘要、同溫層警示、深度戰略分析按鈕。
+    """
     emoji = item.get("emoji", "📌")
-    title = item.get("title", "（無標題）")
-    summary = item.get("summary", "")
-    source = item.get("source", "")
+    title = (item.get("title") or "（無標題）").strip()
+    summary = (item.get("summary") or "").strip()
+    source = (item.get("source") or "").strip()
     url = (item.get("url") or "").strip()
-    keywords = item.get("analysis_keywords", "") or title
-    with st.container():
+    keywords = (item.get("analysis_keywords") or item.get("keywords") or title).strip()
+    strategic_angle = (item.get("strategic_angle") or "").strip()
+    # 穩定唯一 key（避免重複 key 導致按鈕失效）
+    news_id = hashlib.md5(f"{title}_{url}_{index}".encode("utf-8")).hexdigest()[:12]
+    with st.container(border=True):
+        # Header: Emoji + Title
         st.markdown(f"### {emoji} {title}")
+        # Meta Tags: 來源類別標籤（泛藍／泛綠／國際等）
+        ref_url = url or source
+        badges = _get_feed_source_badges(ref_url)
+        if badges:
+            st.caption(" | ".join(badges))
+        # 來源連結
         if source or url:
             if url and url.startswith(("http://", "https://")):
                 st.caption(f"來源：[{source or url}]({url})")
-            else:
-                st.caption(f"來源：{source}" if source else "")
+            elif source:
+                st.caption(f"來源：{source}")
+        # Summary（約 3 行內）
         if summary:
-            st.write(summary)
-        if st.button("🔍 深度分析 (Deep Dive)", key=f"feed_deep_dive_{index}", type="primary"):
+            summary_short = "\n".join(summary.split("\n")[:3]) if "\n" in summary else (summary[:200] + "…" if len(summary) > 200 else summary)
+            st.write(summary_short)
+        # Strategic Angle（若有）
+        if strategic_angle:
+            st.caption(f"**戰略視角**：{strategic_angle[:120]}{'…' if len(strategic_angle) > 120 else ''}")
+        # 同溫層警示：僅單一立場來源時顯示
+        if ref_url and _is_single_camp_source(ref_url):
+            st.caption("⚠️ 同溫層警示")
+        # 深度戰略分析按鈕
+        if st.button("🔍 深度戰略分析 (Deep Dive)", key=f"btn_{news_id}", type="primary"):
             st.session_state["query"] = keywords
             st.session_state["current_page"] = "🚀 全域分析 (Deep Analysis)"
-            # 同步側欄 radio 的 key，否則 rerun 後 radio 會用舊值覆寫 current_page 導致切頁無效
             st.session_state["nav_page"] = "🚀 全域分析 (Deep Analysis)"
             st.rerun()
 
