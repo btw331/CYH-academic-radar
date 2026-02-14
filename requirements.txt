@@ -13,3 +13,4 @@ tabulate
 markdown
 graphviz
 networkx
+langchain-openai
