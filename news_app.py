@@ -4791,6 +4791,42 @@ def call_openrouter(system_prompt: str, user_text: str, model_name: str = "googl
         raise Exception(f"OpenRouter API 調用失敗: {error_msg[:200]}") from e
 
 
+def call_groq(system_prompt: str, user_text: str, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None) -> str:
+    """
+    呼叫 Groq Cloud API（OpenAI 相容端點 https://api.groq.com/openai/v1），使用 Llama 等模型。
+
+    Args:
+        system_prompt: 系統提示
+        user_text: 用戶輸入
+        model_name: Groq 模型名稱（如 llama-3.1-8b-instant、llama-3.3-70b-versatile）
+        api_key: Groq API Key（從 console.groq.com 取得）
+
+    Returns:
+        str: AI 生成的文本
+    """
+    if not OPENAI_AVAILABLE:
+        raise ImportError("Groq API 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
+    if not api_key or not api_key.strip():
+        raise ValueError("未提供 Groq API Key")
+    try:
+        llm = ChatOpenAI(
+            model=model_name,
+            temperature=0.0,
+            openai_api_key=api_key.strip(),
+            openai_api_base="https://api.groq.com/openai/v1",
+        )
+        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+        chain = prompt | llm
+        response = chain.invoke({"input": user_text})
+        result = _extract_text_from_llm_content(response.content)
+        logger.info(f"成功使用 Groq {model_name} 生成回應")
+        return result
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Groq API 調用失敗: {error_msg}")
+        raise Exception(f"Groq API 調用失敗: {error_msg[:200]}") from e
+
+
 def _call_llm_for_feed(
     system_prompt: str,
     user_text: str,
@@ -4799,13 +4835,15 @@ def _call_llm_for_feed(
     api_key: Optional[str] = None,
 ) -> str:
     """
-    依側欄選擇的 LLM 來源（Gemini / Grok / OpenRouter）呼叫對應 API，供 News Feed 摘要與翻譯使用。
+    依側欄選擇的 LLM 來源（Gemini / Grok / Groq / OpenRouter）呼叫對應 API，供 News Feed 摘要與翻譯使用。
     """
     if not api_key or not api_key.strip():
         raise ValueError("未提供 API Key")
     provider = (provider or "Gemini").strip()
     if provider == "Grok":
         return call_grok(system_prompt, user_text, model_name or "grok-2", api_key)
+    if provider == "Groq":
+        return call_groq(system_prompt, user_text, model_name or "llama-3.1-8b-instant", api_key)
     if provider == "OpenRouter":
         return call_openrouter(system_prompt, user_text, model_name or "google/gemini-2.0-flash-exp", api_key)
     return call_gemini(system_prompt, user_text, model_name or "gemini-2.5-flash", api_key, openai_api_key=None)
@@ -5033,7 +5071,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_openrouter: bool = False) -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_groq: bool = False, use_openrouter: bool = False) -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # 重視正確度：不使用快速模式，保持完整 context
@@ -5196,6 +5234,8 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
 
     if use_grok and api_key:
         return call_grok(system_prompt, context_text, model_name or "grok-2", api_key)
+    if use_groq and api_key:
+        return call_groq(system_prompt, context_text, model_name or "llama-3.1-8b-instant", api_key)
     if use_openrouter and api_key:
         return call_openrouter(system_prompt, context_text, model_name or "google/gemini-2.0-flash-exp", api_key)
     return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
@@ -5849,6 +5889,7 @@ def render_news_feed_page(
     if feed_llm_provider is None or feed_llm_key is None or feed_llm_model is None:
         llm_provider = st.session_state.get("llm_provider", "Gemini")
         grok_key = (st.session_state.get("grok_api_key") or "").strip()
+        groq_key = (st.session_state.get("groq_api_key") or "").strip()
         openrouter_key = (st.session_state.get("openrouter_api_key") or "").strip()
         google_key_stored = (st.session_state.get("google_api_key") or "").strip()
         google_key_this_run = (google_key or "").strip()
@@ -5856,6 +5897,10 @@ def render_news_feed_page(
             feed_llm_provider = "Grok"
             feed_llm_key = grok_key
             feed_llm_model = "grok-2"
+        elif llm_provider == "Groq" and groq_key:
+            feed_llm_provider = "Groq"
+            feed_llm_key = groq_key
+            feed_llm_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
         elif llm_provider == "OpenRouter" and openrouter_key:
             feed_llm_provider = "OpenRouter"
             feed_llm_key = openrouter_key
@@ -5883,6 +5928,8 @@ def render_news_feed_page(
             st.warning("⚠️ 您已選擇 **OpenRouter**，請先在側欄展開「🔑 API 設定」、輸入 **OpenRouter API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
         elif llm_provider == "Grok":
             st.warning("⚠️ 您已選擇 **Grok**，請先在側欄展開「🔑 API 設定」、輸入 **Grok API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
+        elif llm_provider == "Groq":
+            st.warning("⚠️ 您已選擇 **Groq**，請先在側欄展開「🔑 API 設定」、輸入 **Groq API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
         else:
             st.warning("⚠️ 請在側邊欄「🔑 API 設定」輸入 **Gemini API Key** 以產生繁體中文摘要。")
         return
@@ -5923,7 +5970,7 @@ def render_news_feed_page(
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
 - **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額。
-- **LLM 摘要**：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／OpenRouter）的 Key 與配額；若使用 OpenRouter thinking 模型，請確認回傳為 JSON 陣列格式。
+- **LLM 摘要**：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／Groq／OpenRouter）的 Key 與配額；若使用 OpenRouter thinking 模型，請確認回傳為 JSON 陣列格式。
             """)
         if st.button("🔄 重新載入", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
@@ -6402,14 +6449,17 @@ with st.sidebar:
         st.session_state["openai_model"] = "gpt-4o-mini"
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
         grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
+        groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
-        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/OpenRouter 時請先輸入對應 Key")
+        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "Groq", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/Groq/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
         # 持久化 Key：僅在「本次有輸入」時寫入，避免 rerun 時密碼欄位清空後把已存 key 蓋掉
         if (google_key or "").strip():
             st.session_state["google_api_key"] = (google_key or "").strip()
         if (grok_key or "").strip():
             st.session_state["grok_api_key"] = (grok_key or "").strip()
+        if (groq_key or "").strip():
+            st.session_state["groq_api_key"] = (groq_key or "").strip()
         if (openrouter_key or "").strip():
             st.session_state["openrouter_api_key"] = (openrouter_key or "").strip()
         if llm_provider == "Gemini":
@@ -6456,15 +6506,37 @@ with st.sidebar:
             st.session_state["openrouter_model"] = openrouter_model
         else:
             st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
+        if llm_provider == "Groq":
+            groq_models = [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "llama-3.1-70b-versatile",
+                "llama-3.1-405b-reasoning",
+                "mixtral-8x7b-32768",
+            ]
+            groq_model = st.selectbox(
+                "Groq 模型",
+                options=groq_models,
+                index=0,
+                help="Groq 提供之 Llama / Mixtral 等模型，見 https://console.groq.com/docs/models",
+            )
+            st.session_state["groq_model"] = groq_model
+        else:
+            st.session_state["groq_model"] = "llama-3.1-8b-instant"
 
         # 供「全球情報」News Feed 使用的 LLM：與側欄選擇一致。Key 以 session 為準（rerun 時 password 欄位會清空，需用 session 保留）
         grok_key_effective = (grok_key or "").strip() or st.session_state.get("grok_api_key") or ""
+        groq_key_effective = (groq_key or "").strip() or st.session_state.get("groq_api_key") or ""
         openrouter_key_effective = (openrouter_key or "").strip() or st.session_state.get("openrouter_api_key") or ""
         google_key_effective = (google_key or "").strip() or st.session_state.get("google_api_key") or ""
         if llm_provider == "Grok" and grok_key_effective:
             st.session_state["feed_llm_provider"] = "Grok"
             st.session_state["feed_llm_key"] = grok_key_effective
             st.session_state["feed_llm_model"] = "grok-2"
+        elif llm_provider == "Groq" and groq_key_effective:
+            st.session_state["feed_llm_provider"] = "Groq"
+            st.session_state["feed_llm_key"] = groq_key_effective
+            st.session_state["feed_llm_model"] = st.session_state.get("groq_model", "llama-3.1-8b-instant")
         elif llm_provider == "OpenRouter" and openrouter_key_effective:
             st.session_state["feed_llm_provider"] = "OpenRouter"
             st.session_state["feed_llm_key"] = openrouter_key_effective
@@ -7146,10 +7218,13 @@ if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     # 與側欄同一輪：用 session 決定 feed 用哪個 LLM，並直接傳入避免讀取時序問題
     _lp = st.session_state.get("llm_provider", "Gemini")
     _gk = (st.session_state.get("grok_api_key") or "").strip()
+    _gqk = (st.session_state.get("groq_api_key") or "").strip()
     _ok = (st.session_state.get("openrouter_api_key") or "").strip()
     _gkey = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
     if _lp == "Grok" and _gk:
         _fp, _fk, _fm = "Grok", _gk, "grok-2"
+    elif _lp == "Groq" and _gqk:
+        _fp, _fk, _fm = "Groq", _gqk, st.session_state.get("groq_model", "llama-3.1-8b-instant")
     elif _lp == "OpenRouter" and _ok:
         _fp, _fk, _fm = "OpenRouter", _ok, st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
     else:
@@ -7460,13 +7535,19 @@ else:
             openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
             llm_provider = st.session_state.get("llm_provider", "Gemini")
             grok_key = st.session_state.get("grok_api_key")
+            groq_key = st.session_state.get("groq_api_key")
             openrouter_key = st.session_state.get("openrouter_api_key")
             openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+            groq_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
             use_grok = (llm_provider == "Grok" and grok_key)
+            use_groq = (llm_provider == "Groq" and groq_key)
             use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
             if use_grok:
                 effective_key = grok_key
                 effective_model = "grok-2"
+            elif use_groq:
+                effective_key = groq_key
+                effective_model = groq_model
             elif use_openrouter:
                 effective_key = openrouter_key
                 effective_model = openrouter_model
@@ -7481,6 +7562,7 @@ else:
                     openai_api_key=openai_api_key, openai_model=openai_model,
                     manipulation_signals=manipulation_signals_text,
                     use_grok=use_grok,
+                    use_groq=use_groq,
                     use_openrouter=use_openrouter
                 )
             except ChatGoogleGenerativeAIError as e:
@@ -7545,6 +7627,7 @@ else:
                                 openai_api_key=openai_api_key, openai_model=openai_model,
                                 manipulation_signals=manipulation_signals_text,
                                 use_grok=use_grok,
+                                use_groq=use_groq,
                                 use_openrouter=use_openrouter
                             )
                             # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
@@ -7810,12 +7893,17 @@ else:
                     openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
                     llm_provider = st.session_state.get("llm_provider", "Gemini")
                     grok_key = st.session_state.get("grok_api_key")
+                    groq_key = st.session_state.get("groq_api_key")
                     openrouter_key = st.session_state.get("openrouter_api_key")
                     openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+                    groq_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
                     use_grok = (llm_provider == "Grok" and grok_key)
+                    use_groq = (llm_provider == "Groq" and groq_key)
                     use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
                     if use_grok:
                         effective_key, effective_model = grok_key, "grok-2"
+                    elif use_groq:
+                        effective_key, effective_model = groq_key, groq_model
                     elif use_openrouter:
                         effective_key, effective_model = openrouter_key, openrouter_model
                     else:
@@ -7825,6 +7913,7 @@ else:
                         mode="DEEP_SCENARIO",
                         openai_api_key=openai_api_key, openai_model=openai_model,
                         use_grok=use_grok,
+                        use_groq=use_groq,
                         use_openrouter=use_openrouter
                     )
                     st.session_state.scenario_result = parse_gemini_data(raw_text) 
