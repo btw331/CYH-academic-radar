@@ -4719,14 +4719,14 @@ def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mi
         raise Exception(f"OpenAI API 調用失敗: {error_msg[:200]}") from e
 
 
-def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-2", api_key: Optional[str] = None) -> str:
+def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-3", api_key: Optional[str] = None) -> str:
     """
     呼叫 xAI Grok API（OpenAI 相容端點 https://api.x.ai/v1）。
 
     Args:
         system_prompt: 系統提示
         user_text: 用戶輸入
-        model_name: Grok 模型名稱（預設 grok-2，可選 grok-beta、grok-2-mini 等）
+        model_name: Grok 模型名稱（預設 grok-3；xAI 已下架 grok-2，請用 grok-3 / grok-3-mini / grok-4 等）
         api_key: xAI API Key
 
     Returns:
@@ -4841,7 +4841,7 @@ def _call_llm_for_feed(
         raise ValueError("未提供 API Key")
     provider = (provider or "Gemini").strip()
     if provider == "Grok":
-        return call_grok(system_prompt, user_text, model_name or "grok-2", api_key)
+        return call_grok(system_prompt, user_text, model_name or "grok-3", api_key)
     if provider == "Groq":
         return call_groq(system_prompt, user_text, model_name or "llama-3.1-8b-instant", api_key)
     if provider == "OpenRouter":
@@ -5233,7 +5233,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         system_prompt = system_prompt.replace("[MANIPULATION_SIGNALS]", replacement)
 
     if use_grok and api_key:
-        return call_grok(system_prompt, context_text, model_name or "grok-2", api_key)
+        return call_grok(system_prompt, context_text, model_name or "grok-3", api_key)
     if use_groq and api_key:
         return call_groq(system_prompt, context_text, model_name or "llama-3.1-8b-instant", api_key)
     if use_openrouter and api_key:
@@ -5896,7 +5896,7 @@ def render_news_feed_page(
         if llm_provider == "Grok" and grok_key:
             feed_llm_provider = "Grok"
             feed_llm_key = grok_key
-            feed_llm_model = "grok-2"
+            feed_llm_model = st.session_state.get("grok_model", "grok-3")
         elif llm_provider == "Groq" and groq_key:
             feed_llm_provider = "Groq"
             feed_llm_key = groq_key
@@ -6458,6 +6458,17 @@ with st.sidebar:
             st.session_state["google_api_key"] = (google_key or "").strip()
         if (grok_key or "").strip():
             st.session_state["grok_api_key"] = (grok_key or "").strip()
+        if llm_provider == "Grok":
+            grok_models = ["grok-3", "grok-3-mini", "grok-4", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"]
+            grok_model = st.selectbox(
+                "Grok 模型",
+                options=grok_models,
+                index=0,
+                help="xAI 已下架 grok-2，請選 grok-3 或更新型號。見 https://x.ai/api",
+            )
+            st.session_state["grok_model"] = grok_model
+        else:
+            st.session_state["grok_model"] = "grok-3"
         if (groq_key or "").strip():
             st.session_state["groq_api_key"] = (groq_key or "").strip()
         if (openrouter_key or "").strip():
@@ -6532,7 +6543,7 @@ with st.sidebar:
         if llm_provider == "Grok" and grok_key_effective:
             st.session_state["feed_llm_provider"] = "Grok"
             st.session_state["feed_llm_key"] = grok_key_effective
-            st.session_state["feed_llm_model"] = "grok-2"
+            st.session_state["feed_llm_model"] = st.session_state.get("grok_model", "grok-3")
         elif llm_provider == "Groq" and groq_key_effective:
             st.session_state["feed_llm_provider"] = "Groq"
             st.session_state["feed_llm_key"] = groq_key_effective
@@ -7222,7 +7233,7 @@ if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     _ok = (st.session_state.get("openrouter_api_key") or "").strip()
     _gkey = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
     if _lp == "Grok" and _gk:
-        _fp, _fk, _fm = "Grok", _gk, "grok-2"
+        _fp, _fk, _fm = "Grok", _gk, st.session_state.get("grok_model", "grok-3")
     elif _lp == "Groq" and _gqk:
         _fp, _fk, _fm = "Groq", _gqk, st.session_state.get("groq_model", "llama-3.1-8b-instant")
     elif _lp == "OpenRouter" and _ok:
@@ -7544,7 +7555,7 @@ else:
             use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
             if use_grok:
                 effective_key = grok_key
-                effective_model = "grok-2"
+                effective_model = st.session_state.get("grok_model", "grok-3")
             elif use_groq:
                 effective_key = groq_key
                 effective_model = groq_model
@@ -7901,7 +7912,7 @@ else:
                     use_groq = (llm_provider == "Groq" and groq_key)
                     use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
                     if use_grok:
-                        effective_key, effective_model = grok_key, "grok-2"
+                        effective_key, effective_model = grok_key, st.session_state.get("grok_model", "grok-3")
                     elif use_groq:
                         effective_key, effective_model = groq_key, groq_model
                     elif use_openrouter:
