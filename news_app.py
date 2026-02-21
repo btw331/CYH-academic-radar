@@ -4752,6 +4752,11 @@ def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-3", ap
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Grok API 調用失敗: {error_msg}")
+        # 403 / 額度不足：給予可操作的中文說明
+        if "403" in error_msg or "permission" in error_msg.lower() or "credits" in error_msg.lower() or "licenses" in error_msg.lower():
+            raise Exception(
+                "xAI 帳戶尚無額度或授權（403）。請至 xAI 後台為您的團隊購買 credits 或綁定方案後再試。"
+            ) from e
         raise Exception(f"Grok API 調用失敗: {error_msg[:200]}") from e
 
 
@@ -5109,7 +5114,8 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         【分析方法論】：
         1. **ACH 競爭假設分析**：提出多個解釋假設，並進行詳細的證據權重評估。
-        2. **邏輯謬誤偵測**：識別文本中的推論缺陷（如滑坡、稻草人、錯誤歸因）。
+        2. **邏輯謬誤偵測**：識別文本中的推論缺陷，包含但不限於：
+           - 滑坡謬誤、假兩難悖論（非黑即白）、預設謬誤／乞題、稻草人、訴諸人身、訴諸權威、訴諸情感、因果謬誤、以偏概全、訴諸無知、循環論證、紅鯡魚（轉移焦點）。
         3. **Entman 框架分析**：解構不同陣營如何透過「選擇」與「凸顯」來建構現實。
         4. **深層偏見解構**：分析結構性遺漏（Missing Voices）、知識論模態（Epistemic Modality）與隱含前提（Enthymeme）。
         5. **資訊操作偵測**：識別協同性行為與語義旋轉。
@@ -5138,8 +5144,9 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
            |:---|:---|:---|:---|
            
         2. **🔍 爭議點與事實查核 (Fact-Check & Logic Scan)**
-           **邏輯謬誤偵測**：
-           | 謬誤類型 | 來源 | 原文片段 | 深度分析 (該謬誤如何影響受眾認知?) |
+           **邏輯謬誤偵測**（請掃描並標註以下類型，若無則留空）：
+           - 滑坡謬誤 (Slippery Slope)、假兩難悖論 (False Dilemma)、預設謬誤／乞題 (Begging the Question)、稻草人 (Straw Man)、訴諸人身 (Ad Hominem)、訴諸權威 (Appeal to Authority)、訴諸情感 (Appeal to Emotion)、因果謬誤 (Causal Fallacy)、以偏概全 (Hasty Generalization)、訴諸無知 (Appeal to Ignorance)、循環論證 (Circular Reasoning)、紅鯡魚 (Red Herring)
+           | 謬誤類型 | 來源 (Source ID) | 原文片段 | 深度分析 (該謬誤如何影響受眾認知?) |
            |:---|:---|:---|:---|
            
            **事實查核結果** (若有)：
@@ -7005,16 +7012,21 @@ flowchart LR
     with st.expander("9. 邏輯謬誤偵測 (Logic Fallacy Detection)", expanded=False):
         st.markdown("""
         **系統性邏輯掃描 (Systematic Logic Scan)**
-        AI 會自動掃描文本中的邏輯謬誤，識別論證缺陷：
+        AI 會自動掃描文本中的邏輯謬誤，識別論證缺陷。
         
-        **常見謬誤類型**
-        - **滑坡謬誤 (Slippery Slope)**：誇大小事與大災難之間的因果關係
-        - **稻草人論證 (Straw Man)**：扭曲對手觀點以便攻擊
-        - **訴諸情感 (Appeal to Emotion)**：用情感訴求替代理性論證
-        - **錯誤二分法 (False Dilemma)**：將複雜議題簡化為非黑即白
-        - **訴諸權威 (Appeal to Authority)**：過度依賴權威而非證據
-        - **因果謬誤 (Causal Fallacy)**：混淆相關性與因果關係
-        - **以偏概全 (Hasty Generalization)**：從少數案例推論整體
+        **常見謬誤類型（參考常見批判性思維教材）**
+        - **滑坡謬誤 (Slippery Slope)**：誇大小事與大災難之間的因果連結，如「若 A 則必然 B、C、D…最終大禍臨頭」
+        - **假兩難悖論 (False Dilemma)**：將複雜議題簡化為非黑即白的二元選項，如「不是盟友就是敵人」
+        - **預設謬誤／乞題 (Begging the Question)**：論證的結論已預設在前提中，循環論證，如以「因為不該做 X」來論證「不該做 X」
+        - **稻草人論證 (Straw Man)**：扭曲或誇大對手觀點以便攻擊，而非回應真實論點
+        - **訴諸人身 (Ad Hominem)**：攻擊論者的人格、動機或背景，而非其論點本身
+        - **訴諸權威 (Appeal to Authority)**：過度依賴權威身分而非證據或推理
+        - **訴諸情感 (Appeal to Emotion)**：用恐懼、憤怒、同情等情感訴求替代理性論證
+        - **因果謬誤 (Causal Fallacy)**：混淆相關性與因果關係，或倒果為因
+        - **以偏概全 (Hasty Generalization)**：從少數案例或不具代表性樣本推論整體
+        - **訴諸無知 (Appeal to Ignorance)**：主張「無法證明為假」即「為真」，或反之
+        - **循環論證 (Circular Reasoning)**：前提與結論互相依賴，實質上未提供新論據
+        - **紅鯡魚 (Red Herring)**：引入不相關話題轉移焦點，偏離原爭議
         
         **偵測要求**
         - 必須列出謬誤的具體位置（Source ID + 原文片段）
