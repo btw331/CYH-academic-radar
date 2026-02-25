@@ -160,6 +160,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 # AI 輸出必需的章節標記
 REQUIRED_SECTIONS_FUSION = [
+    "NBLM 核心導讀指南",
     "ACH 競爭假設分析",
     "整體現況與脈絡",
     "爭議點與事實查核",
@@ -5133,6 +5134,24 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         (Markdown 報告 - 繁體中文)
         
         **⚠️ 標題與內文風格**：報告開頭請以一句 **# 簡短標題** 總括本議題；標題須**中性、平衡報導風格**，勿使用戰爭隱喻或聳動用語（如「開戰」「對決」「烽火」）。全文各節小標與表格內文字亦須符合平衡報導與去軍事化表述。
+        
+        **📚 NBLM 核心導讀指南 (Document Study Guide)**（請緊接標題後產出，嚴格依據 Context 文本內容提取，幫助讀者快速掌握陌生議題）
+        * **1. 📖 關鍵術語辭典 (Glossary)**
+          (提取 3-5 個文本中出現的專有名詞、法案或行話，並依據文本給出精確定義；每項須標註 Source ID)
+          - **[術語 A]**：(定義說明) [Source X]
+          - **[術語 B]**：(定義說明) [Source X]
+        * **2. 👤 關鍵實體與角色 (Key Entities)**
+          (列出核心參與的人物、國家或機構，並用一句話總結他們在此事件中的行為或立場；每項須標註 Source ID)
+          - **[實體 A]**：(角色與行為總結) [Source X]
+          - **[實體 B]**：(角色與行為總結) [Source X]
+        * **3. ❓ 核心問答集 (FAQ)**
+          (預判讀者對於此議題最想了解的 3 個核心問題，並給出精簡解答；解答須僅依據 Context 來源，並標註 Source ID)
+          - **Q1: [問題]**
+            **A:** [解答] [Source X]
+          - **Q2: [問題]**
+            **A:** [解答] [Source X]
+          - **Q3: [問題]**
+            **A:** [解答] [Source X]
         
         0. **🎯 ACH 競爭假設分析 (Analysis of Competing Hypotheses)**
            | 假設 | 支持證據 (請詳述) | 反對證據 (請詳述) | 可信度評估 | 關鍵變數 |
