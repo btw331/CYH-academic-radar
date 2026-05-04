@@ -78,6 +78,17 @@ SUMMARY_THRESHOLD = 2000  # 超過此長度將進行摘要
 CACHE_DIR = Path(".cache")
 CACHE_DB_PATH = CACHE_DIR / "search_cache.db"
 LAST_PDF_EXPORT_ERROR = ""
+GEMINI_MODEL_OPTIONS = [
+    "gemini-3.1-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+]
+DEFAULT_GEMINI_MODEL = GEMINI_MODEL_OPTIONS[0]
+GEMINI_FALLBACK_MODELS = [
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
+]
 
 # ==========================================
 # 語言風格分析閾值常數（優化：抽取魔法數字）
@@ -1173,7 +1184,7 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
     focus_display = (focus_instruction or "").strip() or "無（請依照標準情報程序分析）"
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
+        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.4)
         
         combined_prompt = f"""
         你是極度專業的情報檢索專家。請針對議題「{query}」生成「實體優先」的搜尋關鍵字，**必須產出專有名詞與具體術語**，不可只輸出「議題+泛用詞」。
@@ -1336,7 +1347,7 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
                 logger.warning(f"快取中的 balanced_queries 不是字典類型: {type(balanced_queries).__name__}，重新生成")
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.4)
+        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.4)
         
         prompt = f"""
 針對爭議議題「{query}」，請生成三組「對抗性」搜尋查詢，使用情感導向詞彙以確保捕捉不同立場：
@@ -1484,7 +1495,7 @@ def translate_queries_to_english(
 
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2
+            model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2
         )
         prompt = f"""You are a search query translator for news and current affairs.
 
@@ -1554,7 +1565,7 @@ def translate_queries_to_japanese_korean(
 
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2
+            model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2
         )
         prompt = f"""You are a search query translator for news. Output search queries in Japanese and Korean for the same topic.
 
@@ -1683,7 +1694,7 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str]
             sources_text = "\n\n".join(sources_summary)
             
             # 使用 LLM 分析共同事實和分歧點
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
+            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.3)
             
             analysis_prompt = f"""
 針對議題「{query or '相關議題'}」，以下是一系列不同立場的來源報導：
@@ -2481,7 +2492,7 @@ def extract_claims_from_sources(sources: List[Dict], api_key: str) -> List[Dict[
     claims = []
     
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.3)
+        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.3)
         
         # 優化：增加批次大小，減少 API 調用次數（從 5 增加到 8）
         # 注意：如果來源很多，可以進一步優化為只提取前 N 個高品質來源的聲明
@@ -3206,7 +3217,7 @@ Title: {title_b}
 Excerpt: {content_b}"""
 
     try:
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.2)
+        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2)
         raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
         if not raw:
             return None
@@ -4035,7 +4046,7 @@ def determine_issue_category(query: str, api_key: Optional[str] = None) -> Dict[
         try:
             system_prompt = "Classify the query into one of three issue_types: 'TAIWAN_DOMESTIC', 'CROSS_STRAIT', or 'INTERNATIONAL'. Also extract key_actors. Output ONLY valid JSON: {\"issue_type\": \"...\", \"key_actors\": [\"...\"]}."
             prompt = f"{system_prompt}\n\nQuery: {q[:300]}"
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key, temperature=0.0)
+            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.0)
             raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
             if raw:
                 obj: Dict[str, Any] = {}
@@ -4737,7 +4748,7 @@ def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
     if google_key:
         try:
             os.environ["GOOGLE_API_KEY"] = google_key
-            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=google_key, temperature=0.0)
+            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=google_key, temperature=0.0)
             test_response = llm.invoke("test")
             if not test_response or not test_response.content:
                 return False, "Gemini API Key 無效：無法取得回應"
@@ -4949,7 +4960,7 @@ def _call_llm_for_feed(
         return call_groq(system_prompt, user_text, model_name or "llama-3.1-8b-instant", api_key)
     if provider == "OpenRouter":
         return call_openrouter(system_prompt, user_text, model_name or "google/gemini-2.0-flash-exp", api_key)
-    return call_gemini(system_prompt, user_text, model_name or "gemini-2.5-flash", api_key, openai_api_key=None)
+    return call_gemini(system_prompt, user_text, model_name or DEFAULT_GEMINI_MODEL, api_key, openai_api_key=None)
 
 
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
@@ -4986,7 +4997,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
         if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
             logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用模型")
             # 直接降級到穩定版本
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+            fallback_models = [m for m in GEMINI_FALLBACK_MODELS if m != model_name]
             for fallback_model in fallback_models:
                 try:
                     logger.info(f"模型 {model_name} 不可用，嘗試使用 {fallback_model}")
@@ -5020,8 +5031,8 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"- 錯誤類型：{error_type}\n"
                 f"- 錯誤訊息：{error_msg[:200]}\n\n"
                 f"**解決方案：**\n"
-                f"1. 檢查模型名稱是否正確（應使用 gemini-3-flash-preview 而非 gemini-3.0-flash）\n"
-                f"2. 切換到穩定的模型版本（如 gemini-2.5-flash）\n"
+                f"1. 檢查模型名稱是否正確（目前保留 Gemini 3.1 / 3.0 preview 系列）\n"
+                f"2. 切換到 Gemini 3.0 preview 備援模型\n"
                 f"3. 檢查 Google AI Studio 中的可用模型列表\n"
             )
             if openai_api_key:
@@ -5034,15 +5045,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
         if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
             # 決定降級策略：根據模型版本選擇適當的降級目標
             fallback_models = []
-            if "3-pro" in model_name.lower() or "3-pro-preview" in model_name.lower():
-                # Gemini 3 Pro -> 3 Flash -> 2.5 Flash
-                fallback_models = ["gemini-3-flash-preview", "gemini-2.5-flash"]
-            elif "3-flash" in model_name.lower() or "3-flash-preview" in model_name.lower():
-                # Gemini 3 Flash -> 2.5 Flash
-                fallback_models = ["gemini-2.5-flash"]
-            elif "2.5-pro" in model_name.lower():
-                # Gemini 2.5 Pro -> 2.5 Flash
-                fallback_models = ["gemini-2.5-flash"]
+            fallback_models = [m for m in GEMINI_MODEL_OPTIONS if m != model_name]
             
             # 如果是 pro 模型，嘗試降級到其他 Gemini 模型
             if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
@@ -5107,7 +5110,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"4. **升級方案**：\n"
                 f"   - 升級到 Google AI Studio 付費方案以獲得更高配額\n"
                 f"5. **其他建議**：\n"
-                f"   - 嘗試使用 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n"
+                f"   - 嘗試使用 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）\n"
                 f"   - 減少單次請求的 token 數量\n\n"
                 f"**原始錯誤**：{error_msg[:200]}"
             )
@@ -5674,7 +5677,7 @@ def _summarize_feed_with_llm(
 請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, url, analysis_keywords。"""
     user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。**每則的 url 請從對應原文的「URL:」後方完整複製。**\n\n{raw_news_text[:20000]}"""
     try:
-        raw = call_gemini(system_prompt, user_prompt, "gemini-2.5-flash", api_key)
+        raw = call_gemini(system_prompt, user_prompt, DEFAULT_GEMINI_MODEL, api_key)
         if not raw:
             return []
         items = _extract_json_list_from_llm_raw(raw)
@@ -5703,7 +5706,7 @@ def _summarize_continent_feed_with_llm(
     api_key: str,
     continent: str,
     llm_provider: str = "Gemini",
-    llm_model: str = "gemini-2.5-flash",
+    llm_model: str = DEFAULT_GEMINI_MODEL,
 ) -> List[Dict[str, Any]]:
     """
     單一洲別合併摘要：一次 LLM 產出該洲「政治／經濟／科技」三類要聞，每則帶 topic 欄位。
@@ -6082,7 +6085,7 @@ def fetch_intelligence_feed_rss(
 def render_news_feed_page(
     google_key: str,
     tavily_key: str,
-    gemini_model: str = "gemini-2.5-flash",
+    gemini_model: str = DEFAULT_GEMINI_MODEL,
     feed_llm_provider: Optional[str] = None,
     feed_llm_key: Optional[str] = None,
     feed_llm_model: Optional[str] = None,
@@ -6113,7 +6116,7 @@ def render_news_feed_page(
         else:
             feed_llm_provider = "Gemini"
             feed_llm_key = google_key_this_run or google_key_stored or None
-            feed_llm_model = gemini_model or st.session_state.get("gemini_model", "gemini-2.5-flash")
+            feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
     llm_provider = st.session_state.get("llm_provider", "Gemini")
 
@@ -7157,29 +7160,24 @@ with st.sidebar:
         if llm_provider == "Gemini":
             model_name = st.selectbox(
                 "Gemini 模型",
-                [
-                    "gemini-3-pro-preview",
-                    "gemini-3-flash-preview",
-                    "gemini-2.5-pro",
-                    "gemini-2.5-flash",
-                    "gemini-2.5-flash-lite"
-                ],
-                index=1,
-                help="選擇用於分析的 Gemini 模型版本。免費層對 pro 模型配額較嚴，建議使用 flash。"
+                GEMINI_MODEL_OPTIONS,
+                index=0,
+                help="僅保留 Gemini 3.1 / 3.0 preview 系列；預設使用 3.1 Flash Preview。"
             )
             st.session_state["gemini_model"] = model_name
-            if "3-pro" in model_name:
-                st.info("🚀 **Gemini 3 Pro Preview**：最強性能，適合複雜分析")
+            if "3.1-pro" in model_name:
+                st.info("🚀 **Gemini 3.1 Pro Preview**：適合複雜深度分析")
+            elif "3.1-flash" in model_name:
+                st.info("⚡ **Gemini 3.1 Flash Preview**：預設推薦，適合搜尋策略與一般分析")
+            elif "3-pro" in model_name:
+                st.info("🚀 **Gemini 3.0 Pro Preview**：3.0 系列深度分析備援")
             elif "3-flash" in model_name:
-                st.info("⚡ **Gemini 3 Flash Preview**：推薦，配額較寬鬆")
-            elif "2.5-pro" in model_name:
-                st.warning("⚠️ 免費層對 gemini-2.5-pro 配額非常嚴格，建議改用 flash。")
+                st.info("⚡ **Gemini 3.0 Flash Preview**：3.0 系列快速備援")
         else:
-            model_name = st.session_state.get("gemini_model", "gemini-2.5-flash")
+            model_name = st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
         if llm_provider == "OpenRouter":
             openrouter_paid = [
                 "google/gemini-2.0-flash-exp",
-                "google/gemini-2.5-pro-preview",
                 "anthropic/claude-3.5-sonnet",
                 "anthropic/claude-3-opus",
                 "openai/gpt-4o",
@@ -7236,7 +7234,7 @@ with st.sidebar:
         else:
             st.session_state["feed_llm_provider"] = "Gemini"
             st.session_state["feed_llm_key"] = google_key_effective or None
-            st.session_state["feed_llm_model"] = model_name or "gemini-2.5-flash"
+            st.session_state["feed_llm_model"] = model_name or DEFAULT_GEMINI_MODEL
 
         # API Key 驗證按鈕（Tavily Key 在下方「Tavily 搜尋設定」輸入）
         if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
@@ -7528,7 +7526,7 @@ flowchart LR
         
         **語義旋轉偵測 (Semantic Spin Detection)**
         當存在跨網域聯播群組時，取「最大群組」中一則為**敘事 A**，另選一則**不在群組內、優先不同 source_category** 的來源為**敘事 B**：
-        - 將 A、B 的標題與正文前 500 字送交 LLM（gemini-2.5-flash）
+        - 將 A、B 的標題與正文前 500 字送交 LLM（預設 Gemini 3.1 Flash Preview）
         - 要求輸出：**共享客觀事實**、**A 的框架/Spin**、**B 的框架/Spin**、**Spin Score (0~1，>0.6 為高操弄)**
         - 結果寫入 [MANIPULATION_SIGNALS]，供報告中「敘事操縱與資訊操作風險」區塊引用
         
@@ -7932,7 +7930,7 @@ elif st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     elif _lp == "OpenRouter" and _ok:
         _fp, _fk, _fm = "OpenRouter", _ok, st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
     else:
-        _fp, _fk, _fm = "Gemini", (_gkey or None), (model_name or st.session_state.get("gemini_model", "gemini-2.5-flash"))
+        _fp, _fk, _fm = "Gemini", (_gkey or None), (model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL))
     render_news_feed_page(google_key, tavily_key, model_name, feed_llm_provider=_fp, feed_llm_key=_fk, feed_llm_model=_fm)
 elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis)":
     st.title("🧾 新聞文本分析")
@@ -7987,7 +7985,7 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             effective_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
         else:
             effective_key = google_key_effective
-            effective_model = model_name or st.session_state.get("gemini_model", "gemini-2.5-flash")
+            effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
         if not effective_key:
             st.error("請先在側欄輸入可用的 LLM API Key。")
@@ -8542,7 +8540,7 @@ else:
                             1. 檢查 OpenAI API Key 是否正確
                             2. 檢查 OpenAI 配額使用情況
                             3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
-                            4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）
+                            4. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）
                         
                             **原始錯誤**：{original_error_msg[:500]}
                             """)
@@ -8568,7 +8566,7 @@ else:
                         """
                         if not openai_api_key:
                             error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
-                        error_display += f"5. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash（配額限制較寬鬆）\n\n"
+                        error_display += f"5. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）\n\n"
                         error_display += f"**原始錯誤**：{original_error_msg[:500]}"
                     
                         st.error(error_display)
@@ -8585,7 +8583,7 @@ else:
                     1. 檢查配額：https://ai.dev/rate-limit
                     2. 等待配額重置（通常每分鐘/每天重置）
                     3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
-                    4. 切換到 gemini-3-flash-preview 或 gemini-2.5-flash
+                    4. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview
                     """)
                 else:
                     st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
