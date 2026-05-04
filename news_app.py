@@ -180,6 +180,17 @@ REQUIRED_SECTIONS_SCENARIO = [
     "綜合發展與因應建議"
 ]
 
+REQUIRED_SECTIONS_TEXT_ANALYSIS = [
+    "新聞核心主張摘要",
+    "文本可信度與證據強度",
+    "語言與情緒操控檢測",
+    "Entman 框架分析",
+    "邏輯謬誤與事實查核風險",
+    "深層偏見與認知盲區",
+    "Cui Bono",
+    "資訊不足與橫向查證建議"
+]
+
 
 def _extract_text_from_llm_content(content: Any) -> str:
     """
@@ -1813,7 +1824,14 @@ def validate_ai_output_format(raw_text: str, mode: str = "FUSION") -> Dict[str, 
             'score': 0.0
         }
     
-    required_sections = REQUIRED_SECTIONS_FUSION if mode == "FUSION" else REQUIRED_SECTIONS_SCENARIO
+    if mode == "FUSION":
+        required_sections = REQUIRED_SECTIONS_FUSION
+    elif mode == "DEEP_SCENARIO":
+        required_sections = REQUIRED_SECTIONS_SCENARIO
+    elif mode == "TEXT_ANALYSIS":
+        required_sections = REQUIRED_SECTIONS_TEXT_ANALYSIS
+    else:
+        required_sections = []
     
     validation = {
         'is_valid': True,
@@ -1855,7 +1873,8 @@ def validate_ai_output_format(raw_text: str, mode: str = "FUSION") -> Dict[str, 
     # 計算分數（0-100）
     base_score = 50 if validation['has_timeline'] else 0
     base_score += 30 if validation['has_report'] else 0
-    base_score += 10 * (len(required_sections) - len(validation['missing_sections'])) / len(required_sections)
+    if required_sections:
+        base_score += 10 * (len(required_sections) - len(validation['missing_sections'])) / len(required_sections)
     base_score += 3 if validation['has_ach_table'] else 0
     base_score += 3 if validation['has_logic_table'] else 0
     base_score += 4 if validation['has_framing_table'] else 0
@@ -5253,6 +5272,85 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         3. **💀 驗屍分析 (Pre-mortem Analysis)**
         4. **💡 綜合發展與因應建議**
         """
+    elif mode == "TEXT_ANALYSIS":
+        system_prompt = f"""
+        你是一位極度嚴謹的新聞文本分析師、媒體識讀教師與社會科學研究者。
+
+        【⚠️ 時間錨點】：今天是 {today_str}。
+        {tone_instruction}
+
+        【分析任務】：
+        使用使用者貼上的單篇新聞文本進行文本取證式分析。你的任務不是重寫新聞摘要，而是解構這篇新聞如何建構現實、如何使用語言、哪些證據可靠、哪些推論需要查證。
+
+        【方法論要求】：
+        1. **GRADE / CERQual 證據強度**：根據 Context 中提供的來源分類、內容品質、語言風格、引用密度與資訊完整性評估可信度。
+        2. **Entman 框架分析**：分析問題定義、歸因、道德評價、解決方案或行動暗示。
+        3. **邏輯謬誤偵測**：掃描滑坡謬誤、假兩難、預設謬誤、稻草人、訴諸人身、訴諸權威、訴諸情感、因果謬誤、以偏概全、訴諸無知、循環論證、紅鯡魚。
+        4. **深層偏見解構**：分析結構性遺漏、Missing Voices、隱含前提、知識論模態與狗哨/暗語。
+        5. **Cui Bono 利益分析**：辨識這種敘事可能使哪些行動者受益，並說明受益機制。
+        6. **水平閱讀建議**：指出若要查證，應補哪些外部資料或不同立場來源。
+
+        【引用規則】：
+        - 只能引用 Context 中的內容。
+        - 單篇新聞一律標註為 [Source 1]。
+        - 分析必須引用原文片段或具體用詞，避免空泛評論。
+        - 若證據不足，請明確標註「資訊不足」，不要臆測。
+
+        【輸出格式 (嚴格遵守)】：
+        ### [DATA_TIMELINE]
+        (單篇文本分析通常留空；若文本中有明確日期事件，可用 YYYY-MM-DD|來源|事件|Source 1 列出)
+
+        ### [REPORT_TEXT]
+        (Markdown 報告 - 繁體中文)
+
+        # [中性、平衡的新聞文本分析標題]
+
+        ## 1. 新聞核心主張摘要
+        - **主張 A**：[用 1-2 句說明，標註 Source 1]
+        - **主張 B**：[如有]
+        - **可確認事實 / 解釋性說法 / 推測性說法**：請分開說明。
+
+        ## 2. 文本可信度與證據強度
+        | 評估面向 | 觀察 | 風險或可信度影響 |
+        |:---|:---|:---|
+        | 內容完整性 | ... | ... |
+        | 引用與歸因 | ... | ... |
+        | 來源與利益關係 | ... | ... |
+        | 證據強度 | ... | ... |
+
+        ## 3. 語言與情緒操控檢測
+        - **情緒詞與修辭**：引用具體字詞並分析其效果。
+        - **標題與內文落差**：若有，說明落差如何影響理解。
+        - **知識論模態**：辨識「可能、恐、據稱、專家認為」等不確定性標記。
+
+        ## 4. Entman 框架分析
+        | 框架元素 | 本文如何呈現 | 原文依據 |
+        |:---|:---|:---|
+        | 問題定義 | ... | ... |
+        | 歸因分析 | ... | ... |
+        | 道德評價 | ... | ... |
+        | 解決方案 / 行動暗示 | ... | ... |
+
+        ## 5. 邏輯謬誤與事實查核風險
+        | 類型 | 原文片段 | 分析 | 查證需求 |
+        |:---|:---|:---|:---|
+        | ... | ... | ... | ... |
+
+        ## 6. 深層偏見與認知盲區
+        - **結構性遺漏**：哪些人、資料或反方觀點缺席？
+        - **隱含前提**：文本要成立，讀者必須先接受哪些假設？
+        - **狗哨/暗語與身份動員**：若有，引用原文並說明。
+        - **知識論風險**：哪些推測被包裝成事實？
+
+        ## 7. Cui Bono 與利益分析
+        - **可能受益者 A**：其利益、動機與文本框架之間的關聯。
+        - **可能受益者 B**：如有。
+
+        ## 8. 資訊不足與橫向查證建議
+        - **目前不足**：列出無法只靠本文確認的關鍵資訊。
+        - **建議查證來源**：官方文件、原始數據、當事方說法、獨立媒體、事實查核機構等。
+        - **讀者判讀提醒**：用 2-3 點給出媒體識讀建議。
+        """
     else:
         system_prompt = f"請針對 {query} 進行分析。"
 
@@ -6439,6 +6537,80 @@ def convert_data_to_md(data):
 {timeline_md}
     """
 
+def build_news_text_context(title: str, source_name: str, source_url: str, content: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
+    """將使用者貼上的單篇新聞整理成既有分析流程可讀的 Source context。"""
+    clean_title = (title or "未提供標題").strip()
+    clean_source_name = (source_name or "使用者貼上文本").strip()
+    clean_source_url = (source_url or "#").strip() or "#"
+    clean_content = (content or "").strip()
+    source_category = classify_source(clean_source_url) if clean_source_url != "#" else "OTHER"
+    evidence_level, evidence_score, evidence_details = calculate_academic_evidence_level(
+        clean_source_url,
+        source_category,
+        clean_content,
+        clean_title,
+        all_sources=None,
+    )
+    language_style = evidence_details.get("language_style", analyze_language_style(clean_content, clean_title))
+    content_quality = evidence_details.get("content_score", 0.0)
+    language_flags = language_style.get("flags", [])
+    language_flags_text = ", ".join(language_flags) if language_flags else "未偵測到明顯警示"
+    source = {
+        "title": clean_title,
+        "url": clean_source_url,
+        "content": clean_content,
+        "source_category": source_category,
+        "evidence_level": evidence_level,
+        "evidence_score": evidence_score,
+        "published_date": None,
+    }
+    context_text = f"""
+【新聞文本分析 Context】
+[Source 1]
+標題：{clean_title}
+來源：{clean_source_name}
+網址：{clean_source_url}
+來源分類：{source_category}
+證據強度：{evidence_level} ({evidence_score:.2f})
+內容品質分數：{content_quality:.2f}
+語言風格警示：{language_flags_text}
+
+新聞全文：
+{clean_content}
+"""
+    diagnostics = {
+        "source_category": source_category,
+        "evidence_level": evidence_level,
+        "evidence_score": evidence_score,
+        "content_quality": content_quality,
+        "language_style": language_style,
+        "evidence_details": evidence_details,
+    }
+    return context_text.strip(), [source], diagnostics
+
+def render_report_paper(report_text: str) -> None:
+    """以一致的報告樣式渲染 Markdown 報告。"""
+    if not report_text or not str(report_text).strip():
+        st.warning("⚠️ 報告內容為空，請重新執行分析。")
+        return
+    cleaned_report = str(report_text).replace('\\n', '\n').replace('\\"', '"')
+    cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
+    lines = cleaned_report.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        if re.match(r'^\|[\s:-]+\|', line):
+            cleaned_lines.append(line)
+        elif re.match(r'^-{5,}\s*$', line):
+            continue
+        else:
+            cleaned_lines.append(line)
+    cleaned_report = '\n'.join(cleaned_lines)
+    cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
+    cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
+    formatted_text = format_citation_style(cleaned_report)
+    html_content = markdown.markdown(formatted_text, extensions=['tables'])
+    st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+
 # ==========================================
 # 5. UI
 # ==========================================
@@ -6447,12 +6619,12 @@ if "current_page" not in st.session_state:
 
 with st.sidebar:
     st.title("多元觀點解析 V38.0")
-    st.caption("✨ 新增：Tavily 搜尋 UI + 學術方法論詳解")
-    page_options = ["🚀 多元議題分析 (Deep Analysis)", "📰 全球情報 (News Feed)"]
+    st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
+    page_options = ["🚀 多元議題分析 (Deep Analysis)", "🧾 新聞文本分析 (Text Analysis)", "📰 全球情報 (News Feed)"]
     # 由「深度戰略分析」按鈕觸發的跳轉：在 radio 渲染前同步 nav_page，避免直接寫入 widget key 觸發 StreamlitAPIException
     if st.session_state.pop("pending_nav_to_analysis", False):
         st.session_state["nav_page"] = "🚀 多元議題分析 (Deep Analysis)"
-    page_index = 0 if st.session_state["current_page"] == page_options[0] else 1
+    page_index = page_options.index(st.session_state["current_page"]) if st.session_state["current_page"] in page_options else 0
     current_page = st.radio(
         "導航",
         options=page_options,
@@ -7274,6 +7446,129 @@ if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     else:
         _fp, _fk, _fm = "Gemini", (_gkey or None), (model_name or st.session_state.get("gemini_model", "gemini-2.5-flash"))
     render_news_feed_page(google_key, tavily_key, model_name, feed_llm_provider=_fp, feed_llm_key=_fk, feed_llm_model=_fm)
+elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis)":
+    st.title("🧾 新聞文本分析")
+    st.caption("貼上單篇新聞，系統會用既有 GRADE/CERQual、Entman、ACH 精神、邏輯謬誤、深層偏見與 Cui Bono 框架進行文本取證式分析。")
+
+    if "text_analysis_result" not in st.session_state:
+        st.session_state.text_analysis_result = None
+    if "text_analysis_sources" not in st.session_state:
+        st.session_state.text_analysis_sources = None
+    if "text_analysis_diagnostics" not in st.session_state:
+        st.session_state.text_analysis_diagnostics = None
+
+    text_col1, text_col2 = st.columns([2, 1])
+    with text_col1:
+        news_title = st.text_input("新聞標題", placeholder="貼上新聞標題", key="text_news_title")
+    with text_col2:
+        news_source = st.text_input("來源 / 媒體名稱", placeholder="例如：中央社、自由時報、BBC", key="text_news_source")
+    news_url = st.text_input("新聞網址（選填）", placeholder="https://...", key="text_news_url")
+    news_body = st.text_area(
+        "新聞全文",
+        height=360,
+        placeholder="請貼上要分析的新聞全文。內容越完整，語言風格、證據強度與框架分析會越準確。",
+        key="text_news_body",
+    )
+
+    st.info("此模式不需要 Tavily 搜尋 Key；若未提供網址，來源分類會以 OTHER 處理。若要進一步橫向查證，可把分析後的關鍵主張拿到「多元議題分析」搜尋。")
+    analyze_text_btn = st.button("🧠 分析貼上新聞文本", type="primary")
+
+    if analyze_text_btn:
+        if not news_body.strip():
+            st.error("請先貼上新聞全文。")
+            st.stop()
+
+        llm_provider = st.session_state.get("llm_provider", "Gemini")
+        grok_key_effective = (st.session_state.get("grok_api_key") or "").strip()
+        groq_key_effective = (st.session_state.get("groq_api_key") or "").strip()
+        openrouter_key_effective = (st.session_state.get("openrouter_api_key") or "").strip()
+        google_key_effective = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+
+        use_grok = llm_provider == "Grok" and bool(grok_key_effective)
+        use_groq = llm_provider == "Groq" and bool(groq_key_effective)
+        use_openrouter = llm_provider == "OpenRouter" and bool(openrouter_key_effective)
+        if use_grok:
+            effective_key = grok_key_effective
+            effective_model = st.session_state.get("grok_model", "grok-3")
+        elif use_groq:
+            effective_key = groq_key_effective
+            effective_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
+        elif use_openrouter:
+            effective_key = openrouter_key_effective
+            effective_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
+        else:
+            effective_key = google_key_effective
+            effective_model = model_name or st.session_state.get("gemini_model", "gemini-2.5-flash")
+
+        if not effective_key:
+            st.error("請先在側欄輸入可用的 LLM API Key。")
+            st.stop()
+
+        context_text, text_sources, diagnostics = build_news_text_context(news_title, news_source, news_url, news_body)
+        with st.status("🧠 正在進行新聞文本分析...", expanded=True) as status:
+            st.write("1. 建立單篇新聞 Source context...")
+            st.write(f"   ↳ 證據強度：{diagnostics['evidence_level']} ({diagnostics['evidence_score']:.2f})")
+            st.write("2. 執行文本取證、框架分析與邏輯謬誤掃描...")
+            try:
+                raw_report = run_strategic_analysis(
+                    news_title or "新聞文本分析",
+                    context_text,
+                    effective_model,
+                    effective_key,
+                    mode="TEXT_ANALYSIS",
+                    fast_mode=False,
+                    manipulation_signals="單篇貼上新聞文本，未執行跨網域聯播偵測。",
+                    use_grok=use_grok,
+                    use_groq=use_groq,
+                    use_openrouter=use_openrouter,
+                )
+            except Exception as e:
+                st.error(f"❌ 新聞文本分析失敗：{str(e)[:500]}")
+                status.update(label="❌ 分析失敗", state="error", expanded=False)
+                st.stop()
+
+            validation = validate_ai_output_format(raw_report, "TEXT_ANALYSIS")
+            parsed_data = parse_gemini_data(raw_report)
+            parsed_data["validation"] = validation
+            st.session_state.text_analysis_result = parsed_data
+            st.session_state.text_analysis_sources = text_sources
+            st.session_state.text_analysis_diagnostics = diagnostics
+            status.update(label="✅ 新聞文本分析完成", state="complete", expanded=False)
+        st.rerun()
+
+    if st.session_state.get("text_analysis_diagnostics"):
+        diagnostics = st.session_state.text_analysis_diagnostics
+        st.markdown("---")
+        st.markdown("### 📌 文本初步評估")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("證據強度", diagnostics.get("evidence_level", "未知"))
+        with m2:
+            st.metric("證據分數", f"{diagnostics.get('evidence_score', 0):.2f}")
+        with m3:
+            st.metric("內容品質", f"{diagnostics.get('content_quality', 0):.2f}")
+        flags = diagnostics.get("language_style", {}).get("flags", [])
+        if flags:
+            st.warning("；".join(flags))
+        else:
+            st.success("未偵測到明顯的標題黨、聳動或情緒操控警示。")
+
+    if st.session_state.get("text_analysis_result"):
+        st.markdown("---")
+        st.markdown("### 📝 新聞文本分析報告")
+        text_result = st.session_state.text_analysis_result
+        validation = text_result.get("validation", {}) if isinstance(text_result, dict) else {}
+        if validation and validation.get("score", 100) < 70:
+            st.warning(f"⚠️ AI 輸出格式驗證分數：{validation.get('score', 0):.1f}/100")
+            if validation.get("missing_sections"):
+                st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
+        render_report_paper(text_result.get("report_text", ""))
+        st.download_button(
+            "📥 下載新聞文本分析 (Markdown)",
+            convert_data_to_md(text_result),
+            "news_text_analysis.md",
+            "text/markdown",
+        )
 else:
     st.title(f"{analysis_mode.split(' ')[0]}")
     query = st.text_input(
