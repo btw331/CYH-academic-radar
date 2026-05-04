@@ -7083,6 +7083,39 @@ def render_report_paper(report_text: str) -> None:
     html_content = markdown.markdown(formatted_text, extensions=['tables'])
     st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
 
+def extract_report_headings(report_text: str, max_items: int = 12) -> List[str]:
+    """從 Markdown 報告抽取章節標題，作為閱讀導覽。"""
+    if not report_text:
+        return []
+    headings = []
+    for raw_line in report_text.replace("\\n", "\n").splitlines():
+        line = raw_line.strip()
+        match = re.match(r'^(#{1,3})\s+(.+)$', line)
+        if match:
+            title = _plain_markdown_text(match.group(2))
+            if title and title not in headings:
+                headings.append(title)
+        elif re.match(r'^\d+\.\s+\*\*.+\*\*', line):
+            title = _plain_markdown_text(re.sub(r'^\d+\.\s+', '', line))
+            if title and title not in headings:
+                headings.append(title)
+        if len(headings) >= max_items:
+            break
+    return headings
+
+def render_report_navigation(report_text: str, key_prefix: str) -> None:
+    """顯示報告章節目錄與重新渲染控制。"""
+    headings = extract_report_headings(report_text)
+    if not headings:
+        return
+    with st.expander("🧭 報告章節導覽", expanded=False):
+        for idx, heading in enumerate(headings, 1):
+            st.write(f"{idx}. {heading}")
+        st.caption("提示：章節導覽用於快速掌握報告結構；目前 Streamlit 不支援直接跳轉到報告內錨點。")
+    if st.button("🔁 重新渲染目前報告", key=f"{key_prefix}_rerender_report"):
+        st.toast("已重新套用報告清理與排版")
+        st.rerun()
+
 def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[Dict]], validation: Optional[Dict[str, Any]] = None) -> None:
     """在長報告前提供低負擔摘要，幫助使用者先判斷品質與風險。"""
     sources = sources or []
@@ -8185,6 +8218,7 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             if validation.get("missing_sections"):
                 st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
         render_analysis_summary_cards(text_result, st.session_state.get("text_analysis_sources"), validation)
+        render_report_navigation(text_result.get("report_text", ""), "text_analysis")
         render_report_paper(text_result.get("report_text", ""))
         text_pdf = create_pdf_report(
             "新聞文本分析報告",
@@ -8843,6 +8877,7 @@ else:
     
         report_text = data.get("report_text", "")
         render_analysis_summary_cards(data, st.session_state.get("sources"), data.get("validation", {}))
+        render_report_navigation(report_text, "fusion")
     
         # 檢查報告內容是否為空
         if not report_text or not report_text.strip():
@@ -8930,6 +8965,7 @@ else:
         scenario_data = st.session_state.scenario_result
         formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
         html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
+        render_report_navigation(scenario_data.get("report_text", ""), "scenario")
         st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
         scenario_pdf = create_pdf_report("未來發展推演報告", scenario_data.get("report_text", ""), st.session_state.get("sources"))
         if scenario_pdf:
