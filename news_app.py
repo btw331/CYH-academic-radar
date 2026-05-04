@@ -17,6 +17,7 @@ import pickle
 import sqlite3
 import asyncio
 import aiohttp
+import sys
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse, quote
@@ -75,6 +76,7 @@ CACHE_EXPIRY_HOURS = 24  # 快取過期時間（小時）
 SUMMARY_THRESHOLD = 2000  # 超過此長度將進行摘要
 CACHE_DIR = Path(".cache")
 CACHE_DB_PATH = CACHE_DIR / "search_cache.db"
+LAST_PDF_EXPORT_ERROR = ""
 
 # ==========================================
 # 語言風格分析閾值常數（優化：抽取魔法數字）
@@ -6637,6 +6639,8 @@ def _find_pdf_cjk_font() -> Optional[str]:
 
 def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]] = None) -> Optional[bytes]:
     """將目前分析結果轉成 PDF bytes；若 ReportLab 或中文字型不可用則回傳 None。"""
+    global LAST_PDF_EXPORT_ERROR
+    LAST_PDF_EXPORT_ERROR = ""
     try:
         from reportlab.lib import colors
         from reportlab.lib.enums import TA_LEFT
@@ -6648,12 +6652,17 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
         from xml.sax.saxutils import escape
     except Exception as e:
-        logger.warning(f"PDF 匯出不可用，ReportLab 載入失敗: {str(e)}")
+        LAST_PDF_EXPORT_ERROR = (
+            f"ReportLab 載入失敗：{str(e)}。"
+            f"Streamlit 目前 Python：{sys.executable}。請在同一個環境執行 `python -m pip install reportlab`，並重新啟動 Streamlit。"
+        )
+        logger.warning(f"PDF 匯出不可用，{LAST_PDF_EXPORT_ERROR}")
         return None
 
     font_path = _find_pdf_cjk_font()
     if not font_path:
-        logger.warning("PDF 匯出不可用：找不到可嵌入的中文字型")
+        LAST_PDF_EXPORT_ERROR = "找不到可嵌入的 Windows 中文字型（已嘗試 msjh.ttc、msjh.ttf、mingliu.ttc、kaiu.ttf）。"
+        logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
         return None
 
     try:
@@ -6753,8 +6762,13 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
             url = source.get("url", "")
             story.append(paragraph(f"{idx}. {domain}｜{source_title}｜{evidence_level}｜{url}", small))
 
-    doc.build(story)
-    return buffer.getvalue()
+    try:
+        doc.build(story)
+        return buffer.getvalue()
+    except Exception as e:
+        LAST_PDF_EXPORT_ERROR = f"PDF 建置失敗：{str(e)[:500]}"
+        logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
+        return None
 
 def build_news_text_context(title: str, source_name: str, source_url: str, content: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """將使用者貼上的單篇新聞整理成既有分析流程可讀的 Source context。"""
@@ -7961,7 +7975,7 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                 "application/pdf",
             )
         else:
-            st.warning("PDF 匯出不可用：請確認已安裝 reportlab 並可讀取 Windows 中文字型。")
+            st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取 Windows 中文字型。'}")
         st.download_button(
             "📥 下載新聞文本分析 (Markdown)",
             convert_data_to_md(text_result),
@@ -8630,7 +8644,7 @@ else:
                     "application/pdf",
                 )
             else:
-                st.warning("PDF 匯出不可用：請確認已安裝 reportlab 並可讀取 Windows 中文字型。")
+                st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取 Windows 中文字型。'}")
             st.download_button(
                 "📥 下載分析結果 (Markdown)",
                 convert_data_to_md(data),
