@@ -5281,7 +5281,7 @@ FEED_BY_CONTINENT = [
 
 CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
 TOPIC_ORDER = ["政治", "經濟", "科技"]
-CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
+CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏", "其他": "🌐"}
 
 
 def _normalize_feed_field(value: Any, *, list_join: str = " ") -> str:
@@ -5792,52 +5792,79 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
     return entries[:60]
 
 
-def _rss_fallback_from_raw(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _continent_hint_from_url(url: str) -> str:
+    """依 URL 粗分五大洲（RSS 匯集用啟發式）。"""
+    u = (url or "").lower()
+    if "asia" in u or "asia-pacific" in u or "china" in u or "japan" in u or "korea" in u or "taiwan" in u:
+        return "亞洲"
+    if "europe" in u or "eu." in u or "bbc.co.uk" in u:
+        return "歐洲"
+    if "africa" in u:
+        return "非洲"
+    if "australia" in u or "pacific" in u or "nz" in u:
+        return "大洋洲"
+    if "us" in u or "americas" in u or "reuters.com" in u:
+        return "美洲"
+    return "其他"
+
+
+def _rss_raw_to_feed_items(raw: List[Dict[str, Any]], max_items: int = 48) -> List[Dict[str, Any]]:
     """
-    當 Gemini 摘要回傳空或失敗時，以原始 RSS 條目組出最少要聞（標題、連結、簡短摘要）。
-    用於避免「取得完成但 0 則」的狀況，至少顯示頭條與連結。
+    將 RSS 原始條目轉為全球情報卡片格式（不依賴 Gemini／Tavily）。
+    依 URL 去重，並以關鍵字啟發式推斷政治／經濟／科技。
     """
     if not raw:
         return []
+    seen: set[str] = set()
     out: List[Dict[str, Any]] = []
-    for r in raw[:25]:
-        url = (r.get("url") or "").strip()
-        title = (r.get("title") or "").strip() or "（無標題）"
-        content = (r.get("content") or "").strip()[:200]
-        u = url.lower()
-        if "asia" in u or "asia-pacific" in u or "china" in u or "japan" in u or "korea" in u:
-            continent = "亞洲"
-        elif "europe" in u or "eu." in u or "bbc.co.uk" in u:
-            continent = "歐洲"
-        elif "africa" in u:
-            continent = "非洲"
-        elif "australia" in u or "pacific" in u or "nz" in u:
-            continent = "大洋洲"
-        elif "us" in u or "americas" in u or "reuters.com" in u:
-            continent = "美洲"
-        else:
-            continent = "其他"
+    for r in raw:
+        url = _normalize_feed_field(r.get("url"))
+        if not url.startswith(("http://", "https://")):
+            continue
+        key = url.lower().rstrip("/")
+        if key in seen:
+            continue
+        seen.add(key)
+        title = _normalize_feed_field(r.get("title")) or "（無標題）"
+        content = _normalize_feed_field(r.get("content") or "", list_join=" ")[:400]
+        topic = _infer_topic_from_text(title, content)
+        continent = _continent_hint_from_url(url)
         domain = ""
         try:
-            from urllib.parse import urlparse
             domain = urlparse(url).netloc or ""
         except Exception:
             pass
         out.append({
             "continent": continent,
-            "topic": "政治",
+            "topic": topic,
             "emoji": "📌",
             "title": title,
             "summary": content or "",
-            "strategic_angle": "RSS 頭條（摘要未生成時顯示原文）",
+            "strategic_angle": "RSS 摘要（未經 Gemini 綜整）",
             "source": domain,
             "url": url,
             "analysis_keywords": title,
         })
+        if len(out) >= max_items:
+            break
     return out
 
 
-@st.cache_data(ttl=3600)
+def _rss_fallback_from_raw(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """LLM 失敗時的備援列表（與 `_rss_raw_to_feed_items` 相同邏輯，略多則數）。"""
+    return _rss_raw_to_feed_items(raw, max_items=50)
+
+
+@st.cache_data(ttl=1800)
+def fetch_intelligence_feed_rss_display() -> List[Dict[str, Any]]:
+    """
+    全球情報預設資料源：抓取 RSS 訂閱並轉為卡片列表，**不呼叫** Gemini／Tavily。
+    """
+    raw = _fetch_rss_raw()
+    return _rss_raw_to_feed_items(raw)
+
+
+@st.cache_data(ttl=1800)
 def fetch_intelligence_feed_rss(
     llm_api_key: Optional[str],
     llm_model: str,
@@ -5918,100 +5945,193 @@ def render_news_feed_page(
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技；摘要使用側欄 Gemini。
+    渲染「全球情報」儀表板：預設 **RSS 訂閱**（免 Tavily／免 Gemini 即可瀏覽）；
+    可選 **Gemini 一次綜整** 或 **Tavily 進階五大洲搜尋**。
     """
     google_key_stored = (st.session_state.get("google_api_key") or "").strip()
     google_key_this_run = (google_key or "").strip()
     feed_llm_key = google_key_this_run or google_key_stored or None
     feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
+    tavily_key = (tavily_key or "").strip()
 
     st.markdown("## 📰 全球情報 (News Feed)")
-    st.caption("按五大洲與政治／經濟／科技分類彙整要聞；摘要使用側欄選擇的 **Gemini** 模型。")
-    # 僅從白名單來源取得：台灣藍綠官方＋國際媒體（與深度分析相同白名單）。key 由 widget 擁有，勿再手動寫入 session_state。
-    feed_use_whitelist = st.checkbox(
-        "僅從白名單來源取得（台灣藍綠官方＋國際媒體）",
-        value=False,
-        key="feed_use_whitelist",
-        help="勾選後，Tavily 搜尋會限制在您建立的白名單網域內，與「多元議題分析」使用的藍/綠/官方/國際白名單一致。",
+    st.caption(
+        "預設使用 **國際 RSS 訂閱** 匯集標題與摘要，速度較快、不耗 Tavily／Gemini；需要時再按下方按鈕做 **Gemini 綜整** 或 **Tavily 進階搜尋**。"
     )
-    save_feed_tokens = st.checkbox(
-        "精簡輸入（省 Token）",
-        value=False,
-        key="feed_save_tokens",
-        help="縮短每則送入 Gemini 的原文摘錄、總字數與篇數，降低輸入 token（摘要品質可能略降）。",
-    )
-    use_tavily = True
-    current_source_key = "tavily"
-    if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
-        st.warning("⚠️ 請在側邊欄「🔑 模型與金鑰」輸入 **Gemini API Key** 以產生繁體中文摘要。")
-        return
-    if not (tavily_key and tavily_key.strip()):
-        st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**。")
-        return
+
+    current_source_key = "rss_primary_v1"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
-    # 載入請求：由 on_click 寫入，此處讀取並執行（確保點擊一定觸發）
+        st.session_state["feed_last_load_mode"] = None
+        st.session_state["feed_gemini_summarized"] = False
+
+    # --- 載入 RSS（預設）---
     if st.session_state.get("feed_do_fetch"):
         st.session_state["feed_do_fetch"] = False
         try:
-            with st.spinner("正在載入情報…約 1 分鐘（Tavily + Gemini 摘要）"):
+            with st.spinner("正在抓取 RSS…（約數秒，不呼叫 AI）"):
+                fetch_intelligence_feed_rss_display.clear()
+                feed = fetch_intelligence_feed_rss_display()
+            st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
+            st.session_state["feed_last_load_mode"] = "rss"
+            st.session_state["feed_gemini_summarized"] = False
+            st.session_state.pop("feed_llm_last_error", None)
+        except Exception as e:
+            logger.exception("載入 RSS 全球情報失敗")
+            st.session_state["intelligence_feed_data"] = []
+            st.error(f"載入失敗：{str(e)[:200]}。請檢查網路或稍後再試。")
+        st.rerun()
+
+    # --- 可選：Gemini 一次綜整（需 Key）---
+    if st.session_state.get("feed_do_gemini"):
+        st.session_state["feed_do_gemini"] = False
+        if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
+            st.warning("⚠️ 請在側邊欄「🔑 模型與金鑰」輸入 **Gemini API Key** 後再試。")
+        else:
+            try:
+                with st.spinner("Gemini 綜整中…（約 1 次 API、10～40 秒）"):
+                    fetch_intelligence_feed_rss.clear()
+                    feed = fetch_intelligence_feed_rss(feed_llm_key, feed_llm_model)
+                st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
+                st.session_state["feed_last_load_mode"] = "gemini"
+                st.session_state["feed_gemini_summarized"] = True
+                st.session_state.pop("feed_llm_last_error", None)
+            except Exception as e:
+                logger.exception("Gemini 綜整全球情報失敗")
+                st.session_state["intelligence_feed_data"] = []
+                st.error(f"綜整失敗：{str(e)[:200]}")
+        st.rerun()
+
+    # --- 可選：Tavily 五大洲（進階）---
+    if st.session_state.get("feed_do_tavily"):
+        st.session_state["feed_do_tavily"] = False
+        if not tavily_key:
+            st.warning("⚠️ 請在側邊欄「🔍 搜尋設定」輸入 **Tavily API Key**。")
+            st.rerun()
+        try:
+            with st.spinner("正在以 Tavily 搜尋五大洲…（較久，約 1～3 分鐘）"):
+                fetch_intelligence_feed_tavily.clear()
                 feed = fetch_intelligence_feed_tavily(
-                    tavily_key, feed_llm_key, feed_llm_model,
-                    use_whitelist=feed_use_whitelist,
+                    tavily_key,
+                    feed_llm_key if feed_llm_key else None,
+                    feed_llm_model,
+                    use_whitelist=st.session_state.get("feed_tavily_whitelist", False),
                     save_tokens=st.session_state.get("feed_save_tokens", False),
                 )
-            # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
+            st.session_state["feed_last_load_mode"] = "tavily"
+            st.session_state["feed_gemini_summarized"] = bool(feed_llm_key)
         except Exception as e:
-            logger.exception("載入全球情報失敗")
+            logger.exception("Tavily 載入全球情報失敗")
             st.session_state["intelligence_feed_data"] = []
             st.error(f"載入失敗：{str(e)[:200]}。請檢查 API 金鑰與網路後重試。")
         st.rerun()
-    # 按鈕用 on_click 寫入旗標，點擊後下一輪執行取得
-    st.button(
-        "📡 載入全球情報",
-        type="primary",
-        key="feed_fetch_btn",
-        on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
-    )
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        st.button(
+            "📡 載入 RSS 要聞",
+            type="primary",
+            key="feed_fetch_btn",
+            on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
+            help="從訂閱來源抓取標題／摘要，不依賴 Tavily 與 Gemini。",
+        )
+    with c2:
+        st.button(
+            "✨ Gemini 綜整",
+            type="secondary",
+            key="feed_gemini_btn",
+            on_click=lambda: st.session_state.update({"feed_do_gemini": True}),
+            help="以 1 次 Gemini 將 RSS 彙整為繁中摘要與五大洲分類（需 Gemini Key）。",
+        )
+    with c3:
+        st.caption("先載入 RSS 再綜整，或直接使用右側進階 Tavily。")
+
+    with st.expander("進階：Tavily 搜尋五大洲（較慢、耗配額）", expanded=False):
+        st.checkbox(
+            "僅從白名單網域搜尋",
+            value=False,
+            key="feed_tavily_whitelist",
+            help="與多元議題分析相同的藍／綠／官方／國際白名單，限制 Tavily 來源。",
+        )
+        st.checkbox(
+            "精簡輸入（省 Token）",
+            value=False,
+            key="feed_save_tokens",
+            help="縮短送入 Gemini／Tavily 彙整的摘錄長度（僅影響含 AI 的 Tavily 流程）。",
+        )
+        st.button(
+            "🌐 以 Tavily 載入五大洲",
+            type="secondary",
+            key="feed_tavily_btn",
+            on_click=lambda: st.session_state.update({"feed_do_tavily": True}),
+            help="需側邊欄 Tavily Key；有 Gemini Key 時會一併摘要。",
+        )
+
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
-        st.info("請選擇取得方式後，點擊上方 **「📡 載入全球情報」** 按鈕執行取得。")
+        st.info("請先點擊 **「📡 載入 RSS 要聞」**（不需 API Key 即可瀏覽）。")
         return
     if not feed:
-        st.warning("**取得完成，但沒有產出任何要聞。**")
+        st.warning("**取得完成，但沒有可用要聞。**")
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
-- **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額。
-- **Gemini 摘要**：摘要階段失敗或回傳空陣列 → 檢查 Gemini Key／配額，或改選 **Flash** 型號以降低用量。
+- **RSS**：來源暫時無法連線、被阻擋或格式異常 → 請稍後重試或檢查網路／防火牆。
+- **Gemini 綜整**：Key 或配額問題 → 檢查側邊欄 Gemini Key，或改選 Flash 型號。
+- **Tavily**：配額或 Key 錯誤 → 見 [Tavily Dashboard](https://app.tavily.com/)。
             """)
-        if st.button("🔄 重新載入", key="feed_retry_empty"):
+        if st.button("🔄 再試一次", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
             st.rerun()
         return
+
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
         st.success(f"已載入 {len(feed)} 則要聞。")
-        st.caption(f"📌 本頁摘要：**Gemini**（{feed_llm_model}）")
+        if st.session_state.get("feed_gemini_summarized"):
+            st.caption(f"📌 本批資料已用 **Gemini** 綜整（{feed_llm_model}）。")
+        elif st.session_state.get("feed_last_load_mode") == "tavily":
+            st.caption(f"📌 來源：**Tavily** 五大洲搜尋" + (f"；摘要：**Gemini**（{feed_llm_model}）" if feed_llm_key else "（原文模式，未取得 Gemini Key）"))
+        else:
+            st.caption("📌 來源：**RSS 訂閱**（英文／原文標題為主；可按「✨ Gemini 綜整」改為繁中統整）。")
         feed_err = st.session_state.pop("feed_llm_last_error", None)
         if feed_err:
             _fe = str(feed_err)
-            st.warning(f"⚠️ LLM 摘要曾失敗，部分改顯示 Tavily 原文。錯誤：{_fe[:300]}")
+            st.warning(f"⚠️ 上一輪部分摘要失敗或備援為原文。錯誤：{_fe[:300]}")
     with col_refresh:
-        if st.button("🔄 重新載入", key="feed_refresh_btn"):
-            fetch_intelligence_feed_tavily.clear()
-            with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(
-                    tavily_key, feed_llm_key, feed_llm_model,
-                    use_whitelist=feed_use_whitelist,
-                    save_tokens=st.session_state.get("feed_save_tokens", False),
-                )
-            st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+        if st.button("🔄 重新整理", key="feed_refresh_btn"):
+            mode = st.session_state.get("feed_last_load_mode") or "rss"
+            try:
+                if mode == "gemini" and feed_llm_key:
+                    fetch_intelligence_feed_rss.clear()
+                    with st.spinner("重新綜整中…"):
+                        feed_new = fetch_intelligence_feed_rss(feed_llm_key, feed_llm_model)
+                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+                elif mode == "tavily" and tavily_key:
+                    fetch_intelligence_feed_tavily.clear()
+                    with st.spinner("重新取得中…"):
+                        feed_new = fetch_intelligence_feed_tavily(
+                            tavily_key,
+                            feed_llm_key if feed_llm_key else None,
+                            feed_llm_model,
+                            use_whitelist=st.session_state.get("feed_tavily_whitelist", False),
+                            save_tokens=st.session_state.get("feed_save_tokens", False),
+                        )
+                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+                else:
+                    fetch_intelligence_feed_rss_display.clear()
+                    with st.spinner("重新抓取 RSS…"):
+                        feed_new = fetch_intelligence_feed_rss_display()
+                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+                    st.session_state["feed_gemini_summarized"] = False
+                    st.session_state["feed_last_load_mode"] = "rss"
+            except Exception as e:
+                st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
-    # 依洲 → 類型分組
+
     grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for item in feed:
         cont = _normalize_feed_field(item.get("continent")) or "其他"
@@ -6019,12 +6139,15 @@ def render_news_feed_page(
         if topic not in TOPIC_ORDER:
             topic = "政治"
         grouped.setdefault(cont, {}).setdefault(topic, []).append(item)
-    # 五大洲分頁
-    tab_labels = [f"{CONTINENT_EMOJI.get(c, '📌')} {c}" for c in CONTINENT_ORDER]
-    tabs = st.tabs(tab_labels)
-    card_index = [0]  # 用 list 以便在閉包內遞增
 
-    for tab, continent in zip(tabs, CONTINENT_ORDER):
+    continents_tabs = list(CONTINENT_ORDER)
+    if grouped.get("其他"):
+        continents_tabs = continents_tabs + ["其他"]
+    tab_labels = [f"{CONTINENT_EMOJI.get(c, '📌')} {c}" for c in continents_tabs]
+    tabs = st.tabs(tab_labels)
+    card_index = [0]
+
+    for tab, continent in zip(tabs, continents_tabs):
         with tab:
             cont_data = grouped.get(continent, {})
             for topic in TOPIC_ORDER:
@@ -6945,11 +7068,8 @@ def render_changelog_page() -> None:
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
 - **側欄「模型與金鑰」**：只保留 Gemini Key 與 Gemini 型號選擇。
-- **API 驗證**：在「多元議題分析／全球情報」可一併驗證 Tavily；在「新聞文本分析／方法論／本頁」可僅驗證 Gemini。
-
-### 分析與匯出
-- **錯誤處理**：深度分析流程已改為僅依 Gemini 配額與型號降級，不再嘗試其他雲端模型備援。
-- **全球情報**：摘要階段僅使用 Gemini（與側欄選定型號一致）。
+- **API 驗證**：「多元議題分析」需一併驗證 Tavily；「全球情報」以 RSS 為主時可只驗證 Gemini。
+- **全球情報**：預設 **RSS 訂閱**（快速、免 Tavily）；可選 **Gemini 綜整** 或 **進階 Tavily**。
 - **匯出**：Markdown／HTML 報告標題已改用「多元觀點分析報告」（無版本號）。
 
 ### 先前已實作且仍適用
@@ -7161,13 +7281,13 @@ with st.sidebar:
         elif "3-flash" in model_name:
             st.caption("⚡ **3.0 Flash**：快速備援")
 
-        needs_tavily_for_validate = is_deep_analysis_page or is_feed_page
-        if st.button("🔐 驗證 API Key", help="驗證 Gemini；在多元分析／全球情報頁會一併驗證 Tavily；其餘頁面可只驗證 Gemini。"):
+        needs_tavily_for_validate = is_deep_analysis_page
+        if st.button("🔐 驗證 API Key", help="多元議題分析需一併驗證 Tavily；全球情報以 RSS 為主時僅需驗證 Gemini。"):
             tavily_key_for_check = st.session_state.get("tavily_key", "")
             if not (google_key or "").strip():
                 st.warning("⚠️ 請先輸入 Gemini Key")
             elif needs_tavily_for_validate and not (tavily_key_for_check or "").strip():
-                st.warning("⚠️ 在目前頁面需一併驗證 Tavily：請至下方「🔍 搜尋設定」輸入 Tavily Key。若只需驗證 Gemini，請切換到「新聞文本分析」「方法論」或「本次修改」頁再按驗證。")
+                st.warning("⚠️ 「多元議題分析」需一併驗證 Tavily：請至下方「🔍 搜尋設定」輸入 Tavily Key。若只需驗證 Gemini，請切換到「全球情報」「新聞文本分析」「方法論」或「本次修改」頁再按驗證。")
             else:
                 with st.spinner("正在驗證 API Key..."):
                     is_valid, message = validate_api_keys(
@@ -7182,11 +7302,13 @@ with st.sidebar:
 
     if is_deep_analysis_page or is_feed_page:
         with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
-            tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）", key="tavily_key")
+            tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於「多元議題分析」新聞搜尋；「全球情報」進階 Tavily 載入時亦需要。", key="tavily_key")
             if tavily_key:
                 st.success("✅ Tavily 搜尋已啟用")
-            else:
+            elif is_deep_analysis_page:
                 st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
+            else:
+                st.caption("全球情報預設使用 **RSS**，不需 Tavily；僅在「進階：Tavily 搜尋五大洲」時需要填寫。")
 
             if is_deep_analysis_page:
                 st.info("ℹ️ 多元議題分析會使用 Tavily 搜尋、公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
@@ -7216,7 +7338,7 @@ with st.sidebar:
                     help="可關閉以僅使用中文查詢對歐美網域保底。",
                 )
             else:
-                st.caption("全球情報頁只需要 Tavily Key；搜尋天數與視角設定僅用於多元議題分析。")
+                st.caption("「全球情報」預設 **RSS**，下方天數／視角僅用於 **多元議題分析**；進階 Tavily 請在本頁按鈕區操作。")
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
         uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
