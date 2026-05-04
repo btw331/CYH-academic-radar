@@ -19,6 +19,7 @@ import asyncio
 import aiohttp
 import sys
 from io import BytesIO
+from html import unescape
 from pathlib import Path
 from urllib.parse import urlparse, quote
 from typing import List, Dict, Any, Tuple, Optional, Set
@@ -6770,6 +6771,95 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
         return None
 
+def _extract_meta_content(html_text: str, property_name: str) -> str:
+    patterns = [
+        rf'<meta[^>]+property=["\']{re.escape(property_name)}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{re.escape(property_name)}["\']',
+        rf'<meta[^>]+name=["\']{re.escape(property_name)}["\'][^>]+content=["\']([^"\']+)["\']',
+        rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{re.escape(property_name)}["\']',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html_text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return unescape(match.group(1)).strip()
+    return ""
+
+def _html_to_readable_text(html_text: str) -> str:
+    """用標準函式庫做保守的新聞正文抽取，避免額外依賴。"""
+    html_text = re.sub(r'(?is)<(script|style|noscript|svg|canvas|iframe).*?</\1>', ' ', html_text)
+    candidates = []
+    for tag in ["article", "main"]:
+        candidates.extend(re.findall(rf'(?is)<{tag}[^>]*>(.*?)</{tag}>', html_text))
+    if not candidates:
+        paragraphs = re.findall(r'(?is)<p[^>]*>(.*?)</p>', html_text)
+        candidates = ["\n".join(paragraphs)]
+    best = max(candidates, key=len) if candidates else html_text
+    best = re.sub(r'(?is)<br\s*/?>', '\n', best)
+    best = re.sub(r'(?is)</(p|div|section|li|h[1-6])>', '\n', best)
+    best = re.sub(r'(?is)<[^>]+>', ' ', best)
+    best = unescape(best)
+    lines = []
+    seen = set()
+    for raw_line in best.splitlines():
+        line = re.sub(r'\s+', ' ', raw_line).strip()
+        if len(line) < 12:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    return "\n\n".join(lines).strip()
+
+def fetch_news_article_from_url(url: str) -> Dict[str, str]:
+    """從新聞網址擷取標題、來源與正文；失敗時回傳 error。"""
+    clean_url = (url or "").strip()
+    if not clean_url:
+        return {"error": "未提供網址"}
+    if not clean_url.startswith(("http://", "https://")):
+        clean_url = "https://" + clean_url
+    try:
+        response = requests.get(
+            clean_url,
+            timeout=12,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+            },
+        )
+        response.raise_for_status()
+        response.encoding = response.apparent_encoding or response.encoding
+        html_text = response.text
+        title = (
+            _extract_meta_content(html_text, "og:title")
+            or _extract_meta_content(html_text, "twitter:title")
+        )
+        if not title:
+            title_match = re.search(r'(?is)<title[^>]*>(.*?)</title>', html_text)
+            title = unescape(re.sub(r'\s+', ' ', title_match.group(1)).strip()) if title_match else ""
+        source_name = (
+            _extract_meta_content(html_text, "og:site_name")
+            or get_domain_name(clean_url)
+            or "網址擷取"
+        )
+        content = _html_to_readable_text(html_text)
+        if len(content) < 120:
+            return {
+                "error": "已連上網址，但無法擷取足夠正文；該網站可能使用動態載入、付費牆或阻擋爬取。",
+                "title": title,
+                "source_name": source_name,
+                "url": clean_url,
+                "content": content,
+            }
+        return {
+            "title": title or "未提供標題",
+            "source_name": source_name,
+            "url": clean_url,
+            "content": content,
+        }
+    except Exception as e:
+        return {"error": f"網址擷取失敗：{str(e)[:300]}", "url": clean_url}
+
 def build_news_text_context(title: str, source_name: str, source_url: str, content: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """將使用者貼上的單篇新聞整理成既有分析流程可讀的 Source context。"""
     clean_title = (title or "未提供標題").strip()
@@ -7846,7 +7936,7 @@ elif st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     render_news_feed_page(google_key, tavily_key, model_name, feed_llm_provider=_fp, feed_llm_key=_fk, feed_llm_model=_fm)
 elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis)":
     st.title("🧾 新聞文本分析")
-    st.caption("貼上單篇新聞，系統會用既有 GRADE/CERQual、Entman、ACH 精神、邏輯謬誤、深層偏見與 Cui Bono 框架進行文本取證式分析。")
+    st.caption("貼上新聞網址即可分析；系統會自動擷取標題、來源與正文，再用 GRADE/CERQual、Entman、邏輯謬誤、深層偏見與 Cui Bono 框架進行文本取證式分析。")
 
     if "text_analysis_result" not in st.session_state:
         st.session_state.text_analysis_result = None
@@ -7855,25 +7945,26 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
     if "text_analysis_diagnostics" not in st.session_state:
         st.session_state.text_analysis_diagnostics = None
 
+    news_url = st.text_input("新聞網址", placeholder="https://...", key="text_news_url")
+    st.caption("多數公開新聞頁可直接擷取；若遇到付費牆、動態載入或網站阻擋，再於下方手動補全文。")
     text_col1, text_col2 = st.columns([2, 1])
     with text_col1:
-        news_title = st.text_input("新聞標題", placeholder="貼上新聞標題", key="text_news_title")
+        news_title = st.text_input("新聞標題（選填，網址擷取失敗時可補）", placeholder="可留空，系統會從網址擷取", key="text_news_title")
     with text_col2:
-        news_source = st.text_input("來源 / 媒體名稱", placeholder="例如：中央社、自由時報、BBC", key="text_news_source")
-    news_url = st.text_input("新聞網址（選填）", placeholder="https://...", key="text_news_url")
+        news_source = st.text_input("來源 / 媒體名稱（選填）", placeholder="可留空，系統會從網址擷取", key="text_news_source")
     news_body = st.text_area(
-        "新聞全文",
-        height=360,
-        placeholder="請貼上要分析的新聞全文。內容越完整，語言風格、證據強度與框架分析會越準確。",
+        "新聞全文（選填）",
+        height=220,
+        placeholder="通常可留空。若網址擷取失敗或內容不完整，再手動貼上全文。",
         key="text_news_body",
     )
 
-    st.info("此模式不需要 Tavily 搜尋 Key；若未提供網址，來源分類會以 OTHER 處理。若要進一步橫向查證，可把分析後的關鍵主張拿到「多元議題分析」搜尋。")
-    analyze_text_btn = st.button("🧠 分析貼上新聞文本", type="primary")
+    st.info("此模式不需要 Tavily 搜尋 Key；貼網址會直接擷取該頁內容。若要進一步橫向查證，可把分析後的關鍵主張拿到「多元議題分析」搜尋。")
+    analyze_text_btn = st.button("🧠 擷取網址並分析", type="primary")
 
     if analyze_text_btn:
-        if not news_body.strip():
-            st.error("請先貼上新聞全文。")
+        if not news_url.strip() and not news_body.strip():
+            st.error("請先貼上新聞網址；若網址無法擷取，再手動貼上新聞全文。")
             st.stop()
 
         llm_provider = st.session_state.get("llm_provider", "Gemini")
@@ -7902,14 +7993,38 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             st.error("請先在側欄輸入可用的 LLM API Key。")
             st.stop()
 
-        context_text, text_sources, diagnostics = build_news_text_context(news_title, news_source, news_url, news_body)
         with st.status("🧠 正在進行新聞文本分析...", expanded=True) as status:
-            st.write("1. 建立單篇新聞 Source context...")
+            extracted_title = news_title.strip()
+            extracted_source = news_source.strip()
+            extracted_url = news_url.strip()
+            extracted_body = news_body.strip()
+            if news_url.strip() and not extracted_body:
+                st.write("1. 從新聞網址擷取標題、來源與正文...")
+                fetched_article = fetch_news_article_from_url(news_url)
+                if fetched_article.get("error"):
+                    st.warning(f"網址擷取不完整：{fetched_article['error']}")
+                    if not fetched_article.get("content"):
+                        status.update(label="❌ 擷取失敗", state="error", expanded=False)
+                        st.stop()
+                extracted_title = extracted_title or fetched_article.get("title", "")
+                extracted_source = extracted_source or fetched_article.get("source_name", "")
+                extracted_url = fetched_article.get("url", extracted_url)
+                extracted_body = fetched_article.get("content", extracted_body)
+                st.write(f"   ↳ 已擷取約 {len(extracted_body)} 字，來源：{extracted_source or '未知'}")
+            else:
+                st.write("1. 使用手動提供的新聞文本...")
+            if len(extracted_body.strip()) < 120:
+                st.error("正文內容太短，無法進行可靠分析。請手動補上新聞全文。")
+                status.update(label="❌ 內容不足", state="error", expanded=False)
+                st.stop()
+
+            context_text, text_sources, diagnostics = build_news_text_context(extracted_title, extracted_source, extracted_url, extracted_body)
+            st.write("2. 建立單篇新聞 Source context...")
             st.write(f"   ↳ 證據強度：{diagnostics['evidence_level']} ({diagnostics['evidence_score']:.2f})")
-            st.write("2. 執行文本取證、框架分析與邏輯謬誤掃描...")
+            st.write("3. 執行文本取證、框架分析與邏輯謬誤掃描...")
             try:
                 raw_report = run_strategic_analysis(
-                    news_title or "新聞文本分析",
+                    extracted_title or "新聞文本分析",
                     context_text,
                     effective_model,
                     effective_key,
