@@ -274,6 +274,7 @@ CSS_STYLE = """
         overflow: hidden;
         box-shadow: 0 1px 3px rgba(0,0,0,0.08);
         background: #fff;
+        table-layout: fixed;
     }
     .report-paper table thead th {
         background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
@@ -292,6 +293,17 @@ CSS_STYLE = """
         word-wrap: break-word;
         overflow-wrap: break-word;
         color: #475569;
+    }
+    .report-paper table tbody td ul,
+    .report-paper table tbody td ol {
+        margin: 0.35em 0 0.35em 1.2em;
+        padding-left: 0.8em;
+    }
+    .report-paper table tbody td p {
+        margin: 0 0 0.55em 0;
+    }
+    .report-paper table tbody td p:last-child {
+        margin-bottom: 0;
     }
     .report-paper table tbody tr {
         transition: background-color 0.15s ease;
@@ -6588,6 +6600,55 @@ def build_news_text_context(title: str, source_name: str, source_url: str, conte
     }
     return context_text.strip(), [source], diagnostics
 
+def _is_markdown_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+def _is_markdown_table_separator(line: str) -> bool:
+    stripped = line.strip().strip("|")
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return bool(cells) and all(re.match(r"^:?-{3,}:?$", cell or "") for cell in cells)
+
+def normalize_markdown_tables(text: str) -> str:
+    """修正 LLM 常見的鬆散表格輸出，避免表格列被當成一般段落顯示。"""
+    lines = text.splitlines()
+    normalized = []
+    i = 0
+    while i < len(lines):
+        if not _is_markdown_table_row(lines[i]):
+            normalized.append(lines[i])
+            i += 1
+            continue
+
+        table_block = []
+        while i < len(lines):
+            current = lines[i].strip()
+            if not current:
+                j = i + 1
+                while j < len(lines) and not lines[j].strip():
+                    j += 1
+                if j < len(lines) and _is_markdown_table_row(lines[j]):
+                    i = j
+                    continue
+                break
+            if not _is_markdown_table_row(current):
+                break
+            table_block.append(current)
+            i += 1
+
+        if len(table_block) >= 2:
+            if not _is_markdown_table_separator(table_block[1]):
+                column_count = max(1, table_block[0].count("|") - 1)
+                table_block.insert(1, "|" + "|".join(["---"] * column_count) + "|")
+            if normalized and normalized[-1].strip():
+                normalized.append("")
+            normalized.extend(table_block)
+            normalized.append("")
+        else:
+            normalized.extend(table_block)
+
+    return "\n".join(normalized)
+
 def render_report_paper(report_text: str) -> None:
     """以一致的報告樣式渲染 Markdown 報告。"""
     if not report_text or not str(report_text).strip():
@@ -6605,6 +6666,7 @@ def render_report_paper(report_text: str) -> None:
         else:
             cleaned_lines.append(line)
     cleaned_report = '\n'.join(cleaned_lines)
+    cleaned_report = normalize_markdown_tables(cleaned_report)
     cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
     cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
     formatted_text = format_citation_style(cleaned_report)
@@ -8189,39 +8251,7 @@ else:
                     "report_text_preview": report_text[:500] if report_text else "（空）"
                 })
         else:
-            # 清理報告文本中的過多破折號
-            cleaned_report = report_text
-        
-            # === 關鍵修復：處理轉義字符問題 ===
-            # 確保內容中的字面量 \n 已經完全消失
-            cleaned_report = cleaned_report.replace('\\n', '\n')
-            cleaned_report = cleaned_report.replace('\\"', '"')
-        
-            # 移除連續超過 10 個破折號的行
-            cleaned_report = re.sub(r'^-{10,}\s*$', '', cleaned_report, flags=re.MULTILINE)
-        
-            # 移除只有破折號的行（保留表格分隔符）
-            lines = cleaned_report.split('\n')
-            cleaned_lines = []
-            for line in lines:
-                # 保留表格分隔符（|:---:| 格式）
-                if re.match(r'^\|[\s:-]+\|', line):
-                    cleaned_lines.append(line)
-                # 跳過只有破折號的行（超過 5 個）
-                elif re.match(r'^-{5,}\s*$', line):
-                    continue
-                else:
-                    cleaned_lines.append(line)
-            cleaned_report = '\n'.join(cleaned_lines)
-        
-            # === 增強：確保表格前後有換行 ===
-            # 尋找表格行並在其前後添加空行，以助於 markdown 解析器識別
-            cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
-            cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
-        
-            formatted_text = format_citation_style(cleaned_report)
-            html_content = markdown.markdown(formatted_text, extensions=['tables'])
-            st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+            render_report_paper(report_text)
 
         if "未來" not in analysis_mode and not st.session_state.scenario_result:
             st.markdown("---")
