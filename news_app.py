@@ -7273,7 +7273,11 @@ with st.sidebar:
     with st.expander("🔑 模型與金鑰", expanded=not is_methodology_page):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
-        show_advanced_models = st.toggle("顯示進階模型供應商", value=False, help="開啟後才顯示 Grok、Groq、OpenRouter 與 OpenAI 備援設定。")
+        show_advanced_models = st.toggle(
+            "顯示進階模型供應商",
+            value=False,
+            help="開啟後才顯示 Grok、Groq、OpenRouter、OpenAI Key 與「OpenAI 備援模型」（預設摺疊）。",
+        )
         if show_advanced_models:
             grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
             groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
@@ -7310,14 +7314,23 @@ with st.sidebar:
             st.session_state["openrouter_api_key"] = (openrouter_key or "").strip()
         if (openai_key or "").strip():
             st.session_state["openai_api_key"] = (openai_key or "").strip()
+        _openai_fallback_opts = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
         if OPENAI_AVAILABLE:
-            openai_model = st.selectbox(
-                "OpenAI 備援模型",
-                options=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
-                index=0,
-                help="僅在 Gemini 呼叫失敗且已填 OpenAI Key 時使用。",
-            )
-            st.session_state["openai_model"] = openai_model
+            if show_advanced_models:
+                with st.expander("OpenAI 備援模型（可選）", expanded=False):
+                    st.caption("僅在 Gemini 失敗且已填 OpenAI Key 時啟用；一般使用不需展開。")
+                    _prev_oa = st.session_state.get("openai_model", "gpt-4o-mini")
+                    _oa_idx = _openai_fallback_opts.index(_prev_oa) if _prev_oa in _openai_fallback_opts else 0
+                    openai_model = st.selectbox(
+                        "備援模型",
+                        options=_openai_fallback_opts,
+                        index=_oa_idx,
+                        help="降級備援用；與上方「分析使用 LLM」無關。",
+                        key="sidebar_openai_fallback_model",
+                    )
+                    st.session_state["openai_model"] = openai_model
+            else:
+                st.session_state.setdefault("openai_model", "gpt-4o-mini")
         else:
             st.session_state["openai_model"] = "gpt-4o-mini"
         if llm_provider == "Gemini":
