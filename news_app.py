@@ -41,13 +41,6 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_core.prompts import ChatPromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tavily import TavilyClient
-try:
-    from langchain_openai import ChatOpenAI
-    from openai import OpenAIError
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    # logger 尚未定義，使用 print 或稍後記錄
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -254,7 +247,7 @@ def _extract_text_from_llm_content(content: Any) -> str:
 # ==========================================
 # 1. 基礎設定與 CSS樣式
 # ==========================================
-st.set_page_config(page_title="多元觀點解析 V38.0", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="多元觀點解析", page_icon="⚖️", layout="wide")
 
 CSS_STYLE = """
 <style>
@@ -4737,408 +4730,135 @@ def get_search_context(
         logger.error(f"搜尋上下文獲取失敗: {str(e)}")
         return f"Error: {str(e)}", [], "Error", False, None, None, None, ""
 
-def validate_api_keys(google_key: str, tavily_key: str) -> Tuple[bool, str]:
-    """
-    驗證 API Key 的有效性
-    
-    Returns:
-        Tuple[bool, str]: (是否有效, 錯誤訊息或成功訊息)
-    """
-    # 驗證 Google Gemini API
-    if google_key:
-        try:
-            os.environ["GOOGLE_API_KEY"] = google_key
-            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=google_key, temperature=0.0)
-            test_response = llm.invoke("test")
-            if not test_response or not test_response.content:
-                return False, "Gemini API Key 無效：無法取得回應"
-        except Exception as e:
-            logger.error(f"Gemini API 驗證失敗: {str(e)}")
-            return False, f"Gemini API Key 無效：{str(e)[:100]}"
-    else:
+def validate_google_api_key(google_key: str) -> Tuple[bool, str]:
+    """僅驗證 Google Gemini API Key。"""
+    if not (google_key or "").strip():
         return False, "未提供 Gemini API Key"
-    
-    # 驗證 Tavily API
-    if tavily_key:
-        try:
-            tavily = TavilyClient(api_key=tavily_key)
-            # 使用更常見的查詢來測試
-            test_results = tavily.search(query="台灣新聞", max_results=1, search_depth="basic")
-            if not test_results:
-                return False, "Tavily API Key 無效：API 返回空結果"
-            results = test_results.get('results', [])
-            if len(results) == 0:
-                # 可能是配額問題或服務問題，但不一定是 Key 無效
-                logger.warning("Tavily API 測試搜尋返回 0 筆結果，可能是配額問題")
-                return False, "Tavily API 測試搜尋無結果（可能是配額用完或服務異常）"
-        except Exception as e:
-            error_str = str(e)
-            logger.error(f"Tavily API 驗證失敗: {error_str}")
-            # 檢查常見錯誤類型
-            if "401" in error_str or "Unauthorized" in error_str or "Invalid API key" in error_str:
-                return False, "Tavily API Key 無效：認證失敗"
-            elif "429" in error_str or "rate limit" in error_str.lower():
-                return False, "Tavily API 配額已用完或超過速率限制"
-            elif "500" in error_str or "Internal Server Error" in error_str:
-                return False, "Tavily API 服務暫時不可用（伺服器錯誤）"
-            else:
-                return False, f"Tavily API 驗證失敗：{error_str[:100]}"
-    else:
+    try:
+        os.environ["GOOGLE_API_KEY"] = (google_key or "").strip()
+        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=(google_key or "").strip(), temperature=0.0)
+        test_response = llm.invoke("test")
+        if not test_response or not test_response.content:
+            return False, "Gemini API Key 無效：無法取得回應"
+    except Exception as e:
+        logger.error(f"Gemini API 驗證失敗: {str(e)}")
+        return False, f"Gemini API Key 無效：{str(e)[:100]}"
+    return True, "✅ Gemini API Key 驗證通過"
+
+
+def validate_tavily_api_key(tavily_key: str) -> Tuple[bool, str]:
+    """驗證 Tavily API Key（需網路）。"""
+    if not (tavily_key or "").strip():
         return False, "未提供 Tavily API Key"
-    
-    return True, "✅ 所有 API Key 驗證通過"
-
-def call_openai(system_prompt: str, user_text: str, model_name: str = "gpt-4o-mini", api_key: str = None) -> str:
-    """
-    呼叫 OpenAI API（降級方案）
-    
-    Args:
-        system_prompt: 系統提示
-        user_text: 用戶輸入
-        model_name: OpenAI 模型名稱（預設：gpt-4o-mini，建議使用 gpt-4o-mini 或 gpt-4o）
-        api_key: OpenAI API Key
-    
-    Returns:
-        str: AI 生成的文本
-    
-    注意：根據 OpenAI 文檔（2025），推薦使用的模型：
-    - gpt-4o-mini：成本效益高，適合一般任務（預設）
-    - gpt-4o：更強能力，適合複雜任務
-    - gpt-4-turbo：已棄用，建議遷移到 gpt-4o
-    - gpt-3.5-turbo：已棄用，建議遷移到 gpt-4o-mini
-    """
-    if not OPENAI_AVAILABLE:
-        raise ImportError("OpenAI 套件未安裝，請執行: pip install langchain-openai")
-    
-    if not api_key:
-        raise ValueError("未提供 OpenAI API Key")
-    
     try:
-        llm = ChatOpenAI(model=model_name, temperature=0.0, openai_api_key=api_key)
+        tavily = TavilyClient(api_key=(tavily_key or "").strip())
+        test_results = tavily.search(query="台灣新聞", max_results=1, search_depth="basic")
+        if not test_results:
+            return False, "Tavily API Key 無效：API 返回空結果"
+        results = test_results.get('results', [])
+        if len(results) == 0:
+            logger.warning("Tavily API 測試搜尋返回 0 筆結果，可能是配額問題")
+            return False, "Tavily API 測試搜尋無結果（可能是配額用完或服務異常）"
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Tavily API 驗證失敗: {error_str}")
+        if "401" in error_str or "Unauthorized" in error_str or "Invalid API key" in error_str:
+            return False, "Tavily API Key 無效：認證失敗"
+        elif "429" in error_str or "rate limit" in error_str.lower():
+            return False, "Tavily API 配額已用完或超過速率限制"
+        elif "500" in error_str or "Internal Server Error" in error_str:
+            return False, "Tavily API 服務暫時不可用（伺服器錯誤）"
+        else:
+            return False, f"Tavily API 驗證失敗：{error_str[:100]}"
+    return True, "✅ Tavily API Key 驗證通過"
+
+
+def validate_api_keys(google_key: str, tavily_key: str, require_tavily: bool = True) -> Tuple[bool, str]:
+    """
+    驗證 API Key。require_tavily=False 時僅驗證 Gemini（適用新聞文本分析／方法論／本次修改頁）。
+    """
+    ok, msg = validate_google_api_key(google_key)
+    if not ok:
+        return False, msg
+    if not require_tavily:
+        return True, "✅ Gemini API Key 驗證通過（未檢查 Tavily）"
+    ok2, msg2 = validate_tavily_api_key(tavily_key)
+    if not ok2:
+        return False, msg2
+    return True, "✅ Gemini 與 Tavily API Key 驗證通過"
+
+
+def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str) -> str:
+    """
+    呼叫 Google Gemini。模型不可用或配額不足時，僅在 **Gemini 型號清單** 內嘗試降級（不使用其他供應商）。
+    """
+    os.environ["GOOGLE_API_KEY"] = api_key
+
+    try:
+        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
         response = chain.invoke({"input": user_text})
-        result = _extract_text_from_llm_content(response.content)
-        
-        logger.info(f"成功使用 OpenAI {model_name} 生成回應")
-        return result
+        return _extract_text_from_llm_content(response.content)
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"OpenAI API 調用失敗: {error_msg}")
-        raise Exception(f"OpenAI API 調用失敗: {error_msg[:200]}") from e
+        error_type = type(e).__name__
 
+        if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
+            logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用 Gemini 型號")
+            fallback_models = [m for m in GEMINI_FALLBACK_MODELS if m != model_name]
+            for fallback_model in fallback_models:
+                try:
+                    llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+                    chain = prompt | llm
+                    response = chain.invoke({"input": user_text})
+                    return _extract_text_from_llm_content(response.content)
+                except Exception:
+                    logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個")
+                    continue
+            err = (
+                f"❌ 模型 {model_name} 不存在或不可用\n\n"
+                f"**錯誤類型**：{error_type}\n**訊息**：{error_msg[:200]}\n\n"
+                f"請改用側欄中的其他 Gemini 3.x 型號，或至 AI Studio 確認可用列表。"
+            )
+            raise ChatGoogleGenerativeAIError(err) from e
 
-def call_grok(system_prompt: str, user_text: str, model_name: str = "grok-3", api_key: Optional[str] = None) -> str:
-    """
-    呼叫 xAI Grok API（OpenAI 相容端點 https://api.x.ai/v1）。
-
-    Args:
-        system_prompt: 系統提示
-        user_text: 用戶輸入
-        model_name: Grok 模型名稱（預設 grok-3；xAI 已下架 grok-2，請用 grok-3 / grok-3-mini / grok-4 等）
-        api_key: xAI API Key
-
-    Returns:
-        str: AI 生成的文本
-    """
-    if not OPENAI_AVAILABLE:
-        raise ImportError("Grok API 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
-    if not api_key or not api_key.strip():
-        raise ValueError("未提供 Grok (xAI) API Key")
-    try:
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.0,
-            openai_api_key=api_key.strip(),
-            openai_api_base="https://api.x.ai/v1",
-        )
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_text})
-        result = _extract_text_from_llm_content(response.content)
-        logger.info(f"成功使用 Grok {model_name} 生成回應")
-        return result
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Grok API 調用失敗: {error_msg}")
-        # 403 / 額度不足：給予可操作的中文說明
-        if "403" in error_msg or "permission" in error_msg.lower() or "credits" in error_msg.lower() or "licenses" in error_msg.lower():
-            raise Exception(
-                "xAI 帳戶尚無額度或授權（403）。請至 xAI 後台為您的團隊購買 credits 或綁定方案後再試。"
-            ) from e
-        raise Exception(f"Grok API 調用失敗: {error_msg[:200]}") from e
-
-
-def call_openrouter(system_prompt: str, user_text: str, model_name: str = "google/gemini-2.0-flash-exp", api_key: Optional[str] = None) -> str:
-    """
-    呼叫 OpenRouter API（OpenAI 相容端點 https://openrouter.ai/api/v1），可選多種後端模型。
-
-    Args:
-        system_prompt: 系統提示
-        user_text: 用戶輸入
-        model_name: OpenRouter 模型 ID（如 google/gemini-2.0-flash-exp、anthropic/claude-3.5-sonnet）
-        api_key: OpenRouter API Key
-
-    Returns:
-        str: AI 生成的文本
-    """
-    if not OPENAI_AVAILABLE:
-        raise ImportError("OpenRouter 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
-    if not api_key or not api_key.strip():
-        raise ValueError("未提供 OpenRouter API Key")
-    try:
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.0,
-            openai_api_key=api_key.strip(),
-            openai_api_base="https://openrouter.ai/api/v1",
-        )
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_text})
-        result = _extract_text_from_llm_content(response.content)
-        logger.info(f"成功使用 OpenRouter {model_name} 生成回應")
-        return result
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"OpenRouter API 調用失敗: {error_msg}")
-        raise Exception(f"OpenRouter API 調用失敗: {error_msg[:200]}") from e
-
-
-def call_groq(system_prompt: str, user_text: str, model_name: str = "llama-3.1-8b-instant", api_key: Optional[str] = None) -> str:
-    """
-    呼叫 Groq Cloud API（OpenAI 相容端點 https://api.groq.com/openai/v1），使用 Llama 等模型。
-
-    Args:
-        system_prompt: 系統提示
-        user_text: 用戶輸入
-        model_name: Groq 模型名稱（如 llama-3.1-8b-instant、llama-3.3-70b-versatile）
-        api_key: Groq API Key（從 console.groq.com 取得）
-
-    Returns:
-        str: AI 生成的文本
-    """
-    if not OPENAI_AVAILABLE:
-        raise ImportError("Groq API 使用 OpenAI 相容介面，請安裝: pip install langchain-openai")
-    if not api_key or not api_key.strip():
-        raise ValueError("未提供 Groq API Key")
-    try:
-        llm = ChatOpenAI(
-            model=model_name,
-            temperature=0.0,
-            openai_api_key=api_key.strip(),
-            openai_api_base="https://api.groq.com/openai/v1",
-        )
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_text})
-        result = _extract_text_from_llm_content(response.content)
-        logger.info(f"成功使用 Groq {model_name} 生成回應")
-        return result
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"Groq API 調用失敗: {error_msg}")
-        raise Exception(f"Groq API 調用失敗: {error_msg[:200]}") from e
+        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
+            fallback_models = [m for m in GEMINI_MODEL_OPTIONS if m != model_name]
+            if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
+                for fallback_model in fallback_models:
+                    try:
+                        llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+                        chain = prompt | llm
+                        response = chain.invoke({"input": user_text})
+                        return _extract_text_from_llm_content(response.content)
+                    except Exception:
+                        logger.warning(f"配額不足，降級到 {fallback_model} 失敗")
+                        continue
+            detail = (
+                f"❌ Gemini API 配額已耗盡或暫時受限\n\n"
+                f"- 嘗試模型：{model_name}\n"
+                f"- 已嘗試其他 Gemini 備援：{', '.join(fallback_models) if fallback_models else '（無）'}\n\n"
+                f"請見 https://ai.dev/rate-limit ；或改用 gemini-3.1-flash-preview / gemini-3-flash-preview。\n"
+                f"**原始錯誤**：{error_msg[:200]}"
+            )
+            raise ChatGoogleGenerativeAIError(detail) from e
+        raise
 
 
 def _call_llm_for_feed(
     system_prompt: str,
     user_text: str,
     model_name: str,
-    provider: str,
     api_key: Optional[str] = None,
 ) -> str:
-    """
-    依側欄選擇的 LLM 來源（Gemini / Grok / Groq / OpenRouter）呼叫對應 API，供 News Feed 摘要與翻譯使用。
-    """
-    if not api_key or not api_key.strip():
-        raise ValueError("未提供 API Key")
-    provider = (provider or "Gemini").strip()
-    if provider == "Grok":
-        return call_grok(system_prompt, user_text, model_name or "grok-3", api_key)
-    if provider == "Groq":
-        return call_groq(system_prompt, user_text, model_name or "llama-3.1-8b-instant", api_key)
-    if provider == "OpenRouter":
-        return call_openrouter(system_prompt, user_text, model_name or "google/gemini-2.0-flash-exp", api_key)
-    return call_gemini(system_prompt, user_text, model_name or DEFAULT_GEMINI_MODEL, api_key, openai_api_key=None)
+    """全球情報摘要：僅使用 Gemini。"""
+    if not api_key or not (api_key or "").strip():
+        raise ValueError("未提供 Gemini API Key")
+    return call_gemini(system_prompt, user_text, model_name or DEFAULT_GEMINI_MODEL, api_key)
 
-
-def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini") -> str:
-    """
-    呼叫 Gemini API，如果配額耗盡會自動降級到 flash 模型，最後降級到 OpenAI
-    
-    Args:
-        system_prompt: 系統提示
-        user_text: 用戶輸入
-        model_name: Gemini 模型名稱
-        api_key: Google Gemini API Key
-        openai_api_key: OpenAI API Key（可選，用於降級）
-        openai_model: OpenAI 模型名稱（預設：gpt-4o-mini）
-    
-    Returns:
-        str: AI 生成的文本
-    """
-    os.environ["GOOGLE_API_KEY"] = api_key
-    
-    # 嘗試使用指定的模型
-    try:
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_text})
-        result = _extract_text_from_llm_content(response.content)
-        
-        return result
-    except Exception as e:
-        error_msg = str(e)
-        error_type = type(e).__name__
-        
-        # 檢查是否為模型不存在錯誤（NOT_FOUND）
-        if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
-            logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用模型")
-            # 直接降級到穩定版本
-            fallback_models = [m for m in GEMINI_FALLBACK_MODELS if m != model_name]
-            for fallback_model in fallback_models:
-                try:
-                    logger.info(f"模型 {model_name} 不可用，嘗試使用 {fallback_model}")
-                    llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
-                    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-                    chain = prompt | llm
-                    response = chain.invoke({"input": user_text})
-                    result = _extract_text_from_llm_content(response.content)
-                    
-                    logger.info(f"成功使用 {fallback_model}")
-                    return result
-                except Exception as e2:
-                    logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個")
-                    continue
-            
-            # 如果所有 Gemini 降級都失敗，嘗試使用 OpenAI
-            if openai_api_key and OPENAI_AVAILABLE:
-                try:
-                    logger.info(f"所有 Gemini 模型都不可用，嘗試降級到 OpenAI {openai_model}")
-                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
-                    logger.info(f"成功降級到 OpenAI {openai_model}")
-                    return result
-                except Exception as e3:
-                    logger.warning(f"降級到 OpenAI 失敗: {str(e3)}")
-            
-            # 所有降級都失敗，拋出錯誤
-            error_message = (
-                f"❌ 模型 {model_name} 不存在或不可用\n\n"
-                f"**錯誤詳情：**\n"
-                f"- 嘗試使用的模型：{model_name}\n"
-                f"- 錯誤類型：{error_type}\n"
-                f"- 錯誤訊息：{error_msg[:200]}\n\n"
-                f"**解決方案：**\n"
-                f"1. 檢查模型名稱是否正確（目前保留 Gemini 3.1 / 3.0 preview 系列）\n"
-                f"2. 切換到 Gemini 3.0 preview 備援模型\n"
-                f"3. 檢查 Google AI Studio 中的可用模型列表\n"
-            )
-            if openai_api_key:
-                error_message += f"4. 已嘗試降級到 OpenAI，但失敗\n"
-            else:
-                error_message += f"4. 提供 OpenAI API Key 作為降級方案（在設定中輸入）\n"
-            raise ChatGoogleGenerativeAIError(error_message) from e
-        
-        # 檢查是否為配額耗盡錯誤
-        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-            # 決定降級策略：根據模型版本選擇適當的降級目標
-            fallback_models = []
-            fallback_models = [m for m in GEMINI_MODEL_OPTIONS if m != model_name]
-            
-            # 如果是 pro 模型，嘗試降級到其他 Gemini 模型
-            if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
-                for fallback_model in fallback_models:
-                    try:
-                        logger.info(f"模型 {model_name} 配額耗盡，嘗試降級到 {fallback_model}")
-                        llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
-                        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-                        chain = prompt | llm
-                        response = chain.invoke({"input": user_text})
-                        result = _extract_text_from_llm_content(response.content)
-                        
-                        logger.info(f"成功降級到 {fallback_model}")
-                        return result
-                    except Exception as e2:
-                        logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個降級選項")
-                        continue
-            
-            # 如果所有 Gemini 降級都失敗，嘗試使用 OpenAI（如果提供了 OpenAI API Key）
-            openai_error = None
-            if openai_api_key and OPENAI_AVAILABLE:
-                try:
-                    logger.info(f"所有 Gemini 模型配額耗盡，嘗試降級到 OpenAI {openai_model}")
-                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
-                    logger.info(f"成功降級到 OpenAI {openai_model}")
-                    return result
-                except Exception as e3:
-                    openai_error = str(e3)
-                    logger.warning(f"降級到 OpenAI 失敗: {openai_error}")
-                    # 繼續拋出原始錯誤
-            
-            # 所有降級都失敗，拋出錯誤
-            error_message = (
-                f"❌ Google Gemini API 配額已耗盡\n\n"
-                f"**錯誤詳情：**\n"
-                f"- 嘗試使用模型：{model_name}\n"
-            )
-            if fallback_models:
-                error_message += f"- Gemini 降級嘗試：{', '.join(fallback_models)} 都失敗（全部配額耗盡）\n"
-            if openai_api_key:
-                if openai_error:
-                    error_message += f"- OpenAI 降級嘗試：{openai_model} 失敗\n"
-                    error_message += f"  - OpenAI 錯誤詳情：{openai_error[:300]}\n"
-                else:
-                    error_message += f"- OpenAI 降級嘗試：未執行（檢查 OPENAI_AVAILABLE 狀態）\n"
-            else:
-                error_message += f"- 未提供 OpenAI API Key，無法使用 OpenAI 降級\n"
-            
-            error_message += (
-                f"\n**解決方案：**\n"
-                f"1. **檢查 Google AI Studio 配額狀態**：\n"
-                f"   - 訪問：https://ai.dev/rate-limit\n"
-                f"   - 檢查狀態頁：https://status.airo.google/（從圖片中看到 API 狀態正常）\n"
-                f"   - 確認是否真的配額耗盡，可能是臨時限制\n"
-                f"2. **等待配額重置**：\n"
-                f"   - 免費方案通常每分鐘/每天有配額限制\n"
-                f"   - 等待幾分鐘後再試\n"
-                f"3. **使用 OpenAI 作為降級方案**（如果已設定）：\n"
-                f"   - 確認 OpenAI API Key 是否正確且有效\n"
-                f"   - 檢查 OpenAI API Key 是否有足夠配額\n"
-                f"   - 確認模型名稱是否正確（預設：gpt-4o-mini）\n"
-                f"4. **升級方案**：\n"
-                f"   - 升級到 Google AI Studio 付費方案以獲得更高配額\n"
-                f"5. **其他建議**：\n"
-                f"   - 嘗試使用 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）\n"
-                f"   - 減少單次請求的 token 數量\n\n"
-                f"**原始錯誤**：{error_msg[:200]}"
-            )
-            raise ChatGoogleGenerativeAIError(error_message) from e
-        else:
-            # 其他錯誤（非配額相關），嘗試降級到 OpenAI（如果提供了 Key）
-            if openai_api_key and OPENAI_AVAILABLE:
-                try:
-                    logger.info(f"Gemini API 錯誤（非配額），嘗試降級到 OpenAI {openai_model}")
-                    result = call_openai(system_prompt, user_text, openai_model, openai_api_key)
-                    logger.info(f"成功降級到 OpenAI {openai_model}")
-                    return result
-                except Exception as e3:
-                    openai_error = str(e3)
-                    logger.warning(f"降級到 OpenAI 失敗: {openai_error}")
-                    # 如果 OpenAI 降級也失敗，提供更詳細的錯誤訊息
-                    enhanced_error = (
-                        f"❌ Gemini API 錯誤，且 OpenAI 降級也失敗\n\n"
-                        f"**Gemini 錯誤**：{error_msg[:200]}\n\n"
-                        f"**OpenAI 降級錯誤**：{openai_error[:300]}\n\n"
-                        f"**建議**：\n"
-                        f"1. 檢查 OpenAI API Key 是否正確且有效\n"
-                        f"2. 確認 OpenAI API Key 是否有足夠配額\n"
-                        f"3. 檢查模型名稱是否正確（嘗試使用 gpt-4o-mini）\n"
-                    )
-                    raise Exception(enhanced_error) from e3
-            # 沒有 OpenAI 降級選項或降級失敗，直接拋出原始錯誤
-            raise
 
 def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     """
@@ -5177,7 +4897,7 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_groq: bool = False, use_openrouter: bool = False, analysis_depth: str = "標準") -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, manipulation_signals: Optional[str] = None, analysis_depth: str = "標準") -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     depth_value = (analysis_depth or "標準").strip()
@@ -5465,13 +5185,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         replacement = (manipulation_signals or "").strip() or "（本輪未提供操作信號資料。）"
         system_prompt = system_prompt.replace("[MANIPULATION_SIGNALS]", replacement)
 
-    if use_grok and api_key:
-        return call_grok(system_prompt, context_text, model_name or "grok-3", api_key)
-    if use_groq and api_key:
-        return call_groq(system_prompt, context_text, model_name or "llama-3.1-8b-instant", api_key)
-    if use_openrouter and api_key:
-        return call_openrouter(system_prompt, context_text, model_name or "google/gemini-2.0-flash-exp", api_key)
-    return call_gemini(system_prompt, context_text, model_name, api_key, openai_api_key, openai_model)
+    return call_gemini(system_prompt, context_text, model_name, api_key)
 
 
 # --- LLM JSON Parsing Helper (Used by News Feed & General Output) ---
@@ -5508,7 +5222,7 @@ def _extract_json_from_llm_raw(raw: str) -> Optional[Dict[str, Any]]:
 def _extract_json_list_from_llm_raw(raw: str) -> Optional[List[Dict[str, Any]]]:
     """
     從 LLM 回傳文字中萃取出 JSON 陣列。容忍 markdown 程式碼區塊、前後說明文字。
-    支援 OpenRouter thinking 模型（如 liquid/lfm-2.5-1.2b-thinking）：會先移除 <think> 區塊再解析。
+    支援部分模型回傳之思考區塊標記：會先移除 <think> 等區塊再解析 JSON。
     用於全球情報摘要等回傳 list 的場景。
     """
     if not raw or not isinstance(raw, str):
@@ -5584,44 +5298,6 @@ RSS_FEED_URLS = [
     "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
     "https://www.theguardian.com/world/rss",
 ]
-
-# OpenRouter 免費模型 ID（pricing prompt/completion 為 0，依 API 篩選；見 https://openrouter.ai/api/v1/models）
-OPENROUTER_FREE_MODEL_IDS: Set[str] = {
-    "openrouter/aurora-alpha",
-    "openrouter/free",
-    "stepfun/step-3.5-flash:free",
-    "arcee-ai/trinity-large-preview:free",
-    "upstage/solar-pro-3:free",
-    "liquid/lfm-2.5-1.2b-thinking:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
-    "nvidia/nemotron-3-nano-30b-a3b:free",
-    "arcee-ai/trinity-mini:free",
-    "tngtech/tng-r1t-chimera:free",
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "qwen/qwen3-vl-30b-a3b-thinking",
-    "qwen/qwen3-vl-235b-a22b-thinking",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "openai/gpt-oss-120b:free",
-    "openai/gpt-oss-20b:free",
-    "z-ai/glm-4.5-air:free",
-    "qwen/qwen3-coder:free",
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-    "google/gemma-3n-e2b-it:free",
-    "tngtech/deepseek-r1t2-chimera:free",
-    "deepseek/deepseek-r1-0528:free",
-    "google/gemma-3n-e4b-it:free",
-    "qwen/qwen3-4b:free",
-    "tngtech/deepseek-r1t-chimera:free",
-    "mistralai/mistral-small-3.1-24b-instruct:free",
-    "google/gemma-3-4b-it:free",
-    "google/gemma-3-12b-it:free",
-    "google/gemma-3-27b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-}
-
 
 def _get_feed_source_badges(url_or_domain: str) -> List[str]:
     """
@@ -5730,12 +5406,11 @@ def _summarize_continent_feed_with_llm(
     raw_news_text: str,
     api_key: str,
     continent: str,
-    llm_provider: str = "Gemini",
     llm_model: str = DEFAULT_GEMINI_MODEL,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     單一洲別合併摘要：一次 LLM 產出該洲「政治／經濟／科技」三類要聞，每則帶 topic 欄位。
-    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要。
+    僅使用 Google Gemini。
     """
     if not api_key or not (raw_news_text or "").strip():
         return [], "未提供 API Key 或無內容"
@@ -5758,12 +5433,12 @@ def _summarize_continent_feed_with_llm(
 請「只」輸出一個 JSON 陣列。鍵名：topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
     user_prompt = f"""以下為「{continent}」今日搜尋結果。請綜整相似報導、精選 6～9 則，為每則標註 topic 與 strategic_angle，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
     try:
-        raw = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_provider, api_key)
+        raw = _call_llm_for_feed(system_prompt, user_prompt, llm_model, api_key)
         if not raw:
-            return [], f"{llm_provider} 回傳為空"
+            return [], "Gemini 回傳為空"
         items = _extract_json_list_from_llm_raw(raw)
         if not items or not isinstance(items, list):
-            return [], f"{llm_provider} 回傳無法解析為 JSON 陣列（可能為 thinking 模型格式或截斷）"
+            return [], "Gemini 回傳無法解析為 JSON 陣列（可能為截斷或非 JSON）"
         out = []
         for it in items:
             if not isinstance(it, dict):
@@ -5828,20 +5503,19 @@ def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -
 @st.cache_data(ttl=3600)
 def fetch_intelligence_feed_tavily(
     tavily_key: str,
-    llm_provider: str,
-    llm_api_key: Optional[str],
-    llm_model: str,
+    gemini_api_key: Optional[str],
+    gemini_model: str,
     use_whitelist: bool = False,
 ) -> List[Dict[str, Any]]:
     """
-    彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 LLM 摘要）。
-    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要；額度不足或未提供時改顯示 Tavily 原文。快取 1 小時。
+    彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 Gemini 摘要）。
+    額度不足或未提供 Key 時改顯示 Tavily 原文。快取 1 小時。
     use_whitelist=True 時，僅從白名單網域（台灣藍綠官方＋國際媒體）取得結果。
     """
     if not tavily_key:
         return []
     all_items: List[Dict[str, Any]] = []
-    use_llm = bool(llm_api_key and (llm_api_key or "").strip())
+    use_llm = bool(gemini_api_key and (gemini_api_key or "").strip())
     if use_llm:
         st.session_state.pop("feed_llm_last_error", None)
     include_domains: Optional[List[str]] = None
@@ -5889,13 +5563,13 @@ def fetch_intelligence_feed_tavily(
                 lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
             raw_news_text = "\n\n".join(lines)
             if use_llm:
-                logger.info("fetch_intelligence_feed_tavily: 使用 LLM 摘要 %s 模型=%s 洲=%s", llm_provider, llm_model, continent)
+                logger.info("fetch_intelligence_feed_tavily: 使用 Gemini 摘要 模型=%s 洲=%s", gemini_model, continent)
                 summarized, llm_err = _summarize_continent_feed_with_llm(
-                    raw_news_text, llm_api_key, continent,
-                    llm_provider=llm_provider, llm_model=llm_model,
+                    raw_news_text, gemini_api_key, continent,
+                    llm_model=gemini_model,
                 )
                 if not summarized:
-                    logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s provider=%s err=%s", continent, llm_provider, llm_err or "")
+                    logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s err=%s", continent, llm_err or "")
                     summarized = _tavily_raw_to_feed_items(raw_items, continent)
                     if llm_err:
                         st.session_state["feed_llm_last_error"] = llm_err
@@ -6039,13 +5713,11 @@ def _rss_fallback_from_raw(raw: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 @st.cache_data(ttl=3600)
 def fetch_intelligence_feed_rss(
-    llm_provider: str,
     llm_api_key: Optional[str],
     llm_model: str,
 ) -> List[Dict[str, Any]]:
     """
-    以 RSS 頭條為來源，用 1 次 LLM 摘要並分類為五大洲 × 政治/經濟/科技（約 1 次 API，免 Tavily）。
-    依側欄選擇的 LLM（Gemini / Grok / OpenRouter）進行翻譯與摘要。快取 1 小時。
+    以 RSS 頭條為來源，用 1 次 Gemini 摘要並分類為五大洲 × 政治/經濟/科技（約 1 次 API，免 Tavily）。
     """
     if not llm_api_key or not (llm_api_key or "").strip():
         return []
@@ -6074,7 +5746,7 @@ def fetch_intelligence_feed_rss(
 請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。"""
     user_prompt = f"""以下為國際 RSS 頭條。請**綜整**相似報導、精選 15～25 則，五大洲每洲至少 2 則，並為每則填寫 strategic_angle（為何重要），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
     try:
-        raw_out = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_provider, llm_api_key)
+        raw_out = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_api_key)
         if not raw_out:
             return _rss_fallback_from_raw(raw)
         items = _extract_json_list_from_llm_raw(raw_out)
@@ -6111,42 +5783,17 @@ def render_news_feed_page(
     google_key: str,
     tavily_key: str,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
-    feed_llm_provider: Optional[str] = None,
-    feed_llm_key: Optional[str] = None,
-    feed_llm_model: Optional[str] = None,
 ) -> None:
     """
-    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技；摘要依傳入的 feed_llm_* 或 session 決定 LLM。
+    渲染「全球情報」儀表板：五大洲 × 政治/經濟/科技；摘要使用側欄 Gemini。
     """
-    # 若呼叫端有傳入 feed_llm_* 則優先使用（與側欄同一輪計算）；否則從 session 推算
-    if feed_llm_provider is None or feed_llm_key is None or feed_llm_model is None:
-        llm_provider = st.session_state.get("llm_provider", "Gemini")
-        grok_key = (st.session_state.get("grok_api_key") or "").strip()
-        groq_key = (st.session_state.get("groq_api_key") or "").strip()
-        openrouter_key = (st.session_state.get("openrouter_api_key") or "").strip()
-        google_key_stored = (st.session_state.get("google_api_key") or "").strip()
-        google_key_this_run = (google_key or "").strip()
-        if llm_provider == "Grok" and grok_key:
-            feed_llm_provider = "Grok"
-            feed_llm_key = grok_key
-            feed_llm_model = st.session_state.get("grok_model", "grok-3")
-        elif llm_provider == "Groq" and groq_key:
-            feed_llm_provider = "Groq"
-            feed_llm_key = groq_key
-            feed_llm_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-        elif llm_provider == "OpenRouter" and openrouter_key:
-            feed_llm_provider = "OpenRouter"
-            feed_llm_key = openrouter_key
-            feed_llm_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-        else:
-            feed_llm_provider = "Gemini"
-            feed_llm_key = google_key_this_run or google_key_stored or None
-            feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
-
-    llm_provider = st.session_state.get("llm_provider", "Gemini")
+    google_key_stored = (st.session_state.get("google_api_key") or "").strip()
+    google_key_this_run = (google_key or "").strip()
+    feed_llm_key = google_key_this_run or google_key_stored or None
+    feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
     st.markdown("## 📰 全球情報 (News Feed)")
-    st.caption("按五大洲與政治／經濟／科技分類彙整要聞，點擊「深度分析」可一鍵帶入議題並執行深度解析。摘要與翻譯使用側欄所選 LLM。")
+    st.caption("按五大洲與政治／經濟／科技分類彙整要聞；摘要使用側欄選擇的 **Gemini** 模型。")
     # 僅從白名單來源取得：台灣藍綠官方＋國際媒體（與深度分析相同白名單）。key 由 widget 擁有，勿再手動寫入 session_state。
     feed_use_whitelist = st.checkbox(
         "僅從白名單來源取得（台灣藍綠官方＋國際媒體）",
@@ -6157,14 +5804,7 @@ def render_news_feed_page(
     use_tavily = True
     current_source_key = "tavily"
     if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
-        if llm_provider == "OpenRouter":
-            st.warning("⚠️ 您已選擇 **OpenRouter**，請先在側欄展開「🔑 API 設定」、輸入 **OpenRouter API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
-        elif llm_provider == "Grok":
-            st.warning("⚠️ 您已選擇 **Grok**，請先在側欄展開「🔑 API 設定」、輸入 **Grok API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
-        elif llm_provider == "Groq":
-            st.warning("⚠️ 您已選擇 **Groq**，請先在側欄展開「🔑 API 設定」、輸入 **Groq API Key** 後再按「載入全球情報」。Key 會在本 session 內保留。")
-        else:
-            st.warning("⚠️ 請在側邊欄「🔑 API 設定」輸入 **Gemini API Key** 以產生繁體中文摘要。")
+        st.warning("⚠️ 請在側邊欄「🔑 模型與金鑰」輸入 **Gemini API Key** 以產生繁體中文摘要。")
         return
     if not (tavily_key and tavily_key.strip()):
         st.warning("⚠️ 請在側邊欄輸入 **Tavily API Key**。")
@@ -6178,8 +5818,8 @@ def render_news_feed_page(
     if st.session_state.get("feed_do_fetch"):
         st.session_state["feed_do_fetch"] = False
         try:
-            with st.spinner("正在載入情報…約 1 分鐘（Tavily + LLM 摘要）"):
-                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
+            with st.spinner("正在載入情報…約 1 分鐘（Tavily + Gemini 摘要）"):
+                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -6203,7 +5843,7 @@ def render_news_feed_page(
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
 - **Tavily**：配額用盡、Key 錯誤、或當日 `time_range=day` 無結果 → 請到 [Tavily Dashboard](https://app.tavily.com/) 檢查配額。
-- **LLM 摘要**：摘要階段失敗或回傳空陣列 → 檢查側欄所選 LLM（Gemini／Grok／Groq／OpenRouter）的 Key 與配額；若使用 OpenRouter thinking 模型，請確認回傳為 JSON 陣列格式。
+- **Gemini 摘要**：摘要階段失敗或回傳空陣列 → 檢查 Gemini Key／配額，或改選 **Flash** 型號以降低用量。
             """)
         if st.button("🔄 重新載入", key="feed_retry_empty"):
             st.session_state["feed_do_fetch"] = True
@@ -6212,7 +5852,7 @@ def render_news_feed_page(
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
         st.success(f"已載入 {len(feed)} 則要聞。")
-        st.caption(f"📌 本頁摘要使用 LLM：**{feed_llm_provider}**（{feed_llm_model}）")
+        st.caption(f"📌 本頁摘要：**Gemini**（{feed_llm_model}）")
         feed_err = st.session_state.pop("feed_llm_last_error", None)
         if feed_err:
             st.warning(f"⚠️ LLM 摘要曾失敗，部分改顯示 Tavily 原文。錯誤：{feed_err[:300]}")
@@ -6220,7 +5860,7 @@ def render_news_feed_page(
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             fetch_intelligence_feed_tavily.clear()
             with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_provider, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
+                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
@@ -6551,7 +6191,7 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode) -
         {CSS_STYLE}
     </head>
     <body style="padding: 20px; max-width: 900px; margin: 0 auto;">
-        <h1>多元觀點分析報告 (V38.0)</h1>
+        <h1>多元觀點分析報告</h1>
         <p>生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
         {timeline_html}
         {report_html_1}
@@ -6614,11 +6254,11 @@ def convert_data_to_md(data):
     """
     # 檢查輸入類型
     if data is None:
-        return "# 多元觀點分析報告 (V38.0)\n\n❌ 錯誤：無資料可匯出"
+        return "# 多元觀點分析報告\n\n❌ 錯誤：無資料可匯出"
     
     if not isinstance(data, dict):
         logger.warning(f"convert_data_to_md 收到非字典類型輸入: {type(data)}")
-        return f"# 多元觀點分析報告 (V38.0)\n\n❌ 錯誤：資料格式不正確（收到 {type(data).__name__} 類型）"
+        return f"# 多元觀點分析報告\n\n❌ 錯誤：資料格式不正確（收到 {type(data).__name__} 類型）"
     
     # 安全地取得 timeline 和 report_text
     timeline = data.get('timeline', [])
@@ -6633,7 +6273,7 @@ def convert_data_to_md(data):
     timeline_md = timeline_df.to_markdown(index=False) if not timeline_df.empty else "無時間軸資料"
     
     return f"""
-# 多元觀點分析報告 (V38.0)
+# 多元觀點分析報告
 產生時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## 1. 平衡報導分析
@@ -7140,6 +6780,33 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
         st.metric("格式驗證", score_text)
     st.caption(f"時間軸事件：{timeline_count} 筆；此區塊是閱讀長報告前的品質提示，不取代完整分析。")
 
+def render_changelog_page() -> None:
+    """本次改版與近期調整說明（維護者請同步更新此頁內容）。"""
+    st.title("📋 本次修改內容")
+    st.caption("記錄介面與行為的重要變更；不含未公開之實驗功能。")
+
+    st.markdown("""
+### 介面與導覽
+- **已移除應用程式標題上的版本號**（側欄與瀏覽器分頁標題改為「多元觀點解析」）。
+- **新增本頁**：集中說明近期修改，方便對照舊版行為。
+
+### 模型與金鑰（簡化）
+- **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
+- **側欄「模型與金鑰」**：只保留 Gemini Key 與 Gemini 型號選擇。
+- **API 驗證**：在「多元議題分析／全球情報」可一併驗證 Tavily；在「新聞文本分析／方法論／本頁」可僅驗證 Gemini。
+
+### 分析與匯出
+- **錯誤處理**：深度分析流程已改為僅依 Gemini 配額與型號降級，不再嘗試其他雲端模型備援。
+- **全球情報**：摘要階段僅使用 Gemini（與側欄選定型號一致）。
+- **匯出**：Markdown／HTML 報告標題已改用「多元觀點分析報告」（無版本號）。
+
+### 先前已實作且仍適用
+- 新聞網址擷取、文本分析、PDF 匯出（含跨平台中文字型）、Markdown 表格正規化、方法論專頁等仍沿用。
+
+---
+若您有建議更新項目，可於對話中註明以便納入本頁。
+    """.strip())
+
 def render_methodology_page() -> None:
     """主頁版方法論總覽，減少側欄長文對操作流程的干擾。"""
     st.title("📚 方法論與功能實裝狀態")
@@ -7221,9 +6888,15 @@ if "current_page" not in st.session_state:
     st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
 
 with st.sidebar:
-    st.title("多元觀點解析 V38.0")
+    st.title("多元觀點解析")
     st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
-    page_options = ["🚀 多元議題分析 (Deep Analysis)", "🧾 新聞文本分析 (Text Analysis)", "📰 全球情報 (News Feed)", "📚 方法論 (Methodology)"]
+    page_options = [
+        "🚀 多元議題分析 (Deep Analysis)",
+        "🧾 新聞文本分析 (Text Analysis)",
+        "📰 全球情報 (News Feed)",
+        "📚 方法論 (Methodology)",
+        "📋 本次修改 (Updates)",
+    ]
     # 由「深度戰略分析」按鈕觸發的跳轉：在 radio 渲染前同步 nav_page，避免直接寫入 widget key 觸發 StreamlitAPIException
     if st.session_state.pop("pending_nav_to_analysis", False):
         st.session_state["nav_page"] = "🚀 多元議題分析 (Deep Analysis)"
@@ -7257,6 +6930,7 @@ with st.sidebar:
     is_feed_page = current_page == "📰 全球情報 (News Feed)"
     is_text_page = current_page == "🧾 新聞文本分析 (Text Analysis)"
     is_methodology_page = current_page == "📚 方法論 (Methodology)"
+    is_changelog_page = current_page == "📋 本次修改 (Updates)"
     tavily_key = st.session_state.get("tavily_key", "")
     search_days = 30
     max_results = 30
@@ -7267,163 +6941,49 @@ with st.sidebar:
     past_report_input = ""
 
     st.markdown("#### 狀態")
-    st.caption(f"LLM：{st.session_state.get('llm_provider', 'Gemini')}｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
+    st.caption(f"模型：Gemini｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
     st.caption(f"Tavily：{'已啟用' if tavily_key else '未啟用'}｜Fact Check：{'開' if enable_google_fact_check else '關'}")
     
-    with st.expander("🔑 模型與金鑰", expanded=not is_methodology_page):
-        st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
-        show_advanced_models = st.toggle(
-            "顯示進階模型供應商",
-            value=False,
-            help="開啟後才顯示 Grok、Groq、OpenRouter、OpenAI Key 與「OpenAI 備援模型」（預設摺疊）。",
+    with st.expander("🔑 模型與金鑰", expanded=not (is_methodology_page or is_changelog_page)):
+        st.info("⚠️ API Key 不會永久儲存，重新整理後需再次輸入")
+        google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="全站分析僅使用 Google Gemini")
+        model_name = st.selectbox(
+            "Gemini 模型",
+            GEMINI_MODEL_OPTIONS,
+            index=0,
+            help="Gemini 3.1 / 3.0 preview 系列；預設 3.1 Flash Preview。",
         )
-        if show_advanced_models:
-            grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
-            groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
-            openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
-            openai_key = st.text_input("OpenAI Key（Gemini 備援，可選）", value="", type="password", placeholder="輸入 OpenAI API Key", help="當 Gemini 配額耗盡時可自動降級使用")
-            llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "Groq", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/Groq/OpenRouter 時請先輸入對應 Key")
-        else:
-            grok_key = ""
-            groq_key = ""
-            openrouter_key = ""
-            openai_key = ""
-            llm_provider = "Gemini"
-            st.caption("目前使用 Gemini。其他模型供應商已收合在進階設定。")
-        st.session_state["llm_provider"] = llm_provider
-        # 持久化 Key：僅在「本次有輸入」時寫入，避免 rerun 時密碼欄位清空後把已存 key 蓋掉
+        st.session_state["gemini_model"] = model_name
+        st.session_state["llm_provider"] = "Gemini"
         if (google_key or "").strip():
             st.session_state["google_api_key"] = (google_key or "").strip()
-        if (grok_key or "").strip():
-            st.session_state["grok_api_key"] = (grok_key or "").strip()
-        if llm_provider == "Grok":
-            grok_models = ["grok-3", "grok-3-mini", "grok-4", "grok-4-fast-reasoning", "grok-4-fast-non-reasoning"]
-            grok_model = st.selectbox(
-                "Grok 模型",
-                options=grok_models,
-                index=0,
-                help="xAI 已下架 grok-2，請選 grok-3 或更新型號。見 https://x.ai/api",
-            )
-            st.session_state["grok_model"] = grok_model
-        else:
-            st.session_state["grok_model"] = "grok-3"
-        if (groq_key or "").strip():
-            st.session_state["groq_api_key"] = (groq_key or "").strip()
-        if (openrouter_key or "").strip():
-            st.session_state["openrouter_api_key"] = (openrouter_key or "").strip()
-        if (openai_key or "").strip():
-            st.session_state["openai_api_key"] = (openai_key or "").strip()
-        _openai_fallback_opts = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
-        if OPENAI_AVAILABLE:
-            if show_advanced_models:
-                with st.expander("OpenAI 備援模型（可選）", expanded=False):
-                    st.caption("僅在 Gemini 失敗且已填 OpenAI Key 時啟用；一般使用不需展開。")
-                    _prev_oa = st.session_state.get("openai_model", "gpt-4o-mini")
-                    _oa_idx = _openai_fallback_opts.index(_prev_oa) if _prev_oa in _openai_fallback_opts else 0
-                    openai_model = st.selectbox(
-                        "備援模型",
-                        options=_openai_fallback_opts,
-                        index=_oa_idx,
-                        help="降級備援用；與上方「分析使用 LLM」無關。",
-                        key="sidebar_openai_fallback_model",
-                    )
-                    st.session_state["openai_model"] = openai_model
-            else:
-                st.session_state.setdefault("openai_model", "gpt-4o-mini")
-        else:
-            st.session_state["openai_model"] = "gpt-4o-mini"
-        if llm_provider == "Gemini":
-            model_name = st.selectbox(
-                "Gemini 模型",
-                GEMINI_MODEL_OPTIONS,
-                index=0,
-                help="僅保留 Gemini 3.1 / 3.0 preview 系列；預設使用 3.1 Flash Preview。"
-            )
-            st.session_state["gemini_model"] = model_name
-            if "3.1-pro" in model_name:
-                st.info("🚀 **Gemini 3.1 Pro Preview**：適合複雜深度分析")
-            elif "3.1-flash" in model_name:
-                st.info("⚡ **Gemini 3.1 Flash Preview**：預設推薦，適合搜尋策略與一般分析")
-            elif "3-pro" in model_name:
-                st.info("🚀 **Gemini 3.0 Pro Preview**：3.0 系列深度分析備援")
-            elif "3-flash" in model_name:
-                st.info("⚡ **Gemini 3.0 Flash Preview**：3.0 系列快速備援")
-        else:
-            model_name = st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
-        if llm_provider == "OpenRouter":
-            openrouter_paid = [
-                "google/gemini-2.0-flash-exp",
-                "anthropic/claude-3.5-sonnet",
-                "anthropic/claude-3-opus",
-                "openai/gpt-4o",
-            ]
-            openrouter_free_sorted = sorted(OPENROUTER_FREE_MODEL_IDS)
-            openrouter_models = openrouter_paid + openrouter_free_sorted
-            def _openrouter_label(mid: str) -> str:
-                return f"{mid} (免費)" if mid in OPENROUTER_FREE_MODEL_IDS else mid
-            openrouter_model = st.selectbox(
-                "OpenRouter 模型",
-                options=openrouter_models,
-                index=0,
-                format_func=_openrouter_label,
-                help="付費模型在上方；下方為 OpenRouter 免費模型（pricing=0）。見 https://openrouter.ai/models 或 https://openrouter.ai/collections/free-models",
-            )
-            st.session_state["openrouter_model"] = openrouter_model
-        else:
-            st.session_state["openrouter_model"] = "google/gemini-2.0-flash-exp"
-        if llm_provider == "Groq":
-            groq_models = [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "llama-3.1-70b-versatile",
-                "llama-3.1-405b-reasoning",
-                "mixtral-8x7b-32768",
-            ]
-            groq_model = st.selectbox(
-                "Groq 模型",
-                options=groq_models,
-                index=0,
-                help="Groq 提供之 Llama / Mixtral 等模型，見 https://console.groq.com/docs/models",
-            )
-            st.session_state["groq_model"] = groq_model
-        else:
-            st.session_state["groq_model"] = "llama-3.1-8b-instant"
+        if "3.1-pro" in model_name:
+            st.caption("🚀 **3.1 Pro**：適合複雜深度分析")
+        elif "3.1-flash" in model_name:
+            st.caption("⚡ **3.1 Flash**：預設推薦，一般分析與搜尋策略")
+        elif "3-pro" in model_name:
+            st.caption("🚀 **3.0 Pro**：深度備援")
+        elif "3-flash" in model_name:
+            st.caption("⚡ **3.0 Flash**：快速備援")
 
-        # 供「全球情報」News Feed 使用的 LLM：與側欄選擇一致。Key 以 session 為準（rerun 時 password 欄位會清空，需用 session 保留）
-        grok_key_effective = (grok_key or "").strip() or st.session_state.get("grok_api_key") or ""
-        groq_key_effective = (groq_key or "").strip() or st.session_state.get("groq_api_key") or ""
-        openrouter_key_effective = (openrouter_key or "").strip() or st.session_state.get("openrouter_api_key") or ""
-        google_key_effective = (google_key or "").strip() or st.session_state.get("google_api_key") or ""
-        if llm_provider == "Grok" and grok_key_effective:
-            st.session_state["feed_llm_provider"] = "Grok"
-            st.session_state["feed_llm_key"] = grok_key_effective
-            st.session_state["feed_llm_model"] = st.session_state.get("grok_model", "grok-3")
-        elif llm_provider == "Groq" and groq_key_effective:
-            st.session_state["feed_llm_provider"] = "Groq"
-            st.session_state["feed_llm_key"] = groq_key_effective
-            st.session_state["feed_llm_model"] = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-        elif llm_provider == "OpenRouter" and openrouter_key_effective:
-            st.session_state["feed_llm_provider"] = "OpenRouter"
-            st.session_state["feed_llm_key"] = openrouter_key_effective
-            st.session_state["feed_llm_model"] = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-        else:
-            st.session_state["feed_llm_provider"] = "Gemini"
-            st.session_state["feed_llm_key"] = google_key_effective or None
-            st.session_state["feed_llm_model"] = model_name or DEFAULT_GEMINI_MODEL
-
-        # API Key 驗證按鈕（Tavily Key 在下方「Tavily 搜尋設定」輸入）
-        if st.button("🔐 驗證 API Key", help="點擊驗證 API Key 是否有效"):
+        needs_tavily_for_validate = is_deep_analysis_page or is_feed_page
+        if st.button("🔐 驗證 API Key", help="驗證 Gemini；在多元分析／全球情報頁會一併驗證 Tavily；其餘頁面可只驗證 Gemini。"):
             tavily_key_for_check = st.session_state.get("tavily_key", "")
-            if google_key and tavily_key_for_check:
+            if not (google_key or "").strip():
+                st.warning("⚠️ 請先輸入 Gemini Key")
+            elif needs_tavily_for_validate and not (tavily_key_for_check or "").strip():
+                st.warning("⚠️ 在目前頁面需一併驗證 Tavily：請至下方「🔍 搜尋設定」輸入 Tavily Key。若只需驗證 Gemini，請切換到「新聞文本分析」「方法論」或「本次修改」頁再按驗證。")
+            else:
                 with st.spinner("正在驗證 API Key..."):
-                    is_valid, message = validate_api_keys(google_key, tavily_key_for_check)
+                    is_valid, message = validate_api_keys(
+                        (google_key or "").strip(),
+                        (tavily_key_for_check or "").strip(),
+                        require_tavily=needs_tavily_for_validate,
+                    )
                     if is_valid:
                         st.success(message)
                     else:
                         st.error(message)
-            else:
-                st.warning("⚠️ 請先輸入 Gemini Key 與下方「Tavily 搜尋設定」中的 Tavily Key")
 
     if is_deep_analysis_page or is_feed_page:
         with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
@@ -8080,24 +7640,12 @@ flowchart LR
         if export_data is not None:
             st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
-if st.session_state["current_page"] == "📚 方法論 (Methodology)":
+if st.session_state["current_page"] == "📋 本次修改 (Updates)":
+    render_changelog_page()
+elif st.session_state["current_page"] == "📚 方法論 (Methodology)":
     render_methodology_page()
 elif st.session_state["current_page"] == "📰 全球情報 (News Feed)":
-    # 與側欄同一輪：用 session 決定 feed 用哪個 LLM，並直接傳入避免讀取時序問題
-    _lp = st.session_state.get("llm_provider", "Gemini")
-    _gk = (st.session_state.get("grok_api_key") or "").strip()
-    _gqk = (st.session_state.get("groq_api_key") or "").strip()
-    _ok = (st.session_state.get("openrouter_api_key") or "").strip()
-    _gkey = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-    if _lp == "Grok" and _gk:
-        _fp, _fk, _fm = "Grok", _gk, st.session_state.get("grok_model", "grok-3")
-    elif _lp == "Groq" and _gqk:
-        _fp, _fk, _fm = "Groq", _gqk, st.session_state.get("groq_model", "llama-3.1-8b-instant")
-    elif _lp == "OpenRouter" and _ok:
-        _fp, _fk, _fm = "OpenRouter", _ok, st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-    else:
-        _fp, _fk, _fm = "Gemini", (_gkey or None), (model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL))
-    render_news_feed_page(google_key, tavily_key, model_name, feed_llm_provider=_fp, feed_llm_key=_fk, feed_llm_model=_fm)
+    render_news_feed_page(google_key, tavily_key, model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL))
 elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis)":
     st.title("🧾 新聞文本分析")
     st.caption("貼上新聞網址即可分析；系統會自動擷取標題、來源與正文，再用 GRADE/CERQual、Entman、邏輯謬誤、深層偏見與 Cui Bono 框架進行文本取證式分析。")
@@ -8131,27 +7679,9 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             st.error("請先貼上新聞網址；若網址無法擷取，再手動貼上新聞全文。")
             st.stop()
 
-        llm_provider = st.session_state.get("llm_provider", "Gemini")
-        grok_key_effective = (st.session_state.get("grok_api_key") or "").strip()
-        groq_key_effective = (st.session_state.get("groq_api_key") or "").strip()
-        openrouter_key_effective = (st.session_state.get("openrouter_api_key") or "").strip()
         google_key_effective = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-
-        use_grok = llm_provider == "Grok" and bool(grok_key_effective)
-        use_groq = llm_provider == "Groq" and bool(groq_key_effective)
-        use_openrouter = llm_provider == "OpenRouter" and bool(openrouter_key_effective)
-        if use_grok:
-            effective_key = grok_key_effective
-            effective_model = st.session_state.get("grok_model", "grok-3")
-        elif use_groq:
-            effective_key = groq_key_effective
-            effective_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-        elif use_openrouter:
-            effective_key = openrouter_key_effective
-            effective_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-        else:
-            effective_key = google_key_effective
-            effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
+        effective_key = google_key_effective
+        effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
         if not effective_key:
             st.error("請先在側欄輸入可用的 LLM API Key。")
@@ -8195,9 +7725,6 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                     mode="TEXT_ANALYSIS",
                     fast_mode=False,
                     manipulation_signals="單篇貼上新聞文本，未執行跨網域聯播偵測。",
-                    use_grok=use_grok,
-                    use_groq=use_groq,
-                    use_openrouter=use_openrouter,
                     analysis_depth=st.session_state.get("analysis_depth", "標準"),
                 )
             except Exception as e:
@@ -8365,7 +7892,7 @@ else:
         else:
             dynamic_keywords = None  # 將在 status 內生成
 
-        with st.status("🚀 啟動 V38.0 多元觀點分析引擎...", expanded=True) as status:
+        with st.status("🚀 啟動多元觀點分析引擎...", expanded=True) as status:
 
             if dynamic_keywords is None:
                 st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
@@ -8602,39 +8129,14 @@ else:
             mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
             analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
 
-            openai_api_key = st.session_state.get('openai_api_key', None)
-            openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
-            llm_provider = st.session_state.get("llm_provider", "Gemini")
-            grok_key = st.session_state.get("grok_api_key")
-            groq_key = st.session_state.get("groq_api_key")
-            openrouter_key = st.session_state.get("openrouter_api_key")
-            openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-            groq_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-            use_grok = (llm_provider == "Grok" and grok_key)
-            use_groq = (llm_provider == "Groq" and groq_key)
-            use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
-            if use_grok:
-                effective_key = grok_key
-                effective_model = st.session_state.get("grok_model", "grok-3")
-            elif use_groq:
-                effective_key = groq_key
-                effective_model = groq_model
-            elif use_openrouter:
-                effective_key = openrouter_key
-                effective_model = openrouter_model
-            else:
-                effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-                effective_model = model_name
+            effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+            effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
 
             try:
                 raw_report = run_strategic_analysis(
                     query, analysis_context, effective_model, effective_key,
                     mode=mode_code, fast_mode=False,
-                    openai_api_key=openai_api_key, openai_model=openai_model,
                     manipulation_signals=manipulation_signals_text,
-                    use_grok=use_grok,
-                    use_groq=use_groq,
-                    use_openrouter=use_openrouter,
                     analysis_depth=st.session_state.get("analysis_depth", "標準"),
                 )
             except ChatGoogleGenerativeAIError as e:
@@ -8645,10 +8147,10 @@ else:
             
                 {error_msg}
             
-                **額外建議：**
-                1. 如果已提供 OpenAI API Key，系統應該已自動嘗試降級
-                2. 檢查側邊欄是否已正確設定 OpenAI API Key
-                3. 確認 OpenAI API Key 是否有效
+                **建議：**
+                1. 確認 Gemini API Key 與配額：https://ai.dev/rate-limit
+                2. 改選側欄 **Flash** 系列模型以降低用量
+                3. 稍後再試或升級 AI Studio 方案
                 """)
                 status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
                 logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
@@ -8658,7 +8160,7 @@ else:
                 from tenacity import RetryError
                 error_msg = str(e)
                 error_type = type(e).__name__
-            
+
                 # 檢查是否為重試錯誤
                 if isinstance(e, RetryError) or "RetryError" in error_type:
                     # 提取原始錯誤
@@ -8670,108 +8172,48 @@ else:
                                 original_error = e.last_attempt.exception()
                                 last_attempt = str(original_error) if original_error else None
                             elif hasattr(e.last_attempt, 'result'):
-                                # 某些版本的 tenacity
                                 original_error = e.last_attempt.result()
                                 last_attempt = str(original_error) if original_error else None
-                        except:
+                        except Exception:
                             pass
-                
+
                     original_error_msg = last_attempt if last_attempt else error_msg
-                
-                    # 檢查是否為配額相關錯誤，如果是且提供了 OpenAI API Key，嘗試降級
-                    is_quota_error = (
-                        "RESOURCE_EXHAUSTED" in original_error_msg or 
-                        "quota" in original_error_msg.lower() or 
-                        "429" in original_error_msg or
-                        isinstance(original_error, ChatGoogleGenerativeAIError) and (
-                            "RESOURCE_EXHAUSTED" in str(original_error) or 
-                            "quota" in str(original_error).lower()
-                        )
-                    )
-                
-                    if is_quota_error and openai_api_key and OPENAI_AVAILABLE:
-                        try:
-                            status.update(label="🔄 Gemini 配額耗盡，自動切換到 OpenAI...", state="running")
-                            logger.info(f"檢測到配額錯誤，嘗試降級到 OpenAI {openai_model}")
-                            raw_report = run_strategic_analysis(
-                                query, analysis_context, effective_model, effective_key,
-                                mode=mode_code, fast_mode=False,
-                                openai_api_key=openai_api_key, openai_model=openai_model,
-                                manipulation_signals=manipulation_signals_text,
-                                use_grok=use_grok,
-                                use_groq=use_groq,
-                                use_openrouter=use_openrouter,
-                                analysis_depth=st.session_state.get("analysis_depth", "標準"),
-                            )
-                            # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
-                            status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
-                            logger.info(f"成功降級到 OpenAI {openai_model} 並完成分析")
-                            # 繼續執行後續邏輯
-                        except Exception as e2:
-                            logger.error(f"降級到 OpenAI 失敗: {str(e2)}")
-                            st.error(f"""
-                            ❌ **API 調用失敗（重試後仍失敗）**
-                        
-                            **錯誤類型**：{error_type}
-                        
-                            **配額錯誤檢測**：已檢測到 Gemini API 配額耗盡
-                        
-                            **自動降級嘗試**：嘗試使用 OpenAI {openai_model} 降級，但失敗
-                        
-                            **降級錯誤**：{str(e2)[:300]}
-                        
-                            **解決方案：**
-                            1. 檢查 OpenAI API Key 是否正確
-                            2. 檢查 OpenAI 配額使用情況
-                            3. 等待 Gemini 配額重置：https://ai.dev/rate-limit
-                            4. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）
-                        
-                            **原始錯誤**：{original_error_msg[:500]}
-                            """)
-                            status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                            st.stop()
-                    else:
-                        # 不是配額錯誤，或沒有提供 OpenAI API Key
-                        error_display = f"""
-                        ❌ **API 調用失敗（重試後仍失敗）**
-                    
-                        **錯誤類型**：{error_type}
-                    
-                        **可能的原因：**
-                        1. API 配額已耗盡
-                        2. API Key 無效
-                        3. 網路連接問題
-                        4. API 服務暫時不可用
-                    
-                        **解決方案：**
-                        1. 檢查 API Key 是否正確
-                        2. 檢查配額使用情況：https://ai.dev/rate-limit
-                        3. 等待一段時間後重試
-                        """
-                        if not openai_api_key:
-                            error_display += "4. **提供 OpenAI API Key 作為降級方案（在側邊欄輸入）**\n"
-                        error_display += f"5. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview（配額限制較寬鬆）\n\n"
-                        error_display += f"**原始錯誤**：{original_error_msg[:500]}"
-                    
-                        st.error(error_display)
-                        status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                        logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
-                        st.stop()
+
+                    error_display = f"""
+                    ❌ **API 調用失敗（重試後仍失敗）**
+
+                    **錯誤類型**：{error_type}
+
+                    **可能的原因：**
+                    1. Gemini 配額已耗盡
+                    2. API Key 無效
+                    3. 網路連接問題
+                    4. API 服務暫時不可用
+
+                    **解決方案：**
+                    1. 檢查 Gemini Key 是否正確
+                    2. 檢查配額：https://ai.dev/rate-limit
+                    3. 改選 **Flash** 型號或等待後重試
+                    4. 原始錯誤：{original_error_msg[:500]}
+                    """
+                    st.error(error_display)
+                    status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                    logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
+                    st.stop()
                 elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
                     st.error(f"""
                     ❌ **API 配額已耗盡**
-                
+
                     **錯誤詳情**：{error_msg[:300]}
-                
+
                     **解決方案：**
                     1. 檢查配額：https://ai.dev/rate-limit
                     2. 等待配額重置（通常每分鐘/每天重置）
-                    3. 提供 OpenAI API Key 作為降級方案（已在側邊欄設定）
-                    4. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview
+                    3. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview
                     """)
                 else:
                     st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
-            
+
                 status.update(label="❌ 分析失敗", state="error", expanded=False)
                 logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
                 with st.expander("🔍 錯誤詳情", expanded=False):
@@ -8955,33 +8397,11 @@ else:
             if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
                 with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
                     current_report = data.get("report_text", "")
-                    openai_api_key = st.session_state.get('openai_api_key', None)
-                    openai_model = st.session_state.get('openai_model', 'gpt-4o-mini')
-                    llm_provider = st.session_state.get("llm_provider", "Gemini")
-                    grok_key = st.session_state.get("grok_api_key")
-                    groq_key = st.session_state.get("groq_api_key")
-                    openrouter_key = st.session_state.get("openrouter_api_key")
-                    openrouter_model = st.session_state.get("openrouter_model", "google/gemini-2.0-flash-exp")
-                    groq_model = st.session_state.get("groq_model", "llama-3.1-8b-instant")
-                    use_grok = (llm_provider == "Grok" and grok_key)
-                    use_groq = (llm_provider == "Groq" and groq_key)
-                    use_openrouter = (llm_provider == "OpenRouter" and openrouter_key)
-                    if use_grok:
-                        effective_key, effective_model = grok_key, st.session_state.get("grok_model", "grok-3")
-                    elif use_groq:
-                        effective_key, effective_model = groq_key, groq_model
-                    elif use_openrouter:
-                        effective_key, effective_model = openrouter_key, openrouter_model
-                    else:
-                        effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-                        effective_model = model_name
+                    effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                    effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
                     raw_text = run_strategic_analysis(
                         query, current_report, effective_model, effective_key,
                         mode="DEEP_SCENARIO",
-                        openai_api_key=openai_api_key, openai_model=openai_model,
-                        use_grok=use_grok,
-                        use_groq=use_groq,
-                        use_openrouter=use_openrouter,
                         analysis_depth=st.session_state.get("analysis_depth", "標準"),
                     )
                     st.session_state.scenario_result = parse_gemini_data(raw_text) 
