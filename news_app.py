@@ -7253,15 +7253,40 @@ with st.sidebar:
     st.markdown("---")
     
     blind_mode = st.toggle("🙈 盲測模式", value=False)
+    is_deep_analysis_page = current_page == "🚀 多元議題分析 (Deep Analysis)"
+    is_feed_page = current_page == "📰 全球情報 (News Feed)"
+    is_text_page = current_page == "🧾 新聞文本分析 (Text Analysis)"
+    is_methodology_page = current_page == "📚 方法論 (Methodology)"
+    tavily_key = st.session_state.get("tavily_key", "")
+    search_days = 30
+    max_results = 30
+    selected_regions = ["🇹🇼 台灣 (Taiwan)"]
+    use_cache = st.session_state.get("use_cache", True)
+    enable_google_fact_check = st.session_state.get("enable_google_fact_check", False)
+    enable_english_for_regions = st.session_state.get("enable_english_for_regions", True)
+    past_report_input = ""
+
+    st.markdown("#### 狀態")
+    st.caption(f"LLM：{st.session_state.get('llm_provider', 'Gemini')}｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
+    st.caption(f"Tavily：{'已啟用' if tavily_key else '未啟用'}｜Fact Check：{'開' if enable_google_fact_check else '關'}")
     
-    with st.expander("🔑 API 設定", expanded=True):
+    with st.expander("🔑 模型與金鑰", expanded=not is_methodology_page):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
-        grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
-        groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
-        openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
-        openai_key = st.text_input("OpenAI Key（Gemini 備援，可選）", value="", type="password", placeholder="輸入 OpenAI API Key", help="當 Gemini 配額耗盡時可自動降級使用")
-        llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "Groq", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/Groq/OpenRouter 時請先輸入對應 Key")
+        show_advanced_models = st.toggle("顯示進階模型供應商", value=False, help="開啟後才顯示 Grok、Groq、OpenRouter 與 OpenAI 備援設定。")
+        if show_advanced_models:
+            grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
+            groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
+            openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
+            openai_key = st.text_input("OpenAI Key（Gemini 備援，可選）", value="", type="password", placeholder="輸入 OpenAI API Key", help="當 Gemini 配額耗盡時可自動降級使用")
+            llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "Groq", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/Groq/OpenRouter 時請先輸入對應 Key")
+        else:
+            grok_key = ""
+            groq_key = ""
+            openrouter_key = ""
+            openai_key = ""
+            llm_provider = "Gemini"
+            st.caption("目前使用 Gemini。其他模型供應商已收合在進階設定。")
         st.session_state["llm_provider"] = llm_provider
         # 持久化 Key：僅在「本次有輸入」時寫入，避免 rerun 時密碼欄位清空後把已存 key 蓋掉
         if (google_key or "").strip():
@@ -7387,53 +7412,43 @@ with st.sidebar:
             else:
                 st.warning("⚠️ 請先輸入 Gemini Key 與下方「Tavily 搜尋設定」中的 Tavily Key")
 
-        st.markdown("---")
-        st.markdown("#### 🔍 Tavily 搜尋設定")
-        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，並整合公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
-        tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）", key="tavily_key")
-        if tavily_key:
-            st.success("✅ Tavily 搜尋已啟用")
-        else:
-            st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
-        search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
-        max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
-        use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
-        st.session_state.use_cache = use_cache  # 儲存到 session_state
-        enable_google_fact_check = st.toggle(
-            "🧪 啟用 Google Fact Check 查核",
-            value=st.session_state.get("enable_google_fact_check", False),
-            help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
-            key="enable_google_fact_check",
-        )
-        if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
-            deleted = clear_cache()
-            st.success(f"✅ 已清除 {deleted} 條過期快取")
-        
-        selected_regions = st.multiselect(
-            "搜尋視角 (Region) - 可複選",
-            ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
-            default=["🇹🇼 台灣 (Taiwan)"],
-            help="視角決定保底網域與是否觸發英文檢索；詳見下方「搜尋視角說明」。"
-        )
-        with st.expander("📖 搜尋視角說明（視角→網域／英文檢索）", expanded=False):
-            st.markdown("""
-            **視角與保底網域對應**
-            | 視角 | 保底網域／行為 |
-            |------|----------------|
-            | 台灣 | 藍/綠/官方網域 + Tavily country 優先台灣 |
-            | 亞洲 | 亞洲國際媒體 + **自動產出日文/韓文關鍵字**對日本/韓國媒體檢索（重要） |
-            | 歐洲 | 歐洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索（見下方選項） |
-            | 美洲 | 美洲區域保底（含西方調查媒體，約 15 網域）+ 可自動英文關鍵字檢索 |
-            | 獨立 | 獨立/自媒體保底搜尋（Indie_Guard，約 20 網域）+ 來源分類標為獨立 |
+    if is_deep_analysis_page or is_feed_page:
+        with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
+            tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）", key="tavily_key")
+            if tavily_key:
+                st.success("✅ Tavily 搜尋已啟用")
+            else:
+                st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
 
-            **英文檢索觸發**：勾選歐洲或美洲時，可選擇是否「自動加入英文關鍵字檢索」（系統會將查詢翻譯為英文並對歐美網域搜尋）。若關閉，仍會執行該區域的**中文查詢**保底。
-            """)
-        enable_english_for_regions = st.checkbox(
-            "當勾選歐洲/美洲時，自動加入英文關鍵字檢索",
-            value=st.session_state.get("enable_english_for_regions", True),
-            key="enable_english_for_regions",
-            help="建議三：可關閉以僅使用中文查詢對歐美網域保底，或手動在策略表加入英文查詢。"
-        )
+            if is_deep_analysis_page:
+                st.info("ℹ️ 多元議題分析會使用 Tavily 搜尋、公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
+                search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
+                max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
+                use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
+                st.session_state.use_cache = use_cache
+                enable_google_fact_check = st.toggle(
+                    "🧪 啟用 Google Fact Check 查核",
+                    value=st.session_state.get("enable_google_fact_check", False),
+                    help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
+                    key="enable_google_fact_check",
+                )
+                if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
+                    deleted = clear_cache()
+                    st.success(f"✅ 已清除 {deleted} 條過期快取")
+                selected_regions = st.multiselect(
+                    "搜尋視角",
+                    ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
+                    default=["🇹🇼 台灣 (Taiwan)"],
+                    help="視角決定保底網域與是否觸發英文檢索。"
+                )
+                enable_english_for_regions = st.checkbox(
+                    "歐洲/美洲自動加入英文檢索",
+                    value=st.session_state.get("enable_english_for_regions", True),
+                    key="enable_english_for_regions",
+                    help="可關閉以僅使用中文查詢對歐美網域保底。",
+                )
+            else:
+                st.caption("全球情報頁只需要 Tavily Key；搜尋天數與視角設定僅用於多元議題分析。")
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
         uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
