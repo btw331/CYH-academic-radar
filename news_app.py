@@ -5283,6 +5283,91 @@ CONTINENT_ORDER = ["亞洲", "歐洲", "美洲", "非洲", "大洋洲"]
 TOPIC_ORDER = ["政治", "經濟", "科技"]
 CONTINENT_EMOJI = {"亞洲": "🌏", "歐洲": "🌍", "美洲": "🌎", "非洲": "🌍", "大洋洲": "🌏"}
 
+
+def _normalize_feed_field(value: Any, *, list_join: str = " ") -> str:
+    """
+    將 LLM／Tavily 可能回傳的 str、list、數字、巢狀 dict 轉成單一字串。
+    避免 Gemini 將 summary 等欄位輸出成 JSON 陣列時，對 list 呼叫 .strip() 造成錯誤。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, (int, float)):
+        return str(value).strip()
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: List[str] = []
+        for x in value:
+            s = _normalize_feed_field(x, list_join=" ")
+            if s:
+                parts.append(s)
+        return list_join.join(parts)
+    if isinstance(value, dict):
+        for k in ("text", "content", "title", "summary", "url", "value"):
+            if k in value and value[k] is not None:
+                return _normalize_feed_field(value[k], list_join=list_join)
+        return ""
+    return str(value).strip()
+
+
+def _dedupe_tavily_raw_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """依 URL 去重（正規化尾隨斜線），減少送入 LLM 的重複稿件。"""
+    seen: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for r in items:
+        u = _normalize_feed_field(r.get("url")).lower().rstrip("/")
+        key = u if u.startswith("http") else f"t:{_normalize_feed_field(r.get('title'))[:120]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
+# --- 全球情報 Gemini 輸入量控制（節省 input token；中文大致 2～4 字 ≈ 1 token）---
+FEED_LLM_INPUT_CHAR_CAP = 12000  # 單洲 user 區總上限（原約 18000）
+FEED_LLM_SNIPPET_CHARS = 300  # 每則內文摘取長度（原 500）
+FEED_LLM_MAX_ARTICLES = 12  # 每洲送入摘要的篇數上限（原 15）
+# 勾選「精簡輸入」時
+FEED_LLM_COMPACT_CHAR_CAP = 8000
+FEED_LLM_COMPACT_SNIPPET = 200
+FEED_LLM_COMPACT_ARTICLES = 9
+# RSS 單次摘要（若日後啟用）
+FEED_RSS_INPUT_CHAR_CAP = 18000
+FEED_RSS_MAX_LINES = 40
+FEED_RSS_SNIPPET_CHARS = 220
+
+
+def _format_tavily_items_for_feed_llm(
+    raw_items: List[Dict[str, Any]],
+    *,
+    max_articles: int,
+    snippet_chars: int,
+    total_char_cap: int,
+) -> str:
+    """
+    將 Tavily 結果壓成送進 Gemini 的純文字；在總字數上限內盡可能多帶幾則（由前到後）。
+    使用短欄位前綴 T/U/C 並截斷內文，減少冗餘標籤長度。
+    """
+    blocks: List[str] = []
+    for i, r in enumerate(raw_items[:max_articles], 1):
+        title = _normalize_feed_field(r.get("title"))
+        url = _normalize_feed_field(r.get("url"))
+        content = _normalize_feed_field(r.get("content") or r.get("snippet") or "", list_join=" ")
+        if len(content) > snippet_chars:
+            snippet = content[:snippet_chars].rstrip() + "…"
+        else:
+            snippet = content
+        block = f"[{i}] T:{title}\nU:{url}\nC:{snippet}"
+        candidate = "\n\n".join(blocks + [block])
+        if len(candidate) > total_char_cap:
+            break
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
 # RSS 來源（免 Tavily）：涵蓋全球＋各區域；前段為主要來源，後段為備援（提高 0 次 API 模式成功率）
 RSS_FEED_URLS = [
     "https://feeds.bbci.co.uk/news/world/rss.xml",
@@ -5372,11 +5457,12 @@ def _summarize_feed_with_llm(
 - title：吸引人的繁體中文標題
 - summary：2～3 句繁體中文摘要
 - source：來源網域或媒體名（從原文擷取或推斷）
-- url：該則新聞的完整連結（從原文中「URL:」後面的網址**原樣複製**，若無則空字串 ""）
+- url：該則新聞的完整連結（從該則「U:」或原文「URL:」後面的網址**原樣複製**，若無則空字串 ""）
 - analysis_keywords：若要對該議題做「深度分析」時，最適合的搜尋關鍵字（繁體中文，簡短精準）
 
-請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, url, analysis_keywords。"""
-    user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。**每則的 url 請從對應原文的「URL:」後方完整複製。**\n\n{raw_news_text[:20000]}"""
+請「只」輸出一個 JSON 陣列，每則一筆物件，不要其他說明。鍵名必須為：emoji, title, summary, source, url, analysis_keywords。
+**重要**：每個欄位值必須為單一字串（string），不可使用陣列；若需多句摘要請合併為一段文字。"""
+    user_prompt = f"""以下為「今日最新」搜尋結果{context}。請從中精選**最重要**的 5～8 則（頭條、重大政策、市場或國際要聞），去除重複與次要內容，輸出上述格式的 JSON 陣列。每則的 url 請從對應則「U:」或「URL:」後方完整複製。\n\n{raw_news_text[:FEED_LLM_INPUT_CHAR_CAP]}"""
     try:
         raw = call_gemini(system_prompt, user_prompt, DEFAULT_GEMINI_MODEL, api_key)
         if not raw:
@@ -5389,12 +5475,14 @@ def _summarize_feed_with_llm(
             if not isinstance(it, dict):
                 continue
             out.append({
-                "emoji": it.get("emoji", "📌"),
-                "title": (it.get("title") or "").strip() or "（無標題）",
-                "summary": (it.get("summary") or "").strip() or "",
-                "source": (it.get("source") or "").strip() or "",
-                "url": (it.get("url") or "").strip() or "",
-                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+                "emoji": _normalize_feed_field(it.get("emoji"), list_join="") or "📌",
+                "title": _normalize_feed_field(it.get("title")) or "（無標題）",
+                "summary": _normalize_feed_field(it.get("summary"), list_join="\n"),
+                "source": _normalize_feed_field(it.get("source")),
+                "url": _normalize_feed_field(it.get("url")),
+                "analysis_keywords": _normalize_feed_field(
+                    it.get("analysis_keywords") or it.get("keywords") or it.get("title")
+                ),
             })
         return out
     except Exception as e:
@@ -5407,6 +5495,7 @@ def _summarize_continent_feed_with_llm(
     api_key: str,
     continent: str,
     llm_model: str = DEFAULT_GEMINI_MODEL,
+    max_input_chars: int = FEED_LLM_INPUT_CHAR_CAP,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     單一洲別合併摘要：一次 LLM 產出該洲「政治／經濟／科技」三類要聞，每則帶 topic 欄位。
@@ -5430,8 +5519,9 @@ def _summarize_continent_feed_with_llm(
 - url：從原文「URL:」後方**原樣複製**的完整連結，若無則 ""
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-請「只」輸出一個 JSON 陣列。鍵名：topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。"""
-    user_prompt = f"""以下為「{continent}」今日搜尋結果。請綜整相似報導、精選 6～9 則，為每則標註 topic 與 strategic_angle，輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_news_text[:18000]}"""
+請「只」輸出一個 JSON 陣列。鍵名：topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。政治、經濟、科技三類盡量各 2～3 則。
+**重要**：每個欄位值必須為單一字串（string），不可使用陣列；多句摘要請合併為一段文字。"""
+    user_prompt = f"""以下為「{continent}」今日搜尋結果（每則為 T:標題、U:網址、C:Tavily 摘錄）。請綜整相似報導、精選 6～9 則，為每則標註 topic 與 strategic_angle，輸出上述 JSON 陣列；url 請從該則「U:」後方**原樣複製**。\n\n{raw_news_text[:max_input_chars]}"""
     try:
         raw = _call_llm_for_feed(system_prompt, user_prompt, llm_model, api_key)
         if not raw:
@@ -5443,18 +5533,20 @@ def _summarize_continent_feed_with_llm(
         for it in items:
             if not isinstance(it, dict):
                 continue
-            topic = (it.get("topic") or "").strip()
+            topic = _normalize_feed_field(it.get("topic"))
             if topic not in TOPIC_ORDER:
                 topic = "政治"
             out.append({
                 "topic": topic,
-                "emoji": it.get("emoji", "📌"),
-                "title": (it.get("title") or "").strip() or "（無標題）",
-                "summary": (it.get("summary") or "").strip() or "",
-                "strategic_angle": (it.get("strategic_angle") or "").strip(),
-                "source": (it.get("source") or "").strip() or "",
-                "url": (it.get("url") or "").strip() or "",
-                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+                "emoji": _normalize_feed_field(it.get("emoji"), list_join="") or "📌",
+                "title": _normalize_feed_field(it.get("title")) or "（無標題）",
+                "summary": _normalize_feed_field(it.get("summary"), list_join="\n"),
+                "strategic_angle": _normalize_feed_field(it.get("strategic_angle")),
+                "source": _normalize_feed_field(it.get("source")),
+                "url": _normalize_feed_field(it.get("url")),
+                "analysis_keywords": _normalize_feed_field(
+                    it.get("analysis_keywords") or it.get("keywords") or it.get("title")
+                ),
             })
         return out, None
     except Exception as e:
@@ -5481,9 +5573,10 @@ def _tavily_raw_to_feed_items(raw_items: List[Dict[str, Any]], continent: str) -
     """
     out: List[Dict[str, Any]] = []
     for r in raw_items[:20]:
-        title = (r.get("title") or "").strip() or "（無標題）"
-        url = (r.get("url") or "").strip()
-        content = (r.get("content") or r.get("snippet") or "").strip()[:300]
+        title = _normalize_feed_field(r.get("title")) or "（無標題）"
+        url = _normalize_feed_field(r.get("url"))
+        content_raw = r.get("content") or r.get("snippet") or ""
+        content = _normalize_feed_field(content_raw, list_join=" ")[:300]
         domain = get_domain_name(url) if url else ""
         topic = _infer_topic_from_text(title, content)
         out.append({
@@ -5506,16 +5599,21 @@ def fetch_intelligence_feed_tavily(
     gemini_api_key: Optional[str],
     gemini_model: str,
     use_whitelist: bool = False,
+    save_tokens: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     彙整五大洲「每日最新重要」頭條（每洲 1 次 Tavily + 1 次 Gemini 摘要）。
     額度不足或未提供 Key 時改顯示 Tavily 原文。快取 1 小時。
     use_whitelist=True 時，僅從白名單網域（台灣藍綠官方＋國際媒體）取得結果。
+    save_tokens=True 時縮短每則摘錄與總字數，降低 Gemini input token。
     """
     if not tavily_key:
         return []
     all_items: List[Dict[str, Any]] = []
     use_llm = bool(gemini_api_key and (gemini_api_key or "").strip())
+    in_cap = FEED_LLM_COMPACT_CHAR_CAP if save_tokens else FEED_LLM_INPUT_CHAR_CAP
+    snip_n = FEED_LLM_COMPACT_SNIPPET if save_tokens else FEED_LLM_SNIPPET_CHARS
+    n_for_llm = FEED_LLM_COMPACT_ARTICLES if save_tokens else FEED_LLM_MAX_ARTICLES
     if use_llm:
         st.session_state.pop("feed_llm_last_error", None)
     include_domains: Optional[List[str]] = None
@@ -5555,18 +5653,46 @@ def fetch_intelligence_feed_tavily(
                     continue
             if not raw_items:
                 continue
-            lines = []
-            for i, r in enumerate(raw_items[:15], 1):
-                title = r.get("title", "")
-                url = r.get("url", "")
-                content = r.get("content", "") or r.get("snippet", "") or ""
-                lines.append(f"[{i}] Title: {title}\nURL: {url}\nContent: {content[:500]}")
-            raw_news_text = "\n\n".join(lines)
+            raw_items = _dedupe_tavily_raw_items(raw_items)
+            # 結果過少時補一次 advanced（較耗額度但可提高 recall）
+            if len(raw_items) < 4:
+                try:
+                    adv_kw: Dict[str, Any] = {
+                        "query": query,
+                        "max_results": 15,
+                        "search_depth": "advanced",
+                        "topic": "news",
+                        "time_range": "week",
+                    }
+                    if include_domains:
+                        adv_kw["include_domains"] = include_domains
+                    resp_adv = tavily.search(**adv_kw)
+                    results_adv = resp_adv.get("results", []) if isinstance(resp_adv, dict) else getattr(resp_adv, "results", None) or []
+                    for r in results_adv:
+                        if isinstance(r, dict):
+                            raw_items.append(r)
+                        else:
+                            raw_items.append({
+                                "title": getattr(r, "title", ""),
+                                "url": getattr(r, "url", ""),
+                                "content": getattr(r, "content", "") or getattr(r, "snippet", ""),
+                            })
+                    raw_items = _dedupe_tavily_raw_items(raw_items)
+                except Exception as e:
+                    logger.info("fetch_intelligence_feed_tavily: advanced 補搜略過 洲=%s err=%s", continent, str(e))
+            raw_items = raw_items[:18]
+            raw_news_text = _format_tavily_items_for_feed_llm(
+                raw_items,
+                max_articles=n_for_llm,
+                snippet_chars=snip_n,
+                total_char_cap=in_cap,
+            )
             if use_llm:
-                logger.info("fetch_intelligence_feed_tavily: 使用 Gemini 摘要 模型=%s 洲=%s", gemini_model, continent)
+                logger.info("fetch_intelligence_feed_tavily: 使用 Gemini 摘要 模型=%s 洲=%s save_tokens=%s", gemini_model, continent, save_tokens)
                 summarized, llm_err = _summarize_continent_feed_with_llm(
                     raw_news_text, gemini_api_key, continent,
                     llm_model=gemini_model,
+                    max_input_chars=in_cap,
                 )
                 if not summarized:
                     logger.warning("fetch_intelligence_feed_tavily: LLM 摘要為空，改顯示 Tavily 原文 洲=%s err=%s", continent, llm_err or "")
@@ -5580,12 +5706,12 @@ def fetch_intelligence_feed_tavily(
                 summarized = _tavily_raw_to_feed_items(raw_items, continent)
             for it in summarized:
                 it["continent"] = continent
-                if not (it.get("url") or "").strip() and raw_items:
-                    llm_title = (it.get("title") or "").strip()
+                if not _normalize_feed_field(it.get("url")) and raw_items:
+                    llm_title = _normalize_feed_field(it.get("title"))
                     for raw in raw_items:
-                        raw_title = (raw.get("title") or "").strip()
+                        raw_title = _normalize_feed_field(raw.get("title"))
                         if raw_title and llm_title and (raw_title[:30] in llm_title or llm_title[:30] in raw_title or SequenceMatcher(None, llm_title[:50], raw_title[:50]).ratio() > 0.5):
-                            it["url"] = (raw.get("url") or "").strip()
+                            it["url"] = _normalize_feed_field(raw.get("url"))
                             break
                 all_items.append(it)
     except Exception as e:
@@ -5725,8 +5851,12 @@ def fetch_intelligence_feed_rss(
     if not raw:
         return []
     lines = []
-    for i, r in enumerate(raw[:50], 1):
-        lines.append(f"[{i}] Title: {r.get('title','')}\nURL: {r.get('url','')}\nContent: {r.get('content','')[:300]}")
+    for i, r in enumerate(raw[:FEED_RSS_MAX_LINES], 1):
+        t = _normalize_feed_field(r.get("title"))
+        u = _normalize_feed_field(r.get("url"))
+        c = _normalize_feed_field(r.get("content") or "", list_join=" ")
+        c = (c[:FEED_RSS_SNIPPET_CHARS] + "…") if len(c) > FEED_RSS_SNIPPET_CHARS else c
+        lines.append(f"[{i}] T:{t}\nU:{u}\nC:{c}")
     raw_text = "\n\n".join(lines)
     system_prompt = """你是資深情報編輯。請將提供的 RSS 新聞**綜整**成「今日重要要聞」：可將相似主題合併為一則綜整稿，並標註**洲別**與**類型**。
 **綜整原則**：群組化相似報導、突出戰略意義；每則需有「戰略視角」（Why does this matter?）。
@@ -5743,8 +5873,9 @@ def fetch_intelligence_feed_rss(
 - url：從原文「URL:」後方**原樣複製**的完整連結
 - analysis_keywords：深度分析用搜尋關鍵字（繁體中文）
 
-請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。"""
-    user_prompt = f"""以下為國際 RSS 頭條。請**綜整**相似報導、精選 15～25 則，五大洲每洲至少 2 則，並為每則填寫 strategic_angle（為何重要），輸出上述 JSON 陣列。url 從原文 URL: 後複製。\n\n{raw_text[:25000]}"""
+請「只」輸出一個 JSON 陣列。鍵名：continent, topic, emoji, title, summary, strategic_angle, source, url, analysis_keywords。
+**重要**：每個欄位值必須為單一字串（string），不可使用陣列。**url 請從輸入中每則「U:」後方原樣複製。**"""
+    user_prompt = f"""以下為國際 RSS 頭條（每則 T/U/C）。請**綜整**相似報導、精選 15～25 則，五大洲每洲至少 2 則，並為每則填寫 strategic_angle（為何重要），輸出上述 JSON 陣列。\n\n{raw_text[:FEED_RSS_INPUT_CHAR_CAP]}"""
     try:
         raw_out = _call_llm_for_feed(system_prompt, user_prompt, llm_model, llm_api_key)
         if not raw_out:
@@ -5756,22 +5887,24 @@ def fetch_intelligence_feed_rss(
         for it in items:
             if not isinstance(it, dict):
                 continue
-            cont = (it.get("continent") or "").strip()
+            cont = _normalize_feed_field(it.get("continent"))
             if cont not in CONTINENT_ORDER:
                 cont = "其他"
-            topic = (it.get("topic") or "").strip()
+            topic = _normalize_feed_field(it.get("topic"))
             if topic not in TOPIC_ORDER:
                 topic = "政治"
             out.append({
                 "continent": cont,
                 "topic": topic,
-                "emoji": it.get("emoji", "📌"),
-                "title": (it.get("title") or "").strip() or "（無標題）",
-                "summary": (it.get("summary") or "").strip() or "",
-                "strategic_angle": (it.get("strategic_angle") or "").strip(),
-                "source": (it.get("source") or "").strip() or "",
-                "url": (it.get("url") or "").strip() or "",
-                "analysis_keywords": (it.get("analysis_keywords") or it.get("keywords") or it.get("title") or "").strip(),
+                "emoji": _normalize_feed_field(it.get("emoji"), list_join="") or "📌",
+                "title": _normalize_feed_field(it.get("title")) or "（無標題）",
+                "summary": _normalize_feed_field(it.get("summary"), list_join="\n"),
+                "strategic_angle": _normalize_feed_field(it.get("strategic_angle")),
+                "source": _normalize_feed_field(it.get("source")),
+                "url": _normalize_feed_field(it.get("url")),
+                "analysis_keywords": _normalize_feed_field(
+                    it.get("analysis_keywords") or it.get("keywords") or it.get("title")
+                ),
             })
         return out
     except Exception as e:
@@ -5801,6 +5934,12 @@ def render_news_feed_page(
         key="feed_use_whitelist",
         help="勾選後，Tavily 搜尋會限制在您建立的白名單網域內，與「多元議題分析」使用的藍/綠/官方/國際白名單一致。",
     )
+    save_feed_tokens = st.checkbox(
+        "精簡輸入（省 Token）",
+        value=False,
+        key="feed_save_tokens",
+        help="縮短每則送入 Gemini 的原文摘錄、總字數與篇數，降低輸入 token（摘要品質可能略降）。",
+    )
     use_tavily = True
     current_source_key = "tavily"
     if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
@@ -5819,7 +5958,11 @@ def render_news_feed_page(
         st.session_state["feed_do_fetch"] = False
         try:
             with st.spinner("正在載入情報…約 1 分鐘（Tavily + Gemini 摘要）"):
-                feed = fetch_intelligence_feed_tavily(tavily_key, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
+                feed = fetch_intelligence_feed_tavily(
+                    tavily_key, feed_llm_key, feed_llm_model,
+                    use_whitelist=feed_use_whitelist,
+                    save_tokens=st.session_state.get("feed_save_tokens", False),
+                )
             # 區分「尚未載入」(None) 與「載入完成但 0 則」([])，空列表也存進去
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
         except Exception as e:
@@ -5855,19 +5998,26 @@ def render_news_feed_page(
         st.caption(f"📌 本頁摘要：**Gemini**（{feed_llm_model}）")
         feed_err = st.session_state.pop("feed_llm_last_error", None)
         if feed_err:
-            st.warning(f"⚠️ LLM 摘要曾失敗，部分改顯示 Tavily 原文。錯誤：{feed_err[:300]}")
+            _fe = str(feed_err)
+            st.warning(f"⚠️ LLM 摘要曾失敗，部分改顯示 Tavily 原文。錯誤：{_fe[:300]}")
     with col_refresh:
         if st.button("🔄 重新載入", key="feed_refresh_btn"):
             fetch_intelligence_feed_tavily.clear()
             with st.spinner("重新取得中…"):
-                feed_new = fetch_intelligence_feed_tavily(tavily_key, feed_llm_key, feed_llm_model, use_whitelist=feed_use_whitelist)
+                feed_new = fetch_intelligence_feed_tavily(
+                    tavily_key, feed_llm_key, feed_llm_model,
+                    use_whitelist=feed_use_whitelist,
+                    save_tokens=st.session_state.get("feed_save_tokens", False),
+                )
             st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             st.rerun()
     # 依洲 → 類型分組
     grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for item in feed:
-        cont = item.get("continent", "其他")
-        topic = item.get("topic", "其他")
+        cont = _normalize_feed_field(item.get("continent")) or "其他"
+        topic = _normalize_feed_field(item.get("topic")) or "政治"
+        if topic not in TOPIC_ORDER:
+            topic = "政治"
         grouped.setdefault(cont, {}).setdefault(topic, []).append(item)
     # 五大洲分頁
     tab_labels = [f"{CONTINENT_EMOJI.get(c, '📌')} {c}" for c in CONTINENT_ORDER]
@@ -5905,15 +6055,19 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
     含 Header、Meta 標籤、摘要、同溫層警示、深度戰略分析按鈕。
     依 topic（政治／經濟／科技）以不同顏色外框標示。
     """
-    topic = (item.get("topic") or "政治").strip()
+    topic = _normalize_feed_field(item.get("topic")) or "政治"
+    if topic not in TOPIC_ORDER:
+        topic = "政治"
     border_color = _TOPIC_BORDER_COLORS.get(topic, "#9E9E9E")
-    emoji = item.get("emoji", "📌")
-    title = (item.get("title") or "（無標題）").strip()
-    summary = (item.get("summary") or "").strip()
-    source = (item.get("source") or "").strip()
-    url = (item.get("url") or "").strip()
-    keywords = (item.get("analysis_keywords") or item.get("keywords") or title).strip()
-    strategic_angle = (item.get("strategic_angle") or "").strip()
+    emoji = _normalize_feed_field(item.get("emoji"), list_join="") or "📌"
+    title = _normalize_feed_field(item.get("title")) or "（無標題）"
+    summary = _normalize_feed_field(item.get("summary"), list_join="\n")
+    source = _normalize_feed_field(item.get("source"))
+    url = _normalize_feed_field(item.get("url"))
+    keywords = _normalize_feed_field(
+        item.get("analysis_keywords") or item.get("keywords") or item.get("title")
+    ) or title
+    strategic_angle = _normalize_feed_field(item.get("strategic_angle"))
     # 穩定唯一 key（避免重複 key 導致按鈕失效）
     news_id = hashlib.md5(f"{title}_{url}_{index}".encode("utf-8")).hexdigest()[:12]
     # 主題色條：卡片上方色帶標示政治／經濟／科技，方便閱讀區分
@@ -5951,8 +6105,6 @@ def _render_feed_card(item: Dict[str, Any], index: int, total: int) -> None:
         if st.button("🔍 深度戰略分析 (Deep Dive)", key=f"btn_{news_id}", type="primary"):
             st.session_state["query"] = keywords
             st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
-            # 不直接寫入 nav_page（該 key 由側欄 radio 擁有，會觸發 StreamlitAPIException），改由側欄在下一輪 rerun 前同步
-            st.session_state["pending_nav_to_analysis"] = True
             # 重置分析相關狀態，避免沿用上一輪的關鍵字／報告／來源（Ghost Data）
             st.session_state["keyword_plan"] = None
             st.session_state["result"] = None
@@ -6890,25 +7042,68 @@ if "current_page" not in st.session_state:
 with st.sidebar:
     st.title("多元觀點解析")
     st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
-    page_options = [
+    _nav_pages = [
         "🚀 多元議題分析 (Deep Analysis)",
         "🧾 新聞文本分析 (Text Analysis)",
         "📰 全球情報 (News Feed)",
         "📚 方法論 (Methodology)",
         "📋 本次修改 (Updates)",
     ]
-    # 由「深度戰略分析」按鈕觸發的跳轉：在 radio 渲染前同步 nav_page，避免直接寫入 widget key 觸發 StreamlitAPIException
-    if st.session_state.pop("pending_nav_to_analysis", False):
-        st.session_state["nav_page"] = "🚀 多元議題分析 (Deep Analysis)"
-    page_index = page_options.index(st.session_state["current_page"]) if st.session_state["current_page"] in page_options else 0
-    current_page = st.radio(
-        "導航",
-        options=page_options,
-        index=page_index,
-        key="nav_page",
-        label_visibility="collapsed",
-    )
-    st.session_state["current_page"] = current_page
+    _cur_nav = st.session_state.get("current_page", _nav_pages[0])
+    if _cur_nav not in _nav_pages:
+        _cur_nav = _nav_pages[0]
+        st.session_state["current_page"] = _cur_nav
+
+    def _sidebar_nav_to(page: str) -> None:
+        if st.session_state.get("current_page") != page:
+            st.session_state["current_page"] = page
+            st.rerun()
+
+    st.markdown("##### 議題與文本分析")
+    st.caption("多源查證、深度報告與單篇新聞結構化分析")
+    if st.button(
+        "🚀 多元議題分析 (Deep Analysis)",
+        key="sidebar_nav_deep",
+        use_container_width=True,
+        type="primary" if _cur_nav == "🚀 多元議題分析 (Deep Analysis)" else "secondary",
+    ):
+        _sidebar_nav_to("🚀 多元議題分析 (Deep Analysis)")
+    if st.button(
+        "🧾 新聞文本分析 (Text Analysis)",
+        key="sidebar_nav_text",
+        use_container_width=True,
+        type="primary" if _cur_nav == "🧾 新聞文本分析 (Text Analysis)" else "secondary",
+    ):
+        _sidebar_nav_to("🧾 新聞文本分析 (Text Analysis)")
+
+    st.markdown("##### 全球情報與方法論")
+    st.caption("要聞儀表與實裝方法說明")
+    if st.button(
+        "📰 全球情報 (News Feed)",
+        key="sidebar_nav_feed",
+        use_container_width=True,
+        type="primary" if _cur_nav == "📰 全球情報 (News Feed)" else "secondary",
+    ):
+        _sidebar_nav_to("📰 全球情報 (News Feed)")
+    if st.button(
+        "📚 方法論 (Methodology)",
+        key="sidebar_nav_meth",
+        use_container_width=True,
+        type="primary" if _cur_nav == "📚 方法論 (Methodology)" else "secondary",
+    ):
+        _sidebar_nav_to("📚 方法論 (Methodology)")
+
+    st.markdown("##### 關於本應用")
+    st.caption("改版紀錄與更新說明")
+    if st.button(
+        "📋 本次修改 (Updates)",
+        key="sidebar_nav_updates",
+        use_container_width=True,
+        type="primary" if _cur_nav == "📋 本次修改 (Updates)" else "secondary",
+    ):
+        _sidebar_nav_to("📋 本次修改 (Updates)")
+
+    current_page = st.session_state.get("current_page", _nav_pages[0])
     st.markdown("---")
     analysis_mode = st.radio(
         "選擇分析引擎：",
@@ -7802,7 +7997,6 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                 st.session_state["query"] = cross_check_query
                 st.session_state.keyword_plan = None
                 st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
-                st.session_state["pending_nav_to_analysis"] = True
                 st.rerun()
 else:
     st.title(f"{analysis_mode.split(' ')[0]}")
