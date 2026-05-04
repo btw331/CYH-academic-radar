@@ -1629,22 +1629,37 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str]
     pro_sources = all_sources.get("pro_sources", [])
     con_sources = all_sources.get("con_sources", [])
     neutral_sources = all_sources.get("neutral_sources", [])
+    factual_sources = all_sources.get("factual_sources", [])
     all_sources_list = pro_sources + con_sources + neutral_sources
+    used_factual_fallback = False
+    if not all_sources_list:
+        all_sources_list = factual_sources
+        used_factual_fallback = True
     
-    # 簡單的共識分析（可以進一步用 LLM 優化）
-    total_sources = len(pro_sources) + len(con_sources) + len(neutral_sources)
+    total_sources = len(all_sources_list)
+    category_counts = Counter(source.get("source_category", "OTHER") for source in all_sources_list)
     
-    # 立場平衡度
-    perspective_balance = {
-        "pro_ratio": len(pro_sources) / total_sources if total_sources > 0 else 0,
-        "con_ratio": len(con_sources) / total_sources if total_sources > 0 else 0,
-        "neutral_ratio": len(neutral_sources) / total_sources if total_sources > 0 else 0
-    }
-    
-    # 計算平衡度（0-1，越接近 0.5 越平衡）
-    pro_con_balance = min(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) / max(
-        perspective_balance["pro_ratio"], perspective_balance["con_ratio"]
-    ) if max(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) > 0 else 0
+    if used_factual_fallback:
+        perspective_balance = {
+            "mode": "source_category_fallback",
+            "source_count": total_sources,
+            "category_distribution": dict(category_counts),
+        }
+        # 無人工/LLM 立場分桶時，用來源類型多樣性作為保守的平衡近似值。
+        diversity_score = min(1.0, len([c for c in category_counts.values() if c > 0]) / 4)
+        volume_score = min(1.0, total_sources / 8)
+        pro_con_balance = round(diversity_score * 0.7 + volume_score * 0.3, 2) if total_sources else 0.0
+    else:
+        perspective_balance = {
+            "mode": "stance_buckets",
+            "pro_ratio": len(pro_sources) / total_sources if total_sources > 0 else 0,
+            "con_ratio": len(con_sources) / total_sources if total_sources > 0 else 0,
+            "neutral_ratio": len(neutral_sources) / total_sources if total_sources > 0 else 0,
+            "category_distribution": dict(category_counts),
+        }
+        pro_con_balance = min(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) / max(
+            perspective_balance["pro_ratio"], perspective_balance["con_ratio"]
+        ) if max(perspective_balance["pro_ratio"], perspective_balance["con_ratio"]) > 0 else 0
     
     # 使用 LLM 分析共同事實和分歧點（如果提供了 API Key 且有足夠來源）
     common_facts = []
@@ -1716,7 +1731,8 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str]
         "common_facts": common_facts,
         "divergence_points": divergence_points,
         "consensus_score": pro_con_balance,
-        "perspective_balance": perspective_balance
+        "perspective_balance": perspective_balance,
+        "analysis_status": "llm_analyzed" if common_facts or divergence_points else "fallback_only",
     } 
 
 # ==========================================
@@ -1880,7 +1896,10 @@ def validate_ai_output_format(raw_text: str, mode: str = "FUSION") -> Dict[str, 
     # 檢查表格格式
     validation['has_ach_table'] = bool('| 假設' in raw_text and '| 支持證據' in raw_text)
     validation['has_logic_table'] = bool('| 謬誤類型' in raw_text or '邏輯謬誤偵測表' in raw_text)
-    validation['has_framing_table'] = bool('| 媒體陣營' in raw_text and '| 問題定義' in raw_text)
+    validation['has_framing_table'] = bool(
+        ('| 媒體陣營' in raw_text or '| 陣營' in raw_text or '| 框架元素' in raw_text)
+        and '| 問題定義' in raw_text
+    )
     
     # 計算分數（0-100）
     base_score = 50 if validation['has_timeline'] else 0
@@ -2719,12 +2738,14 @@ def generate_fact_check_warning(fact_check_results: Dict[str, List[Dict]]) -> st
     # 確保 fact_check_results 是字典類型
     if not isinstance(fact_check_results, dict):
         logger.warning(f"generate_fact_check_warning: fact_check_results 不是字典類型: {type(fact_check_results).__name__}")
-    return ""
+        return ""
 
     warning_text = "\n【⚠️ 事實查核警告】\n"
     
     false_claims = fact_check_results.get('false_claims', [])
     misleading_claims = fact_check_results.get('misleading_claims', [])
+    if not false_claims and not misleading_claims:
+        return ""
     
     if false_claims:
         warning_text += f"❌ 已證偽的聲明（{len(false_claims)} 項）：\n"
@@ -4273,6 +4294,7 @@ def get_search_context(
     use_cache: bool = True,
     google_api_key: str = None,
     enable_english_for_regions: bool = True,
+    enable_google_fact_check: bool = False,
 ):
     """
     獲取搜尋上下文（完整版 - 整合事實查核、公信力評分、平衡檢索）
@@ -4280,6 +4302,7 @@ def get_search_context(
     Args:
         google_api_key: 用於事實查核的 Google API Key
         enable_english_for_regions: 建議三；當勾選歐洲/美洲時是否自動加入英文關鍵字檢索（預設 True）
+        enable_google_fact_check: 是否啟用 Google Fact Check Tools 查核管線（預設 False 以節省配額）
     
     Returns:
         Tuple: (context_text, results, query, is_strict_mode, stance_analysis, fact_check_results, consensus_analysis)
@@ -4473,10 +4496,9 @@ def get_search_context(
         
         context_text = "".join(context_lines)
         
-        # === 事實查核驗證（方案 1，優化：可選功能）===
-        # 預設關閉事實查核以節省 API 配額（用戶可在 UI 中啟用）
+        # === 事實查核驗證（方案 1，可選功能）===
+        # 真正的 claim-based Google Fact Check 管線會在 gap-fill 完成後執行，避免漏掉補足來源。
         fact_check_results = None
-        # 注意：事實查核功能預設關閉，需要時可在 UI 中添加開關
         
         # === 立場平衡分析（方案 2.1 + Phase 3 依議題類型動態評估）===
         stance_analysis = analyze_stance_balance(results, issue_type=current_issue_type)
@@ -4599,6 +4621,31 @@ def get_search_context(
             # 重新生成 context_text
             context_text = "".join(context_lines)
             logger.info(f"已重新生成 context_text，包含 {len(results)} 筆完整來源")
+
+        if enable_google_fact_check and google_api_key and results:
+            try:
+                logger.info("啟用 Google Fact Check：開始抽取聲明並查核")
+                claims = extract_claims_from_sources(results[:20], google_api_key)
+                fact_check_results = verify_claims(claims, google_api_key)
+                results = apply_fact_check_tags(results, fact_check_results)
+                fact_check_warning = generate_fact_check_warning(fact_check_results)
+                if fact_check_warning:
+                    context_text += f"\n{fact_check_warning}\n"
+                logger.info(
+                    "Google Fact Check 完成：已證偽 %s，誤導 %s，未驗證 %s",
+                    len(fact_check_results.get("false_claims", [])),
+                    len(fact_check_results.get("misleading_claims", [])),
+                    len(fact_check_results.get("unverified_claims", [])),
+                )
+            except Exception as e:
+                logger.warning(f"Google Fact Check 管線失敗，略過查核結果: {str(e)[:200]}")
+                fact_check_results = {
+                    "verified_claims": [],
+                    "false_claims": [],
+                    "misleading_claims": [],
+                    "unverified_claims": [],
+                    "error": str(e)[:300],
+                }
         
         # === 共識分析（方案 3.3 - LLM 增強版）===
         # 分類來源為不同立場
@@ -4650,6 +4697,21 @@ def get_search_context(
                     manipulation_signals_text += spin_text
             except Exception as e:
                 logger.warning(f"語義旋轉偵測跳過: {str(e)}")
+            try:
+                coordination_analysis = detect_coordinated_behavior(results)
+                coordination_score = coordination_analysis.get("coordination_score", 0.0)
+                coordination_flags = coordination_analysis.get("flags", [])
+                if coordination_score > 0 or coordination_flags:
+                    flag_text = "\n".join(f"- {flag}" for flag in coordination_flags) if coordination_flags else "- 未達警示門檻"
+                    manipulation_signals_text += (
+                        f"\n\n【傳統協調行為指標】\n"
+                        f"協調性分數：{coordination_score:.2f}。\n"
+                        f"重複論述比例：{coordination_analysis.get('duplicate_ratio', 0):.2f}。\n"
+                        f"來源集中度：{coordination_analysis.get('domain_concentration', 0):.2f}。\n"
+                        f"{flag_text}"
+                    )
+            except Exception as e:
+                logger.warning(f"傳統協調行為偵測跳過: {str(e)}")
         except Exception as e:
             logger.warning(f"跨網域聯播/擴散偵測失敗，不注入操作信號: {e}")
             manipulation_signals_text = "【MANIPULATION_SIGNALS】\n（本輪操作信號因技術原因未產生，請依既有來源分析。）"
@@ -6706,12 +6768,11 @@ with st.sidebar:
     
     with st.expander("🔑 API 設定", expanded=True):
         st.info("⚠️ 請輸入您的 API Key (不會儲存，重新整理後需再次輸入)")
-        st.session_state["openai_api_key"] = None
-        st.session_state["openai_model"] = "gpt-4o-mini"
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="用於 AI 分析的 Google Gemini API 金鑰")
         grok_key = st.text_input("Grok Key", value="", type="password", placeholder="輸入 xAI Grok API Key", help="用於 AI 分析的 xAI Grok API 金鑰（可選，選 Grok 時必填）")
         groq_key = st.text_input("Groq Key", value="", type="password", placeholder="輸入 Groq API Key (console.groq.com)", help="用於 AI 分析的 Groq Cloud API 金鑰（可選，選 Groq 時必填）")
         openrouter_key = st.text_input("OpenRouter Key", value="", type="password", placeholder="輸入 OpenRouter API Key", help="一鍵存取多種模型（Gemini/Claude/GPT 等），選 OpenRouter 時必填")
+        openai_key = st.text_input("OpenAI Key（Gemini 備援，可選）", value="", type="password", placeholder="輸入 OpenAI API Key", help="當 Gemini 配額耗盡時可自動降級使用")
         llm_provider = st.radio("分析使用 LLM", options=["Gemini", "Grok", "Groq", "OpenRouter"], index=0, horizontal=False, help="選擇深度分析使用的模型來源。選 Grok/Groq/OpenRouter 時請先輸入對應 Key")
         st.session_state["llm_provider"] = llm_provider
         # 持久化 Key：僅在「本次有輸入」時寫入，避免 rerun 時密碼欄位清空後把已存 key 蓋掉
@@ -6734,6 +6795,18 @@ with st.sidebar:
             st.session_state["groq_api_key"] = (groq_key or "").strip()
         if (openrouter_key or "").strip():
             st.session_state["openrouter_api_key"] = (openrouter_key or "").strip()
+        if (openai_key or "").strip():
+            st.session_state["openai_api_key"] = (openai_key or "").strip()
+        if OPENAI_AVAILABLE:
+            openai_model = st.selectbox(
+                "OpenAI 備援模型",
+                options=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+                index=0,
+                help="僅在 Gemini 呼叫失敗且已填 OpenAI Key 時使用。",
+            )
+            st.session_state["openai_model"] = openai_model
+        else:
+            st.session_state["openai_model"] = "gpt-4o-mini"
         if llm_provider == "Gemini":
             model_name = st.selectbox(
                 "Gemini 模型",
@@ -6833,7 +6906,7 @@ with st.sidebar:
 
         st.markdown("---")
         st.markdown("#### 🔍 Tavily 搜尋設定")
-        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，整合事實查核、公信力評分與平衡檢索")
+        st.info("ℹ️ 系統已優化為重視正確度模式：使用 advanced 搜尋深度，並整合公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
         tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於新聞搜尋的 Tavily API 金鑰（必需）", key="tavily_key")
         if tavily_key:
             st.success("✅ Tavily 搜尋已啟用")
@@ -6843,6 +6916,12 @@ with st.sidebar:
         max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
         use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
         st.session_state.use_cache = use_cache  # 儲存到 session_state
+        enable_google_fact_check = st.toggle(
+            "🧪 啟用 Google Fact Check 查核",
+            value=st.session_state.get("enable_google_fact_check", False),
+            help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
+            key="enable_google_fact_check",
+        )
         if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
             deleted = clear_cache()
             st.success(f"✅ 已清除 {deleted} 條過期快取")
@@ -7048,8 +7127,8 @@ flowchart LR
         
     with st.expander("3. 事實查核與去謠言機制 (Fact-Checking Integration)", expanded=False):
         st.markdown("""
-        **Google Fact Check Tools API 整合**
-        系統整合 Google Fact Check Tools API，對搜尋結果進行二次驗證：
+        **Google Fact Check Tools API（可選）**
+        系統提供可選的 Google Fact Check Tools API 管線；只有在側欄開啟「啟用 Google Fact Check 查核」時，才會對搜尋結果進行二次驗證，以避免預設消耗 API 配額：
         
         **三階段處理流程**
         1. **聲明提取 (Claim Extraction)**
@@ -7075,10 +7154,10 @@ flowchart LR
         
            - **UNVERIFIED（未驗證）**：保持原狀
         
-        **Cofacts 協作查核**
-        - 即時串接 g0v Cofacts 謠言資料庫
-        - 標註已被社群查核為錯誤的資訊
-        - 提供查核回應與詳細說明
+        **Cofacts 關聯查詢**
+        - 依使用者輸入的議題關鍵字查詢 g0v Cofacts 謠言資料庫
+        - 補充與該議題相關的社群查核紀錄
+        - 此功能不是逐條 claim 驗證；逐條聲明查核需開啟 Google Fact Check
         
         **水平閱讀法 (Lateral Reading)**
         - 採用史丹佛歷史教育群 (SHEG) 提倡之方法
@@ -7655,10 +7734,11 @@ else:
     gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
     if gen_btn and query:
         use_cache_enabled = st.session_state.get('use_cache', True)
-        if google_key:
+        google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+        if google_key_for_keywords:
             with st.spinner("正在生成搜尋關鍵字..."):
                 expanded = generate_expanded_queries(
-                    query, google_key, max_expansions=15, use_cache=use_cache_enabled,
+                    query, google_key_for_keywords, max_expansions=15, use_cache=use_cache_enabled,
                     focus_instruction=focus_instruction.strip() or None
                 )
             kw_list = [q["query"] for q in expanded]
@@ -7721,8 +7801,9 @@ else:
             if dynamic_keywords is None:
                 st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
                 use_cache_enabled = st.session_state.get('use_cache', True)
-                if google_key:
-                    dynamic_keywords = generate_dynamic_keywords(query, google_key, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
+                google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                if google_key_for_keywords:
+                    dynamic_keywords = generate_dynamic_keywords(query, google_key_for_keywords, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
                 else:
                     dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
             else:
@@ -7775,10 +7856,14 @@ else:
         
             # 執行搜尋（整合所有功能）
             st.write("🔍 開始執行完整搜尋...")
+            google_key_for_analysis = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+            if st.session_state.get("enable_google_fact_check", False) and not google_key_for_analysis:
+                st.warning("⚠️ 已勾選 Google Fact Check，但未提供 Gemini/Google API Key；本輪將略過 Google Fact Check 查核。")
             search_result = get_search_context(
                 query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
-                use_cache=use_cache_enabled, google_api_key=google_key,
+                use_cache=use_cache_enabled, google_api_key=google_key_for_analysis,
                 enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
+                enable_google_fact_check=st.session_state.get("enable_google_fact_check", False),
             )
         
             if len(search_result) >= 8:
@@ -7826,6 +7911,16 @@ else:
                 misleading_count = len(fact_check_results.get('misleading_claims', []))
                 if false_count > 0 or misleading_count > 0:
                     st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
+            fact_check_status = "未啟用"
+            if st.session_state.get("enable_google_fact_check", False):
+                if fact_check_results and isinstance(fact_check_results, dict):
+                    if fact_check_results.get("error"):
+                        fact_check_status = "執行失敗"
+                    else:
+                        checked_count = sum(len(fact_check_results.get(k, [])) for k in ["verified_claims", "false_claims", "misleading_claims", "unverified_claims"])
+                        fact_check_status = f"已執行（{checked_count} 項聲明）"
+                else:
+                    fact_check_status = "已勾選但未執行（缺少 Google API Key 或來源）"
         
             # 聲量權重分析
             if sources:
@@ -7841,6 +7936,14 @@ else:
                 consensus_score = consensus_analysis.get('consensus_score', 0)
                 consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
                 st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
+            
+            st.session_state.feature_status = {
+                "Tavily 搜尋": f"已執行（{len(sources)} 篇來源）" if sources else "未取得來源",
+                "Google Fact Check": fact_check_status,
+                "Cofacts 關聯查詢": f"已查詢（{len(st.session_state.cofacts_rumors)} 筆相關）" if st.session_state.get('cofacts_rumors') else "已查詢，無相關結果",
+                "共識分析": consensus_analysis.get("analysis_status", "未執行") if isinstance(consensus_analysis, dict) else "未執行",
+                "資訊操作訊號": "已產生" if manipulation_signals_text else "未產生",
+            }
         
             # === 檢查來源數量是否足夠進行分析 ===
             MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
@@ -7951,7 +8054,7 @@ else:
                 effective_key = openrouter_key
                 effective_model = openrouter_model
             else:
-                effective_key = google_key
+                effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
                 effective_model = model_name
 
             try:
@@ -8175,6 +8278,12 @@ else:
         st.rerun()
 
     # Cofacts 謠言警告區塊
+    if st.session_state.get('feature_status'):
+        st.markdown("---")
+        with st.expander("🧭 本輪功能執行狀態", expanded=False):
+            for feature_name, status_text in st.session_state.feature_status.items():
+                st.write(f"**{feature_name}**：{status_text}")
+
     if st.session_state.get('cofacts_rumors'):
         st.markdown("---")
         with st.container():
@@ -8274,7 +8383,8 @@ else:
                     elif use_openrouter:
                         effective_key, effective_model = openrouter_key, openrouter_model
                     else:
-                        effective_key, effective_model = google_key, model_name
+                        effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                        effective_model = model_name
                     raw_text = run_strategic_analysis(
                         query, current_report, effective_model, effective_key,
                         mode="DEEP_SCENARIO",
