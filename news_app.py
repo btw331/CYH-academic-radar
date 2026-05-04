@@ -5177,11 +5177,33 @@ def optimize_context_for_ai(context_text: str, max_tokens: int = 20000) -> str:
     
     return optimized
 
-def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_groq: bool = False, use_openrouter: bool = False) -> str:
+def run_strategic_analysis(query: str, context_text: str, model_name: str, api_key: str, mode: str="FUSION", fast_mode: bool = False, openai_api_key: Optional[str] = None, openai_model: str = "gpt-4o-mini", manipulation_signals: Optional[str] = None, use_grok: bool = False, use_groq: bool = False, use_openrouter: bool = False, analysis_depth: str = "標準") -> str:
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # 重視正確度：不使用快速模式，保持完整 context
-    # context_text 保持原樣，不進行截斷
+    depth_value = (analysis_depth or "標準").strip()
+    if depth_value.startswith("快速") or fast_mode:
+        context_text = optimize_context_for_ai(context_text, max_tokens=9000)
+        depth_instruction = """
+        【分析詳盡度】：快速
+        - 優先產出可快速閱讀的結論，每節以 2-4 點為主。
+        - 表格列數控制在必要範圍，避免過長段落。
+        - 必須保留關鍵證據、資訊不足與查證建議，不得為了簡短而臆測。
+        """
+    elif depth_value.startswith("深度"):
+        depth_instruction = """
+        【分析詳盡度】：深度
+        - 允許較長篇幅，完整展開 ACH、Entman、謬誤、偏見、Cui Bono 與資訊操作分析。
+        - 可使用較多表格列與結構化條列，但仍需避免重複與空泛敘述。
+        - 每個重要判斷都應標註 Source ID 或說明資訊缺口。
+        """
+    else:
+        context_text = optimize_context_for_ai(context_text, max_tokens=16000)
+        depth_instruction = """
+        【分析詳盡度】：標準
+        - 在完整性與可讀性之間取得平衡。
+        - 每節保留必要證據與推論，但避免過度展開。
+        - 優先提供可行的查證建議與清楚的風險判斷。
+        """
     
     tone_instruction = """
     【⚠️ 語氣風格指令】：
@@ -5201,6 +5223,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
+        {depth_instruction}
         
         【⚠️ 深度分析指令 (CRITICAL)】：
         1. **拒絕淺層摘要**：你的任務不是總結新聞，而是「解構」新聞。請挖掘文本中未言明的假設、結構性的偏見以及操縱手法。
@@ -5333,6 +5356,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
+        {depth_instruction}
         
         【分析任務】：
         1. **早期預警指標**：列出監測訊號。
@@ -5359,6 +5383,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
 
         【⚠️ 時間錨點】：今天是 {today_str}。
         {tone_instruction}
+        {depth_instruction}
 
         【分析任務】：
         使用使用者貼上的單篇新聞文本進行文本取證式分析。你的任務不是重寫新聞摘要，而是解構這篇新聞如何建構現實、如何使用語言、哪些證據可靠、哪些推論需要查證。
@@ -7142,6 +7167,13 @@ with st.sidebar:
         captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
         index=0
     )
+    analysis_depth = st.selectbox(
+        "分析詳盡度",
+        options=["標準", "快速", "深度"],
+        index=0,
+        help="快速：較短、便於瀏覽；標準：平衡完整性與可讀性；深度：較完整但輸出較長。",
+        key="analysis_depth",
+    )
     st.markdown("---")
     
     blind_mode = st.toggle("🙈 盲測模式", value=False)
@@ -8062,6 +8094,7 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                     use_grok=use_grok,
                     use_groq=use_groq,
                     use_openrouter=use_openrouter,
+                    analysis_depth=st.session_state.get("analysis_depth", "標準"),
                 )
             except Exception as e:
                 st.error(f"❌ 新聞文本分析失敗：{str(e)[:500]}")
@@ -8074,6 +8107,11 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             st.session_state.text_analysis_result = parsed_data
             st.session_state.text_analysis_sources = text_sources
             st.session_state.text_analysis_diagnostics = diagnostics
+            st.session_state.text_analysis_article = {
+                "title": extracted_title,
+                "source": extracted_source,
+                "url": extracted_url,
+            }
             status.update(label="✅ 新聞文本分析完成", state="complete", expanded=False)
         st.rerun()
 
@@ -8125,6 +8163,15 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             "news_text_analysis.md",
             "text/markdown",
         )
+        article_meta = st.session_state.get("text_analysis_article", {}) or {}
+        cross_check_query = (article_meta.get("title") or "").strip()
+        if cross_check_query:
+            if st.button("🔎 用此新聞主題進行多源查證", type="secondary"):
+                st.session_state["query"] = cross_check_query
+                st.session_state.keyword_plan = None
+                st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
+                st.session_state["pending_nav_to_analysis"] = True
+                st.rerun()
 else:
     st.title(f"{analysis_mode.split(' ')[0]}")
     query = st.text_input(
@@ -8482,7 +8529,8 @@ else:
                     manipulation_signals=manipulation_signals_text,
                     use_grok=use_grok,
                     use_groq=use_groq,
-                    use_openrouter=use_openrouter
+                    use_openrouter=use_openrouter,
+                    analysis_depth=st.session_state.get("analysis_depth", "標準"),
                 )
             except ChatGoogleGenerativeAIError as e:
                 # Gemini API 特定錯誤（通常是配額相關）
@@ -8547,7 +8595,8 @@ else:
                                 manipulation_signals=manipulation_signals_text,
                                 use_grok=use_grok,
                                 use_groq=use_groq,
-                                use_openrouter=use_openrouter
+                                use_openrouter=use_openrouter,
+                                analysis_depth=st.session_state.get("analysis_depth", "標準"),
                             )
                             # 注意：這裡仍然傳入原來的 model_name，但 call_gemini 內部會因為配額錯誤而自動降級到 OpenAI
                             status.update(label="✅ 成功使用 OpenAI 完成分析", state="complete")
@@ -8826,7 +8875,8 @@ else:
                         openai_api_key=openai_api_key, openai_model=openai_model,
                         use_grok=use_grok,
                         use_groq=use_groq,
-                        use_openrouter=use_openrouter
+                        use_openrouter=use_openrouter,
+                        analysis_depth=st.session_state.get("analysis_depth", "標準"),
                     )
                     st.session_state.scenario_result = parse_gemini_data(raw_text) 
                     st.rerun()
