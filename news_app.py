@@ -21,7 +21,7 @@ import sys
 from io import BytesIO
 from html import unescape
 from pathlib import Path
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, unquote
 from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -5720,6 +5720,58 @@ def fetch_intelligence_feed_tavily(
     return all_items
 
 
+def _rss_element_plain_text(elem: Any) -> str:
+    """
+    萃取 RSS/Atom 節點可見文字（含子節點、CDATA）。
+    NYTimes 等來源的 title 常以 HTML 巢狀或 type='html'，單讀 .text 會為空。
+    """
+    if elem is None:
+        return ""
+    parts = "".join(elem.itertext())
+    if not parts.strip() and getattr(elem, "text", None):
+        parts = str(elem.text)
+    if not parts.strip():
+        for attr in ("content", "value"):
+            a = elem.get(attr) if hasattr(elem, "get") else None
+            if a and str(a).strip():
+                parts = str(a)
+                break
+    raw = (parts or "").strip()
+    if "<" in raw:
+        raw = re.sub(r"<[^>]+>", " ", raw)
+    raw = unescape(re.sub(r"\s+", " ", raw)).strip()
+    return raw
+
+
+def _rss_item_title_from_entry(item: Any, _local_name_fn: Any) -> str:
+    """由單一 item/entry 擷取標題：掃描本節點下所有名為 title 的節點（含 media: 命名空間）。"""
+    title_els: List[Any] = []
+    for child in item.iter():
+        if _local_name_fn(child.tag) == "title":
+            title_els.append(child)
+    for tel in title_els:
+        t = _rss_element_plain_text(tel)
+        if t and t.lower() not in ("(no title)", "（無標題）"):
+            return t
+    return ""
+
+
+def _title_fallback_from_url(url: str) -> str:
+    """從路徑最後一段還原可讀標題（例如 nytimes.com/.../article-slug）。"""
+    if not url.startswith(("http://", "https://")):
+        return ""
+    try:
+        seg = urlparse(url).path.strip("/").split("/")[-1]
+        if not seg or len(seg) < 4 or seg.isdigit():
+            return ""
+        seg = unquote(seg)
+        if not re.search(r"[a-zA-Z\u4e00-\u9fff]", seg):
+            return ""
+        return re.sub(r"[-_]+", " ", seg).strip()[:200]
+    except Exception:
+        return ""
+
+
 def _fetch_rss_raw() -> List[Dict[str, Any]]:
     """從 RSS_FEED_URLS 抓取標題／連結／摘要，不依賴 Tavily。使用 requests + xml 解析。"""
     import xml.etree.ElementTree as ET
@@ -5772,6 +5824,14 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                 link = _text_or_attr(link_el, "href") if link_el is not None else ""
                 if not link and link_el is not None:
                     link = (link_el.text or "").strip()
+                if not link:
+                    for lk in item.iter():
+                        if _local_name(lk.tag) != "link":
+                            continue
+                        h = (lk.get("href") or "").strip()
+                        if h.startswith("http"):
+                            link = h
+                            break
                 desc_el = (
                     _find_any(item, "description", "summary", "content")
                     or item.find("description")
@@ -5782,10 +5842,15 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                 if desc_el is not None and desc_el.text:
                     desc = (desc_el.text or "").strip()[:400]
                 else:
-                    desc = (ET.tostring(desc_el, encoding="unicode", method="text") if desc_el is not None else "")[:400]
-                title = (title_el.text or "").strip() if title_el is not None else ""
+                    desc_plain = _rss_element_plain_text(desc_el) if desc_el is not None else ""
+                    desc = (desc_plain or (ET.tostring(desc_el, encoding="unicode", method="text") if desc_el is not None else ""))[:400]
+                title = _rss_item_title_from_entry(item, _local_name)
+                if not title and title_el is not None:
+                    title = _rss_element_plain_text(title_el)
+                if not title:
+                    title = _title_fallback_from_url(link)
                 if title or link:
-                    entries.append({"title": title or "(No title)", "url": link, "content": desc})
+                    entries.append({"title": title or "（無標題）", "url": link, "content": desc})
         except ET.ParseError as e:
             logger.warning("_fetch_rss_raw: 解析 %s 失敗: %s", url, str(e))
             continue
@@ -5825,7 +5890,9 @@ def _rss_raw_to_feed_items(raw: List[Dict[str, Any]], max_items: int = 48) -> Li
         if key in seen:
             continue
         seen.add(key)
-        title = _normalize_feed_field(r.get("title")) or "（無標題）"
+        title = _normalize_feed_field(r.get("title")) or ""
+        if not title or title in ("（無標題）", "(No title)"):
+            title = _title_fallback_from_url(url) or "（無標題）"
         content = _normalize_feed_field(r.get("content") or "", list_join=" ")[:400]
         topic = _infer_topic_from_text(title, content)
         continent = _continent_hint_from_url(url)
