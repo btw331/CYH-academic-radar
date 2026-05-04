@@ -6667,8 +6667,6 @@ def render_report_paper(report_text: str) -> None:
             cleaned_lines.append(line)
     cleaned_report = '\n'.join(cleaned_lines)
     cleaned_report = normalize_markdown_tables(cleaned_report)
-    cleaned_report = re.sub(r'([^\n])\n(\|)', r'\1\n\n\2', cleaned_report)
-    cleaned_report = re.sub(r'(\|)\n([^\n\|])', r'\1\n\n\2', cleaned_report)
     formatted_text = format_citation_style(cleaned_report)
     html_content = markdown.markdown(formatted_text, extensions=['tables'])
     st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
