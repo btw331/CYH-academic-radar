@@ -17,6 +17,7 @@ import pickle
 import sqlite3
 import asyncio
 import aiohttp
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse, quote
 from typing import List, Dict, Any, Tuple, Optional, Set
@@ -6611,6 +6612,150 @@ def convert_data_to_md(data):
 {timeline_md}
     """
 
+def _plain_markdown_text(text: str) -> str:
+    """將 Markdown/HTML 片段轉成適合 PDF 段落的純文字。"""
+    text = re.sub(r'<span class="citation">(.*?)</span>', r'\1', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'__(.*?)__', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', text)
+    return text.strip()
+
+def _find_pdf_cjk_font() -> Optional[str]:
+    """尋找 Windows 常見繁中字型，供 ReportLab 嵌入 PDF。"""
+    candidates = [
+        r"C:\Windows\Fonts\msjh.ttc",
+        r"C:\Windows\Fonts\msjh.ttf",
+        r"C:\Windows\Fonts\mingliu.ttc",
+        r"C:\Windows\Fonts\kaiu.ttf",
+    ]
+    for font_path in candidates:
+        if os.path.exists(font_path):
+            return font_path
+    return None
+
+def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]] = None) -> Optional[bytes]:
+    """將目前分析結果轉成 PDF bytes；若 ReportLab 或中文字型不可用則回傳 None。"""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_LEFT
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from xml.sax.saxutils import escape
+    except Exception as e:
+        logger.warning(f"PDF 匯出不可用，ReportLab 載入失敗: {str(e)}")
+        return None
+
+    font_path = _find_pdf_cjk_font()
+    if not font_path:
+        logger.warning("PDF 匯出不可用：找不到可嵌入的中文字型")
+        return None
+
+    try:
+        pdfmetrics.registerFont(TTFont("ReportCJK", font_path))
+    except Exception:
+        # 字型已註冊時 ReportLab 可能丟例外，忽略後繼續使用。
+        pass
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=16 * mm,
+        leftMargin=16 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title=title or "analysis_report",
+    )
+    styles = getSampleStyleSheet()
+    base = ParagraphStyle(
+        "ReportBase",
+        parent=styles["Normal"],
+        fontName="ReportCJK",
+        fontSize=10.5,
+        leading=16,
+        alignment=TA_LEFT,
+        spaceAfter=6,
+    )
+    heading1 = ParagraphStyle("ReportH1", parent=base, fontSize=18, leading=24, spaceAfter=12, textColor=colors.HexColor("#1f2937"))
+    heading2 = ParagraphStyle("ReportH2", parent=base, fontSize=14, leading=20, spaceBefore=10, spaceAfter=8, textColor=colors.HexColor("#24304f"))
+    heading3 = ParagraphStyle("ReportH3", parent=base, fontSize=12, leading=18, spaceBefore=8, spaceAfter=6, textColor=colors.HexColor("#374151"))
+    small = ParagraphStyle("ReportSmall", parent=base, fontSize=8.5, leading=12, textColor=colors.HexColor("#4b5563"))
+
+    def paragraph(raw: str, style=base):
+        return Paragraph(escape(_plain_markdown_text(raw)).replace("\n", "<br/>"), style)
+
+    story = [
+        Paragraph(escape(title or "分析報告"), heading1),
+        Paragraph(escape(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"), small),
+        Spacer(1, 6),
+    ]
+
+    md_text = normalize_markdown_tables((report_text or "").replace("\\n", "\n"))
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            story.append(Spacer(1, 4))
+            i += 1
+            continue
+
+        if _is_markdown_table_row(line):
+            table_rows = []
+            while i < len(lines) and (_is_markdown_table_row(lines[i].strip()) or not lines[i].strip()):
+                current = lines[i].strip()
+                if current and not _is_markdown_table_separator(current):
+                    cells = [paragraph(cell, small) for cell in current.strip("|").split("|")]
+                    table_rows.append(cells)
+                i += 1
+            if table_rows:
+                table = Table(table_rows, repeatRows=1, hAlign="LEFT")
+                table.setStyle(TableStyle([
+                    ("FONTNAME", (0, 0), (-1, -1), "ReportCJK"),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]))
+                story.append(table)
+                story.append(Spacer(1, 8))
+            continue
+
+        if line.startswith("# "):
+            story.append(paragraph(line[2:], heading1))
+        elif line.startswith("## "):
+            story.append(paragraph(line[3:], heading2))
+        elif line.startswith("### "):
+            story.append(paragraph(line[4:], heading3))
+        elif line.startswith(("- ", "* ")):
+            story.append(paragraph("• " + line[2:], base))
+        else:
+            story.append(paragraph(line, base))
+        i += 1
+
+    if sources:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("引用來源", heading2))
+        for idx, source in enumerate(sources, 1):
+            domain = get_domain_name(source.get("url", ""))
+            source_title = source.get("title", "No Title")
+            evidence_level = source.get("evidence_level", "")
+            url = source.get("url", "")
+            story.append(paragraph(f"{idx}. {domain}｜{source_title}｜{evidence_level}｜{url}", small))
+
+    doc.build(story)
+    return buffer.getvalue()
+
 def build_news_text_context(title: str, source_name: str, source_url: str, content: str) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
     """將使用者貼上的單篇新聞整理成既有分析流程可讀的 Source context。"""
     clean_title = (title or "未提供標題").strip()
@@ -7803,6 +7948,20 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                 st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
         render_analysis_summary_cards(text_result, st.session_state.get("text_analysis_sources"), validation)
         render_report_paper(text_result.get("report_text", ""))
+        text_pdf = create_pdf_report(
+            "新聞文本分析報告",
+            text_result.get("report_text", ""),
+            st.session_state.get("text_analysis_sources"),
+        )
+        if text_pdf:
+            st.download_button(
+                "📄 下載新聞文本分析 (PDF)",
+                text_pdf,
+                "news_text_analysis.pdf",
+                "application/pdf",
+            )
+        else:
+            st.warning("PDF 匯出不可用：請確認已安裝 reportlab 並可讀取 Windows 中文字型。")
         st.download_button(
             "📥 下載新聞文本分析 (Markdown)",
             convert_data_to_md(text_result),
@@ -8461,6 +8620,23 @@ else:
                 })
         else:
             render_report_paper(report_text)
+            st.markdown("### 📥 下載目前分析結果")
+            current_pdf = create_pdf_report("多元觀點分析報告", report_text, st.session_state.get("sources"))
+            if current_pdf:
+                st.download_button(
+                    "📄 下載分析結果 (PDF)",
+                    current_pdf,
+                    "analysis_report.pdf",
+                    "application/pdf",
+                )
+            else:
+                st.warning("PDF 匯出不可用：請確認已安裝 reportlab 並可讀取 Windows 中文字型。")
+            st.download_button(
+                "📥 下載分析結果 (Markdown)",
+                convert_data_to_md(data),
+                "analysis_report.md",
+                "text/markdown",
+            )
 
         if "未來" not in analysis_mode and not st.session_state.scenario_result:
             st.markdown("---")
@@ -8505,6 +8681,14 @@ else:
         formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
         html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
         st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
+        scenario_pdf = create_pdf_report("未來發展推演報告", scenario_data.get("report_text", ""), st.session_state.get("sources"))
+        if scenario_pdf:
+            st.download_button(
+                "📄 下載未來推演報告 (PDF)",
+                scenario_pdf,
+                "scenario_report.pdf",
+                "application/pdf",
+            )
 
     if st.session_state.sources:
         st.markdown("---")
