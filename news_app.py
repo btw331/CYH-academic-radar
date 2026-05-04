@@ -6632,12 +6632,17 @@ def _find_pdf_cjk_font() -> Optional[str]:
     """尋找 Windows 常見繁中字型，供 ReportLab 嵌入 PDF。"""
     windows_dir = os.environ.get("WINDIR", r"C:\Windows")
     local_fonts = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts"
+    system_fonts = Path(windows_dir) / "Fonts"
     candidates = [
-        str(Path(windows_dir) / "Fonts" / "msjh.ttc"),
-        str(Path(windows_dir) / "Fonts" / "msjh.ttf"),
-        str(Path(windows_dir) / "Fonts" / "msjhbd.ttc"),
-        str(Path(windows_dir) / "Fonts" / "mingliu.ttc"),
-        str(Path(windows_dir) / "Fonts" / "kaiu.ttf"),
+        str(system_fonts / "msjh.ttc"),
+        str(system_fonts / "msjh.ttf"),
+        str(system_fonts / "msjhbd.ttc"),
+        str(system_fonts / "mingliu.ttc"),
+        str(system_fonts / "mingliu.ttf"),
+        str(system_fonts / "pmingliu.ttc"),
+        str(system_fonts / "kaiu.ttf"),
+        str(system_fonts / "Microsoft JhengHei.ttf"),
+        str(system_fonts / "Microsoft JhengHei UI.ttf"),
         str(local_fonts / "NotoSansCJKtc-Regular.otf"),
         str(local_fonts / "NotoSerifCJKtc-Regular.otf"),
         str(local_fonts / "NotoSansTC-Regular.otf"),
@@ -6645,9 +6650,17 @@ def _find_pdf_cjk_font() -> Optional[str]:
     for font_path in candidates:
         if os.path.exists(font_path):
             return font_path
-    for font_dir in [Path(windows_dir) / "Fonts", local_fonts]:
+    for font_dir in [system_fonts, local_fonts]:
         if font_dir.exists():
-            for pattern in ["*NotoSansCJK*tc*.otf", "*NotoSansTC*.otf", "*SourceHanSans*TC*.otf", "*msjh*.ttc", "*mingliu*.ttc"]:
+            for pattern in [
+                "*NotoSansCJK*tc*.otf",
+                "*NotoSansTC*.otf",
+                "*SourceHanSans*TC*.otf",
+                "*JhengHei*.ttf",
+                "*msjh*.ttc",
+                "*mingliu*.ttc",
+                "*kaiu*.ttf",
+            ]:
                 matches = list(font_dir.glob(pattern))
                 if matches:
                     return str(matches[0])
@@ -6664,7 +6677,6 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
         from xml.sax.saxutils import escape
@@ -6678,20 +6690,20 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
 
     font_path = _find_pdf_cjk_font()
     pdf_font_name = "ReportCJK"
-    if font_path:
-        try:
-            pdfmetrics.registerFont(TTFont(pdf_font_name, font_path))
-        except Exception as e:
-            logger.warning(f"Windows 中文字型註冊失敗，改用內建 CJK 字型: {str(e)[:200]}")
-            font_path = None
     if not font_path:
-        try:
-            pdf_font_name = "MSung-Light"
-            pdfmetrics.registerFont(UnicodeCIDFont(pdf_font_name))
-        except Exception as e:
-            LAST_PDF_EXPORT_ERROR = f"找不到 Windows 中文字型，且 ReportLab 內建 CJK 字型也無法註冊：{str(e)[:300]}"
-            logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
-            return None
+        LAST_PDF_EXPORT_ERROR = (
+            "找不到可嵌入的 TrueType/OpenType 中文字型。"
+            f"Streamlit 目前 Python：{sys.executable}。請確認 C:\\Windows\\Fonts 可讀取，"
+            "或安裝 Noto Sans TC / Source Han Sans TC 後重新啟動 Streamlit。"
+        )
+        logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
+        return None
+    try:
+        pdfmetrics.registerFont(TTFont(pdf_font_name, font_path))
+    except Exception as e:
+        LAST_PDF_EXPORT_ERROR = f"中文字型註冊失敗：{font_path}；錯誤：{str(e)[:300]}"
+        logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
+        return None
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(
