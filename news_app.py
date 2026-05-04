@@ -6733,6 +6733,104 @@ def render_report_paper(report_text: str) -> None:
     html_content = markdown.markdown(formatted_text, extensions=['tables'])
     st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
 
+def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[Dict]], validation: Optional[Dict[str, Any]] = None) -> None:
+    """在長報告前提供低負擔摘要，幫助使用者先判斷品質與風險。"""
+    sources = sources or []
+    validation = validation or data.get("validation", {}) if isinstance(data, dict) else {}
+    evidence_counts = Counter(s.get("evidence_level", "未標註") for s in sources)
+    strong_count = evidence_counts.get("極強", 0) + evidence_counts.get("強", 0)
+    weak_count = evidence_counts.get("中弱", 0) + evidence_counts.get("弱", 0)
+    validation_score = validation.get("score") if isinstance(validation, dict) else None
+    score_text = f"{validation_score:.0f}/100" if isinstance(validation_score, (int, float)) else "未驗證"
+    source_count = len(sources)
+    timeline_count = len(data.get("timeline", [])) if isinstance(data, dict) else 0
+
+    st.markdown("### 📌 報告快速檢視")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("來源數", source_count)
+    with c2:
+        st.metric("強證據來源", strong_count)
+    with c3:
+        st.metric("弱證據來源", weak_count)
+    with c4:
+        st.metric("格式驗證", score_text)
+    st.caption(f"時間軸事件：{timeline_count} 筆；此區塊是閱讀長報告前的品質提示，不取代完整分析。")
+
+def render_methodology_page() -> None:
+    """主頁版方法論總覽，減少側欄長文對操作流程的干擾。"""
+    st.title("📚 方法論與功能實裝狀態")
+    st.caption("本頁整理系統目前採用的方法、實際有接線的功能，以及使用時應注意的限制。")
+
+    overview_tab, pipeline_tab, evidence_tab, manipulation_tab, limits_tab = st.tabs([
+        "總覽", "分析流程", "證據與查核", "資訊操作", "限制與建議"
+    ])
+
+    with overview_tab:
+        st.markdown("""
+        ### 三種分析模式
+        - **多元議題分析**：適合需要搜尋多個來源、比較立場與查核聲量的議題。
+        - **新聞文本分析**：適合貼上單篇新聞，檢查語言、框架、謬誤與資訊缺口。
+        - **未來發展推演**：適合在已有分析報告後，進一步做 CLA、情境規劃與預警指標。
+
+        ### 核心方法
+        - **ACH**：用多個競爭假設避免只相信單一解釋。
+        - **Entman Framing**：拆解問題定義、歸因、道德評價與解方暗示。
+        - **GRADE / CERQual**：用來源、內容品質、語言風格與交叉驗證估計證據強度。
+        - **Cui Bono**：檢查哪些行動者可能從特定敘事或框架中受益。
+        """)
+
+    with pipeline_tab:
+        st.markdown("""
+        ### 多源議題分析流程
+        1. 產生或編輯搜尋策略。
+        2. 依搜尋視角執行 Tavily 混合搜尋與保底搜尋。
+        3. 對來源做分類、公信力與證據強度評估。
+        4. 檢查立場缺口並進行最多兩輪補足搜尋。
+        5. 執行可選 Google Fact Check、Cofacts 關聯查詢、共識分析與資訊操作訊號偵測。
+        6. 將來源與操作訊號送入 LLM 產出報告。
+
+        ### 單篇文本分析流程
+        1. 將貼上的新聞包成 `Source 1`。
+        2. 先做規則式證據強度與語言風格評估。
+        3. 再交給 LLM 進行文本取證式分析。
+        """)
+
+    with evidence_tab:
+        st.markdown("""
+        ### 已接線功能
+        - **來源公信力評分**：已在來源處理階段執行。
+        - **內容品質與語言風格檢測**：已用於證據強度計算。
+        - **Google Fact Check**：可選功能，需在側欄開啟，會增加等待時間與 API 消耗。
+        - **Cofacts**：目前是依議題關鍵字做關聯查詢，不是逐條 claim 驗證。
+        - **共識分析**：已使用實際來源；若沒有明確正反分桶，會以來源類型多樣性作保守近似。
+        """)
+
+    with manipulation_tab:
+        st.markdown("""
+        ### 資訊操作偵測
+        - **跨網域聯播**：以正文相似度找出橫跨多網域的相似內容群。
+        - **敘事擴散速度**：用網域數與發布時間估計擴散密度。
+        - **語義旋轉**：若資料足夠，對比同一事實在不同來源中的框架差異。
+        - **傳統協調指標**：檢查重複論述比例、來源集中度與時間集中度。
+
+        這些結果會寫入操作訊號，供報告中的「敘事操縱與資訊操作風險」引用。
+        """)
+
+    with limits_tab:
+        st.markdown("""
+        ### 使用限制
+        - 搜尋品質受 Tavily 回傳內容、關鍵字與時間範圍影響。
+        - Google Fact Check 只查得到已被索引的公開查核結果，沒有結果不代表主張為真。
+        - Cofacts 是關聯查詢，需人工判讀是否與本議題完全相同。
+        - 社群帳號層級 CIB 仍需平台資料，現階段只能做內容與來源層級推估。
+
+        ### 建議使用方式
+        - 先用新聞文本分析檢查單篇文章。
+        - 再用多元議題分析橫向查證。
+        - 對重要結論，優先看官方、學術、外電與獨立調查來源是否互相支持。
+        """)
+
 # ==========================================
 # 5. UI
 # ==========================================
@@ -6742,7 +6840,7 @@ if "current_page" not in st.session_state:
 with st.sidebar:
     st.title("多元觀點解析 V38.0")
     st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
-    page_options = ["🚀 多元議題分析 (Deep Analysis)", "🧾 新聞文本分析 (Text Analysis)", "📰 全球情報 (News Feed)"]
+    page_options = ["🚀 多元議題分析 (Deep Analysis)", "🧾 新聞文本分析 (Text Analysis)", "📰 全球情報 (News Feed)", "📚 方法論 (Methodology)"]
     # 由「深度戰略分析」按鈕觸發的跳轉：在 radio 渲染前同步 nav_page，避免直接寫入 widget key 觸發 StreamlitAPIException
     if st.session_state.pop("pending_nav_to_analysis", False):
         st.session_state["nav_page"] = "🚀 多元議題分析 (Deep Analysis)"
@@ -6984,12 +7082,12 @@ with st.sidebar:
 
     # ==================== 學術方法論詳解 ====================
     st.markdown("---")
-    st.markdown("### 🧠 情報分析方法論詳解")
-    st.caption("📚 點擊下方區塊查看詳細的學術理論與方法說明 - 研究方法透明化")
+    st.markdown("### 🧠 方法論速覽")
+    st.caption("完整、較易閱讀的整理請切換到「📚 方法論」頁；下方保留詳細摺疊內容供快速查閱。")
     st.markdown("")
     
     # ---------- 0. 分析流程圖（透明公開分析流程）----------
-    with st.expander("0. 📊 分析流程圖 (Analysis Pipeline)", expanded=True):
+    with st.expander("0. 📊 分析流程圖 (Analysis Pipeline)", expanded=False):
         st.markdown("**整體分析流程（依執行順序）**")
         st.markdown("""
         以下為系統從「查詢輸入」到「報告輸出」的完整流程，所有步驟均在送交 LLM 前或與 LLM 協同完成，確保方法透明可檢驗。
@@ -7569,7 +7667,9 @@ flowchart LR
         if export_data is not None:
             st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
 
-if st.session_state["current_page"] == "📰 全球情報 (News Feed)":
+if st.session_state["current_page"] == "📚 方法論 (Methodology)":
+    render_methodology_page()
+elif st.session_state["current_page"] == "📰 全球情報 (News Feed)":
     # 與側欄同一輪：用 session 決定 feed 用哪個 LLM，並直接傳入避免讀取時序問題
     _lp = st.session_state.get("llm_provider", "Gemini")
     _gk = (st.session_state.get("grok_api_key") or "").strip()
@@ -7701,6 +7801,7 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             st.warning(f"⚠️ AI 輸出格式驗證分數：{validation.get('score', 0):.1f}/100")
             if validation.get("missing_sections"):
                 st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
+        render_analysis_summary_cards(text_result, st.session_state.get("text_analysis_sources"), validation)
         render_report_paper(text_result.get("report_text", ""))
         st.download_button(
             "📥 下載新聞文本分析 (Markdown)",
@@ -8333,6 +8434,7 @@ else:
         st.markdown("### 📝 平衡報導分析")
     
         report_text = data.get("report_text", "")
+        render_analysis_summary_cards(data, st.session_state.get("sources"), data.get("validation", {}))
     
         # 檢查報告內容是否為空
         if not report_text or not report_text.strip():
