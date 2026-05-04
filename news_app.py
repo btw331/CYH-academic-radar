@@ -6653,11 +6653,40 @@ def _plain_markdown_text(text: str) -> str:
     text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', text)
     return text.strip()
 
+def _download_pdf_cjk_font() -> Optional[str]:
+    """下載可嵌入 PDF 的繁中文字型，供 Linux/雲端環境使用。"""
+    font_dir = CACHE_DIR / "fonts"
+    font_dir.mkdir(parents=True, exist_ok=True)
+    font_path = font_dir / "NotoSansTC-Regular.ttf"
+    if font_path.exists() and font_path.stat().st_size > 1024 * 1024:
+        return str(font_path)
+
+    font_urls = [
+        "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+    ]
+    for url in font_urls:
+        try:
+            response = requests.get(url, timeout=45)
+            response.raise_for_status()
+            if len(response.content) > 1024 * 1024:
+                font_path.write_bytes(response.content)
+                return str(font_path)
+        except Exception as e:
+            logger.warning(f"PDF 中文字型下載失敗 ({url}): {str(e)[:200]}")
+    return None
+
 def _find_pdf_cjk_font() -> Optional[str]:
-    """尋找 Windows 常見繁中字型，供 ReportLab 嵌入 PDF。"""
+    """尋找跨平台繁中文字型，供 ReportLab 嵌入 PDF。"""
     windows_dir = os.environ.get("WINDIR", r"C:\Windows")
     local_fonts = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts"
     system_fonts = Path(windows_dir) / "Fonts"
+    linux_font_dirs = [
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts"),
+        Path.home() / ".fonts",
+        Path.home() / ".local" / "share" / "fonts",
+    ]
     candidates = [
         str(system_fonts / "msjh.ttc"),
         str(system_fonts / "msjh.ttf"),
@@ -6671,16 +6700,30 @@ def _find_pdf_cjk_font() -> Optional[str]:
         str(local_fonts / "NotoSansCJKtc-Regular.otf"),
         str(local_fonts / "NotoSerifCJKtc-Regular.otf"),
         str(local_fonts / "NotoSansTC-Regular.otf"),
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf",
+        "/usr/share/fonts/truetype/arphic/uming.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     ]
     for font_path in candidates:
         if os.path.exists(font_path):
             return font_path
-    for font_dir in [system_fonts, local_fonts]:
+    for font_dir in [system_fonts, local_fonts] + linux_font_dirs:
         if font_dir.exists():
             for pattern in [
+                "**/*NotoSansTC*.ttf",
+                "**/*NotoSansTC*.otf",
                 "*NotoSansCJK*tc*.otf",
+                "**/*NotoSansCJK*tc*.otf",
+                "**/*NotoSansCJK*.ttc",
                 "*NotoSansTC*.otf",
                 "*SourceHanSans*TC*.otf",
+                "**/*SourceHanSans*TC*.otf",
+                "**/*SourceHanSans*.ttc",
+                "**/*wqy*.ttc",
+                "**/*uming*.ttc",
                 "*JhengHei*.ttf",
                 "*msjh*.ttc",
                 "*mingliu*.ttc",
@@ -6689,7 +6732,7 @@ def _find_pdf_cjk_font() -> Optional[str]:
                 matches = list(font_dir.glob(pattern))
                 if matches:
                     return str(matches[0])
-    return None
+    return _download_pdf_cjk_font()
 
 def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]] = None) -> Optional[bytes]:
     """將目前分析結果轉成 PDF bytes；若 ReportLab 或中文字型不可用則回傳 None。"""
@@ -6718,8 +6761,8 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
     if not font_path:
         LAST_PDF_EXPORT_ERROR = (
             "找不到可嵌入的 TrueType/OpenType 中文字型。"
-            f"Streamlit 目前 Python：{sys.executable}。請確認 C:\\Windows\\Fonts 可讀取，"
-            "或安裝 Noto Sans TC / Source Han Sans TC 後重新啟動 Streamlit。"
+            f"Streamlit 目前 Python：{sys.executable}。系統已嘗試 Windows/Linux 字型路徑與自動下載 Noto Sans TC；"
+            "若仍失敗，請確認執行環境允許連線到 GitHub，或在環境中安裝 Noto Sans TC / Source Han Sans TC。"
         )
         logger.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR}")
         return None
