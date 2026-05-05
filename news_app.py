@@ -6873,27 +6873,6 @@ def render_news_feed_page(
             st.session_state["intelligence_feed_data"] = []
             st.warning(f"首次自動載入失敗：{str(e)[:200]}。可稍後按「重新整理」再試。")
 
-    if st.session_state.get("feed_do_summary"):
-        st.session_state["feed_do_summary"] = False
-        feed_for_summary = st.session_state.get("intelligence_feed_data") or []
-        if not feed_for_summary:
-            st.warning("請先載入 AllSides Roundups。")
-        elif not feed_llm_key:
-            st.warning("⚠️ 請先在側邊欄輸入 Gemini Key，再進行重點整理。")
-        else:
-            try:
-                with st.spinner("Gemini 正在整理 AllSides 重點…"):
-                    st.session_state["allsides_llm_summary"] = summarize_allsides_roundups_with_llm(
-                        feed_for_summary,
-                        feed_llm_key,
-                        feed_llm_model,
-                    )
-            except Exception as e:
-                logger.exception("AllSides Gemini 重點整理失敗")
-                st.session_state["allsides_llm_summary"] = None
-                st.error(f"重點整理失敗：{str(e)[:200]}")
-        st.rerun()
-
     col_load, col_summary, col_src = st.columns([1, 1, 2])
     with col_load:
         st.button(
@@ -6905,11 +6884,11 @@ def render_news_feed_page(
         )
     with col_summary:
         st.button(
-            "✨ Gemini 整批重點",
+            "✨ Gemini 整理目前主題",
             type="secondary",
             key="feed_summary_btn",
             on_click=lambda: st.session_state.update({"feed_do_summary": True}),
-            help="整批整理會消耗較多 input token；若只關心單一議題，建議先用每張卡片的「比較此議題框架」。",
+            help="整理目前主題篩選後的 Roundups；若只關心單一議題，建議先用每張卡片的「比較此議題框架」。",
         )
     with col_src:
         st.caption("建議流程：先載入 Roundups → 挑單則做框架比較（省 token）→ 需要完整脈絡時再進入多元議題分析。")
@@ -6975,11 +6954,12 @@ def render_news_feed_page(
             st.rerun()
 
     topic_options = list(ALLSIDES_TOPIC_FILTERS.keys())
-    selected_feed_topic = st.segmented_control(
+    selected_feed_topic = st.radio(
         "主題篩選",
         options=topic_options,
-        default=st.session_state.get("allsides_topic_filter", "全部") if st.session_state.get("allsides_topic_filter", "全部") in topic_options else "全部",
+        index=topic_options.index(st.session_state.get("allsides_topic_filter", "全部")) if st.session_state.get("allsides_topic_filter", "全部") in topic_options else 0,
         key="allsides_topic_filter",
+        horizontal=True,
         help="依標題、摘要、AllSides 連結與三欄來源標題做關鍵字篩選；不會重新抓取資料，也不消耗 Gemini token。",
     )
     display_feed = _filter_allsides_roundups_by_topic(feed, selected_feed_topic or "全部")
@@ -6990,9 +6970,39 @@ def render_news_feed_page(
     else:
         st.caption("目前顯示全部 Roundups。")
 
+    if st.session_state.get("feed_do_summary"):
+        st.session_state["feed_do_summary"] = False
+        feed_for_summary = display_feed
+        if not feed:
+            st.warning("請先載入 AllSides Roundups。")
+        elif not feed_for_summary:
+            st.warning("目前主題篩選沒有可整理的 Roundups，請切回「全部」或更換主題。")
+        elif not feed_llm_key:
+            st.warning("⚠️ 請先在側邊欄輸入 Gemini Key，再進行重點整理。")
+        else:
+            try:
+                with st.spinner(f"Gemini 正在整理「{selected_feed_topic or '全部'}」重點…"):
+                    st.session_state["allsides_llm_summary"] = summarize_allsides_roundups_with_llm(
+                        feed_for_summary,
+                        feed_llm_key,
+                        feed_llm_model,
+                    )
+                    st.session_state["allsides_llm_summary_topic"] = selected_feed_topic or "全部"
+            except Exception as e:
+                logger.exception("AllSides Gemini 重點整理失敗")
+                st.session_state["allsides_llm_summary"] = None
+                st.session_state.pop("allsides_llm_summary_topic", None)
+                st.error(f"重點整理失敗：{str(e)[:200]}")
+        st.rerun()
+
     summary_text = st.session_state.get("allsides_llm_summary")
     if summary_text:
         with st.expander("✨ Gemini 摘要與重點整理", expanded=True):
+            summary_topic = st.session_state.get("allsides_llm_summary_topic")
+            if summary_topic:
+                st.caption(f"整理範圍：{summary_topic}")
+                if summary_topic != (selected_feed_topic or "全部"):
+                    st.info("目前篩選主題已變更；若要更新摘要，請再按一次「Gemini 整理目前主題」。")
             st.markdown(summary_text)
     else:
         st.caption("省 token 建議：先閱讀卡片摘要；只對重要單則使用「✨ 比較此議題框架」，最後才使用整批重點整理。")
@@ -7902,6 +7912,7 @@ def render_changelog_page() -> None:
 - **方法論長文移出側欄**：側欄只保留短提示，完整方法、限制與流程統一放在「📚 方法論」頁，降低操作干擾。
 - **方法論完整細節補回專頁**：原本側欄的長版方法說明已移入「📚 方法論」頁的「完整細節」分頁，以 expander 保留分析流程、檢索、證據、框架、資訊操作與透明度說明。
 - **全球情報主題篩選**：AllSides Roundups 新增「全部／台灣／中國／印太安全／半導體／朝鮮半島／日本／印度」快速篩選，不重新抓取資料也不消耗 Gemini token。
+- **Gemini 主題摘要優化**：「全球情報」的 Gemini 整理會依目前主題篩選範圍摘要，並改用相容 Streamlit 1.28 的水平 radio。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
