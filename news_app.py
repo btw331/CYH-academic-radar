@@ -5481,6 +5481,70 @@ def _short_feed_text(text: str, limit: int = 120) -> str:
 
 
 ALLSIDES_BALANCED_NEWS_URL = "https://www.allsides.com/unbiased-balanced-news"
+ALLSIDES_ASIA_URL = "https://www.allsides.com/tags/asia?search=asia"
+ALLSIDES_TAIWAN_URL = "https://www.allsides.com/tags/taiwan?search=taiwan"
+ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS = [
+    {
+        "title": "US, Taiwan Agree to Talks on New Trade Deal Amid China Tensions",
+        "summary": "The United States and Taiwan agreed to formal talks on a new trade and investment pact amid rising U.S.-China tensions. AllSides framed the issue through trade, China, Taiwan, foreign policy, world, Asia, and One China Policy tags.",
+        "story_url": "https://www.allsides.com/story/us-taiwan-agree-talks-new-trade-deal-amid-china-tensions",
+        "perspectives": [
+            {"bias": "Left", "title": "US and Taiwan agree to start talks on a trade and investment pact", "url": "https://www.cnn.com/2022/08/18/business/taiwan-us-trade-talks-hnk-intl/index.html", "source": "CNN Business", "source_url": "https://www.allsides.com/news-source/cnn-business-media-bias"},
+            {"bias": "Center", "title": "U.S., Taiwan to start formal trade talks under new initiative", "url": "https://www.reuters.com/world/us-taiwan-start-formal-trade-talks-under-new-initiative-2022-08-18/", "source": "Reuters", "source_url": "https://www.allsides.com/news-source/reuters"},
+            {"bias": "Right", "title": "US to hold wide-ranging trade talks with Taiwan amid tensions with China", "url": "https://www.foxnews.com/world/us-hold-wide-ranging-trade-talks-taiwan-tensions-china", "source": "Fox News Digital", "source_url": "https://www.allsides.com/news-source/fox-news-media-bias"},
+        ],
+    },
+    {
+        "title": "Why Did China Launch Surprise Military Drills Surrounding Taiwan?",
+        "summary": "AllSides Asia highlighted this Taiwan-related headline roundup, comparing coverage from CNN Digital, Taipei Times, and New York Post.",
+        "story_url": "https://www.allsides.com/story/china-why-did-china-launch-surprise-military-drills-surrounding-taiwan",
+        "perspectives": [
+            {"bias": "Left", "title": "CNN Digital coverage", "url": "", "source": "CNN Digital", "source_url": "https://www.allsides.com/news-source/cnn-media-bias"},
+            {"bias": "Center", "title": "Taipei Times coverage", "url": "", "source": "Taipei Times", "source_url": "https://www.allsides.com/news-source/taipei-times"},
+            {"bias": "Right", "title": "New York Post coverage", "url": "", "source": "New York Post (News)", "source_url": "https://www.allsides.com/news-source/new-york-post"},
+        ],
+    },
+    {
+        "title": "New US Delegation Visits Taiwan; China Launches More Drills",
+        "summary": "A Taiwan-China tensions roundup from AllSides covering U.S. delegation visits and Chinese military drills after Pelosi's Taiwan visit.",
+        "story_url": "https://www.allsides.com/story/new-us-delegation-visits-taiwan-china-launches-more-drills",
+        "perspectives": [
+            {"bias": "Left", "title": "Left-leaning coverage", "url": "", "source": "AllSides linked left source", "source_url": ""},
+            {"bias": "Center", "title": "Center coverage", "url": "", "source": "AllSides linked center source", "source_url": ""},
+            {"bias": "Right", "title": "Right-leaning coverage", "url": "", "source": "AllSides linked right source", "source_url": ""},
+        ],
+    },
+    {
+        "title": "China Holds Military Drills Following Pelosi's Taiwan Visit; US Postpones Missile Test",
+        "summary": "AllSides roundup on China's military drills after Pelosi's Taiwan visit and the U.S. postponing a missile test to reduce escalation risk.",
+        "story_url": "https://www.allsides.com/story/china-holds-military-drills-following-pelosis-taiwan-visit-us-postpones-missile-test",
+        "perspectives": [
+            {"bias": "Left", "title": "Left-leaning coverage", "url": "", "source": "AllSides linked left source", "source_url": ""},
+            {"bias": "Center", "title": "Center coverage", "url": "", "source": "AllSides linked center source", "source_url": ""},
+            {"bias": "Right", "title": "Right-leaning coverage", "url": "", "source": "AllSides linked right source", "source_url": ""},
+        ],
+    },
+    {
+        "title": "North Korea Sends Waste-Filled Balloons Into South Korea",
+        "summary": "AllSides Asia roundup comparing coverage of North Korea sending waste-filled balloons into South Korea.",
+        "story_url": "https://www.allsides.com/story/world-north-korea-sends-waste-filled-balloons-south-korea",
+        "perspectives": [
+            {"bias": "Left", "title": "North Korea Accused of Launching Floating Poop Balloon Attack", "url": "", "source": "Daily Beast", "source_url": "https://www.allsides.com/news-source/daily-beast-media-bias"},
+            {"bias": "Center", "title": "North Korea sends balloons carrying excrement to the south as a 'gift'", "url": "", "source": "Reuters", "source_url": "https://www.allsides.com/news-source/reuters"},
+            {"bias": "Right", "title": "North Korea Dumps 260+ Balloons Full of Garbage and Feces into South Korea", "url": "", "source": "Breitbart News", "source_url": "https://www.allsides.com/news-source/breitbart"},
+        ],
+    },
+    {
+        "title": "Putin Meets Xi in China to ‘Tighten Coordination’ Against US-Led World Order",
+        "summary": "AllSides Asia roundup on Putin and Xi meeting in China and the implications for U.S.-led international order.",
+        "story_url": "https://www.allsides.com/story/world-putin-meets-xi-china-tighten-coordination-against-us-led-world-order",
+        "perspectives": [
+            {"bias": "Left", "title": "CNN Digital coverage", "url": "", "source": "CNN Digital", "source_url": "https://www.allsides.com/news-source/cnn-media-bias"},
+            {"bias": "Center", "title": "Reuters coverage", "url": "", "source": "Reuters", "source_url": "https://www.allsides.com/news-source/reuters"},
+            {"bias": "Right", "title": "Fox News Digital coverage", "url": "", "source": "Fox News Digital", "source_url": "https://www.allsides.com/news-source/fox-news-media-bias"},
+        ],
+    },
+]
 
 
 def _clean_allsides_text(text: str) -> str:
@@ -5497,38 +5561,31 @@ def _allsides_abs_url(href: str) -> str:
 @st.cache_data(ttl=1800)
 def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
     """
-    直接擷取 AllSides Balanced News 的 Headline Roundups。
-    僅讀取公開頁面，不登入、不呼叫 Tavily/Gemini。
+    擷取 AllSides Asia / Taiwan 相關 Headline Roundups。
+    AllSides 的 tag/search 頁有時會擋一般程式請求；若無法讀取，使用內建的 Asia/Taiwan seed roundups。
     """
     try:
         from bs4 import BeautifulSoup
     except Exception as e:
         logger.error("fetch_allsides_headline_roundups: 缺少 beautifulsoup4: %s", str(e))
-        return []
+        return ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups]
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-    try:
-        resp = requests.get(ALLSIDES_BALANCED_NEWS_URL, timeout=25, headers=headers)
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error("fetch_allsides_headline_roundups: 取得頁面失敗: %s", str(e))
-        return []
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-    cards = soup.select(".headline-roundup")
     out: List[Dict[str, Any]] = []
 
-    for card in cards[:max_roundups]:
+    def _append_from_card(card: Any) -> None:
         content = card.select_one(".headline-roundup-content") or card
         heading = content.find(["h2", "h3"]) or card.find(["h2", "h3"])
         if not heading:
-            continue
+            return
         title = _clean_allsides_text(heading.get_text(" ", strip=True))
         story_link = heading.find("a") or card.find("a", href=re.compile(r"^/story/"))
         story_url = _allsides_abs_url(story_link.get("href")) if story_link else ALLSIDES_BALANCED_NEWS_URL
+        if not any(k in f"{title} {story_url}".lower() for k in ("taiwan", "china", "asia", "korea", "japan", "india", "philippines", "pakistan", "north-korea", "south-korea")):
+            return
 
         paragraphs: List[str] = []
         for p in content.find_all("p"):
@@ -5590,6 +5647,48 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
             "analysis_keywords": title,
         })
 
+    for page_url in (ALLSIDES_TAIWAN_URL, ALLSIDES_ASIA_URL):
+        if len(out) >= max_roundups:
+            break
+        try:
+            resp = requests.get(page_url, timeout=25, headers=headers)
+            if resp.status_code >= 400 or "Just a moment" in resp.text[:1000]:
+                logger.info("fetch_allsides_headline_roundups: AllSides topic blocked/status=%s url=%s", resp.status_code, page_url)
+                continue
+        except Exception as e:
+            logger.info("fetch_allsides_headline_roundups: topic page failed url=%s err=%s", page_url, str(e))
+            continue
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.select(".headline-roundup")
+        if cards:
+            for card in cards:
+                if len(out) >= max_roundups:
+                    break
+                _append_from_card(card)
+        else:
+            seen_story_urls = {x.get("story_url") for x in out}
+            for link in soup.find_all("a", href=re.compile(r"^/story/")):
+                if len(out) >= max_roundups:
+                    break
+                title = _clean_allsides_text(link.get_text(" ", strip=True))
+                story_url = _allsides_abs_url(link.get("href"))
+                if not title or story_url in seen_story_urls:
+                    continue
+                if not any(k in f"{title} {story_url}".lower() for k in ("taiwan", "china", "asia", "korea", "japan", "india", "philippines", "pakistan")):
+                    continue
+                out.append({
+                    "title": title,
+                    "summary": "AllSides Asia/Taiwan related headline roundup.",
+                    "story_url": story_url,
+                    "perspectives": [],
+                    "source": "AllSides",
+                    "url": story_url,
+                    "analysis_keywords": title,
+                })
+                seen_story_urls.add(story_url)
+
+    if not out:
+        out = ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups]
     return out
 
 
@@ -6379,7 +6478,7 @@ def render_news_feed_page(
     """
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption(
-        "直接匯整 [AllSides Balanced News](https://www.allsides.com/unbiased-balanced-news) 的 **Headline Roundups**，以 Left / Center / Right 方式呈現同一議題的不同來源。"
+        "直接匯整 AllSides 的 **Asia / Taiwan Headline Roundups**，優先呈現台灣與中國／印太相關議題，並以 Left / Center / Right 方式對照來源。"
     )
 
     current_source_key = "allsides_headline_roundups_v1"
@@ -6411,10 +6510,10 @@ def render_news_feed_page(
             type="primary",
             key="feed_fetch_btn",
             on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
-            help="直接讀取 AllSides Balanced News 公開頁面的 Headline Roundups。",
+            help="直接讀取 AllSides Asia / Taiwan 相關 Headline Roundups；若標籤頁被擋，使用內建 AllSides 台灣／亞洲種子集。",
         )
     with col_src:
-        st.caption("資料來源：AllSides Headline Roundups。AllSides 主張「unbiased news doesn't exist」，所以用 Left / Center / Right 對照呈現。")
+        st.caption("資料來源：AllSides Asia / Taiwan Headline Roundups。標籤頁若被 Cloudflare 擋住，會改用內建的 AllSides 台灣／亞洲 roundup 連結。")
 
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
@@ -6450,8 +6549,8 @@ def render_news_feed_page(
 
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
-        st.success(f"已載入 {len(feed)} 則 AllSides Headline Roundups。")
-        st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位（依 AllSides 頁面提供內容）。")
+        st.success(f"已載入 {len(feed)} 則 AllSides 亞洲／台灣 Roundups。")
+        st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位；台灣相關議題優先。")
     with col_refresh:
         if st.button("🔄 重新整理", key="feed_refresh_btn"):
             try:
