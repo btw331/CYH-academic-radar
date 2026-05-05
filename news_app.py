@@ -5489,6 +5489,15 @@ def _allsides_source_mode_label(mode: str) -> str:
     return labels.get(mode or "", "未知來源")
 
 
+def _allsides_source_mode_note(mode: str) -> str:
+    notes = {
+        "allsides_tag_page": "即時資料：直接由 AllSides 標籤頁解析，最接近目前頁面內容。",
+        "allsides_rss_filter": "部分即時：由 AllSides RSS 以 Asia/Taiwan 關鍵字過濾，可能不是完整三欄 Roundup。",
+        "built_in_seed": "參考資料：用內建 AllSides 台灣／亞洲 Roundup 補足數量，不代表最新新聞。",
+    }
+    return notes.get(mode or "", "未知來源：請以原始連結與載入時間交叉確認。")
+
+
 ALLSIDES_BALANCED_NEWS_URL = "https://www.allsides.com/unbiased-balanced-news"
 ALLSIDES_ASIA_URL = "https://www.allsides.com/tags/asia?search=asia"
 ALLSIDES_TAIWAN_URL = "https://www.allsides.com/tags/taiwan?search=taiwan"
@@ -5845,10 +5854,13 @@ def _render_allsides_roundup_card(
     summary = _normalize_feed_field(roundup.get("summary"), list_join="\n")
     story_url = _normalize_feed_field(roundup.get("story_url") or roundup.get("url"))
     perspectives = roundup.get("perspectives") if isinstance(roundup.get("perspectives"), list) else []
+    source_mode = _normalize_feed_field(roundup.get("source_mode"))
+    source_label = _allsides_source_mode_label(source_mode)
+    fetched_at = _normalize_feed_field(roundup.get("fetched_at"))
     news_id = hashlib.md5(f"allsides_{title}_{index}".encode("utf-8")).hexdigest()[:12]
 
     with st.container(border=True):
-        st.caption("HEADLINE ROUNDUP · AllSides")
+        st.caption("HEADLINE ROUNDUP · AllSides" + (f" · {source_label}" if source_mode else "") + (f" · {fetched_at}" if fetched_at else ""))
         if story_url.startswith(("http://", "https://")):
             st.markdown(f"### [{title}]({story_url})")
         else:
@@ -6777,7 +6789,7 @@ def render_news_feed_page(
         "直接匯整 AllSides 的 **Asia / Taiwan Headline Roundups**，優先呈現台灣與中國／印太相關議題，並以 Left / Center / Right 方式對照來源。"
     )
 
-    current_source_key = "allsides_headline_roundups_v2"
+    current_source_key = "allsides_headline_roundups_v3"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
@@ -6835,18 +6847,18 @@ def render_news_feed_page(
         )
     with col_summary:
         st.button(
-            "✨ Gemini 重點整理",
+            "✨ Gemini 整批重點",
             type="secondary",
             key="feed_summary_btn",
             on_click=lambda: st.session_state.update({"feed_do_summary": True}),
-            help="用 Gemini 將目前 AllSides 亞洲／台灣 roundups 整理成總覽、台灣重點與左右中框架差異。",
+            help="整批整理會消耗較多 input token；若只關心單一議題，建議先用每張卡片的「比較此議題框架」。",
         )
     with col_src:
-        st.caption("資料來源：AllSides Asia / Taiwan Headline Roundups。標籤頁若被 Cloudflare 擋住，會改用內建的 AllSides 台灣／亞洲 roundup 連結。")
+        st.caption("建議流程：先載入 Roundups → 挑單則做框架比較（省 token）→ 需要完整脈絡時再進入多元議題分析。")
 
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
-        st.info("請點擊 **「⚖️ 載入 AllSides Roundups」**。")
+        st.info("請點擊 **「⚖️ 載入 AllSides Roundups」**。此步驟不呼叫 Gemini；只有按下摘要或單則比較時才會使用 Gemini token。")
         return
     if not feed:
         st.warning("**取得完成，但沒有抓到 AllSides Headline Roundups。**")
@@ -6883,8 +6895,11 @@ def render_news_feed_page(
         mode_text = "｜".join(f"{_allsides_source_mode_label(k)} {v}" for k, v in mode_counts.items())
         fetched_at = _normalize_feed_field(feed[0].get("fetched_at")) if feed and isinstance(feed[0], dict) else ""
         st.caption(f"資料來源狀態：{mode_text}" + (f"｜更新：{fetched_at}" if fetched_at else ""))
+        with st.expander("資料新鮮度與可信度說明", expanded=False):
+            for mode in mode_counts:
+                st.markdown(f"- **{_allsides_source_mode_label(mode)}**：{_allsides_source_mode_note(mode)}")
         if any((x.get("source_mode") == "built_in_seed") for x in feed if isinstance(x, dict)):
-            st.warning("目前使用內建參考資料，代表 AllSides 即時標籤頁與 RSS fallback 可能無法取得足夠亞洲／台灣資料。")
+            st.warning("目前混有內建參考資料，請把它視為閱讀範例與歷史 Roundup 補足，不要當成最新新聞。")
         st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位；台灣相關議題優先。")
         if st.session_state.get("allsides_llm_summary"):
             st.caption(f"✨ 已用 Gemini 整理（{feed_llm_model}）。")
@@ -6905,6 +6920,8 @@ def render_news_feed_page(
     if summary_text:
         with st.expander("✨ Gemini 摘要與重點整理", expanded=True):
             st.markdown(summary_text)
+    else:
+        st.caption("省 token 建議：先閱讀卡片摘要；只對重要單則使用「✨ 比較此議題框架」，最後才使用整批重點整理。")
 
     for idx, roundup in enumerate(feed):
         _render_allsides_roundup_card(roundup, idx, feed_llm_key, feed_llm_model)
@@ -7806,12 +7823,15 @@ def render_changelog_page() -> None:
 ### 介面與導覽
 - **已移除應用程式標題上的版本號**（側欄與瀏覽器分頁標題改為「多元觀點解析」）。
 - **新增本頁**：集中說明近期修改，方便對照舊版行為。
+- **全球情報移至側欄最上方並設為預設入口**：先看 AllSides 亞洲／台灣 Roundups，再進入摘要、單則框架比較或深度分析。
+- **側欄設定減量**：分析引擎、詳盡度、盲測模式與 Tavily 搜尋設定只在「多元議題分析」頁顯示；舊情報匯入只在分析相關頁面顯示。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
 - **側欄「模型與金鑰」**：只保留 Gemini Key 與 Gemini 型號選擇。
-- **API 驗證**：「多元議題分析」需一併驗證 Tavily；「全球情報」以 RSS 為主時可只驗證 Gemini。
-- **全球情報**：預設 **RSS 訂閱**（快速、免 Tavily）；可選 **Gemini 綜整** 或 **進階 Tavily**。
+- **API 驗證**：「多元議題分析」需一併驗證 Tavily；「全球情報」只在 Gemini 摘要／框架比較時需要 Gemini Key。
+- **全球情報**：預設直接匯整 **AllSides Asia / Taiwan Headline Roundups**；載入 Roundups 不耗 Gemini token，整批摘要與單則框架比較才會呼叫 Gemini。
+- **資料來源透明度**：全球情報會標示即時標籤頁、RSS 關鍵字過濾或內建參考資料，並說明各來源的新鮮度與限制。
 - **匯出**：Markdown／HTML 報告標題已改用「多元觀點分析報告」（無版本號）。
 
 ### 先前已實作且仍適用
@@ -7899,15 +7919,15 @@ def render_methodology_page() -> None:
 # 5. UI
 # ==========================================
 if "current_page" not in st.session_state:
-    st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
+    st.session_state["current_page"] = "📰 全球情報 (News Feed)"
 
 with st.sidebar:
     st.title("多元觀點解析")
     st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
     _nav_pages = [
+        "📰 全球情報 (News Feed)",
         "🚀 多元議題分析 (Deep Analysis)",
         "🧾 新聞文本分析 (Text Analysis)",
-        "📰 全球情報 (News Feed)",
         "📚 方法論 (Methodology)",
         "📋 本次修改 (Updates)",
     ]
@@ -7969,28 +7989,32 @@ with st.sidebar:
         _sidebar_nav_to("📋 本次修改 (Updates)")
 
     current_page = st.session_state.get("current_page", _nav_pages[0])
-    st.markdown("---")
-    analysis_mode = st.radio(
-        "選擇分析引擎：",
-        options=["多元深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-        captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
-        index=0
-    )
-    analysis_depth = st.selectbox(
-        "分析詳盡度",
-        options=["標準", "快速", "深度"],
-        index=0,
-        help="快速：較短、便於瀏覽；標準：平衡完整性與可讀性；深度：較完整但輸出較長。",
-        key="analysis_depth",
-    )
-    st.markdown("---")
-    
-    blind_mode = st.toggle("🙈 盲測模式", value=False)
     is_deep_analysis_page = current_page == "🚀 多元議題分析 (Deep Analysis)"
     is_feed_page = current_page == "📰 全球情報 (News Feed)"
     is_text_page = current_page == "🧾 新聞文本分析 (Text Analysis)"
     is_methodology_page = current_page == "📚 方法論 (Methodology)"
     is_changelog_page = current_page == "📋 本次修改 (Updates)"
+    analysis_mode = "多元深度解析 (Fusion)"
+    analysis_depth = st.session_state.get("analysis_depth", "標準")
+    blind_mode = False
+
+    if is_deep_analysis_page:
+        st.markdown("---")
+        analysis_mode = st.radio(
+            "選擇分析引擎：",
+            options=["多元深度解析 (Fusion)", "未來發展推演 (Scenario)"],
+            captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
+            index=0
+        )
+        analysis_depth = st.selectbox(
+            "分析詳盡度",
+            options=["標準", "快速", "深度"],
+            index=["標準", "快速", "深度"].index(analysis_depth) if analysis_depth in ["標準", "快速", "深度"] else 0,
+            help="快速：較短、便於瀏覽；標準：平衡完整性與可讀性；深度：較完整但輸出較長。",
+            key="analysis_depth",
+        )
+        blind_mode = st.toggle("🙈 盲測模式", value=False)
+        st.markdown("---")
     tavily_key = st.session_state.get("tavily_key", "")
     search_days = 30
     max_results = 30
@@ -8001,8 +8025,12 @@ with st.sidebar:
     past_report_input = ""
 
     st.markdown("#### 狀態")
-    st.caption(f"模型：Gemini｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
-    st.caption(f"Tavily：{'已啟用' if tavily_key else '未啟用'}｜Fact Check：{'開' if enable_google_fact_check else '關'}")
+    st.caption(f"目前頁面：{current_page}")
+    if is_deep_analysis_page:
+        st.caption(f"模型：Gemini｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
+        st.caption(f"Tavily：{'已啟用' if tavily_key else '未啟用'}｜Fact Check：{'開' if enable_google_fact_check else '關'}")
+    elif is_feed_page:
+        st.caption("全球情報：載入 AllSides 不耗 Gemini token；摘要／單則比較才會呼叫 Gemini。")
     
     with st.expander("🔑 模型與金鑰", expanded=not (is_methodology_page or is_changelog_page)):
         st.info("⚠️ API Key 不會永久儲存，重新整理後需再次輸入")
@@ -8027,7 +8055,7 @@ with st.sidebar:
             st.caption("⚡ **3.0 Flash**：快速備援")
 
         needs_tavily_for_validate = is_deep_analysis_page
-        if st.button("🔐 驗證 API Key", help="多元議題分析需一併驗證 Tavily；全球情報以 RSS 為主時僅需驗證 Gemini。"):
+        if st.button("🔐 驗證 API Key", help="多元議題分析需一併驗證 Tavily；全球情報載入 AllSides 不需 Key，只有 Gemini 摘要／比較需驗證 Gemini。"):
             tavily_key_for_check = st.session_state.get("tavily_key", "")
             if not (google_key or "").strip():
                 st.warning("⚠️ 請先輸入 Gemini Key")
@@ -8047,7 +8075,7 @@ with st.sidebar:
 
     if is_deep_analysis_page:
         with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
-            tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於「多元議題分析」新聞搜尋；「全球情報」進階 Tavily 載入時亦需要。", key="tavily_key")
+            tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="僅用於「多元議題分析」新聞搜尋；全球情報目前走 AllSides，不使用 Tavily。", key="tavily_key")
             if tavily_key:
                 st.success("✅ Tavily 搜尋已啟用")
             else:
@@ -8080,35 +8108,36 @@ with st.sidebar:
                 help="可關閉以僅使用中文查詢對歐美網域保底。",
             )
 
-    with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
-        uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
-        default_text = ""
-        is_json_upload = False
-        if uploaded_file:
-            try:
-                if uploaded_file.name.endswith(".json"):
-                    is_json_upload = True
-                    st.success(f"✅ 完整存檔: {uploaded_file.name}")
-                else:
-                    default_text = uploaded_file.getvalue().decode("utf-8")
-                    st.success(f"✅ 文字檔: {uploaded_file.name}")
-            except Exception as e:
-                logger.warning(f"檔案讀取失敗: {str(e)}")
-                st.warning("⚠️ 檔案讀取失敗，請檢查檔案格式")
-
-        past_report_input = st.text_area("或貼上內容：", value=default_text, height=150)
-        
-        if uploaded_file and st.button("🔄 確認載入/還原"):
-            if is_json_upload:
+    if is_deep_analysis_page or is_text_page:
+        with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
+            uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
+            default_text = ""
+            is_json_upload = False
+            if uploaded_file:
                 try:
-                    state_data = json.load(uploaded_file)
-                    st.session_state.result = state_data.get("result")
-                    st.session_state.scenario_result = state_data.get("scenario_result")
-                    st.session_state.sources = state_data.get("sources")
-                    st.rerun()
-                except: st.error("JSON 解析失敗")
-            else:
-                st.toast("✅ 文字已匯入")
+                    if uploaded_file.name.endswith(".json"):
+                        is_json_upload = True
+                        st.success(f"✅ 完整存檔: {uploaded_file.name}")
+                    else:
+                        default_text = uploaded_file.getvalue().decode("utf-8")
+                        st.success(f"✅ 文字檔: {uploaded_file.name}")
+                except Exception as e:
+                    logger.warning(f"檔案讀取失敗: {str(e)}")
+                    st.warning("⚠️ 檔案讀取失敗，請檢查檔案格式")
+
+            past_report_input = st.text_area("或貼上內容：", value=default_text, height=150)
+            
+            if uploaded_file and st.button("🔄 確認載入/還原"):
+                if is_json_upload:
+                    try:
+                        state_data = json.load(uploaded_file)
+                        st.session_state.result = state_data.get("result")
+                        st.session_state.scenario_result = state_data.get("scenario_result")
+                        st.session_state.sources = state_data.get("sources")
+                        st.rerun()
+                    except: st.error("JSON 解析失敗")
+                else:
+                    st.toast("✅ 文字已匯入")
 
     # ==================== 學術方法論詳解 ====================
     st.markdown("---")
