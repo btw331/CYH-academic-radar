@@ -5685,6 +5685,13 @@ def _filter_allsides_roundups_by_topic(roundups: List[Dict[str, Any]], topic: st
     return out
 
 
+def _allsides_topic_counts(roundups: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for topic in ALLSIDES_TOPIC_FILTERS:
+        counts[topic] = len(_filter_allsides_roundups_by_topic(roundups, topic))
+    return counts
+
+
 def _fetch_allsides_rss_filtered_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
     """
     AllSides tag 頁被擋時的第二 fallback：讀公開 RSS，再用 Asia/Taiwan 關鍵字過濾。
@@ -6959,14 +6966,19 @@ def render_news_feed_page(
             st.rerun()
 
     topic_options = list(ALLSIDES_TOPIC_FILTERS.keys())
+    topic_counts = _allsides_topic_counts(feed)
     selected_feed_topic = st.radio(
         "主題篩選",
         options=topic_options,
         index=topic_options.index(st.session_state.get("allsides_topic_filter", "全部")) if st.session_state.get("allsides_topic_filter", "全部") in topic_options else 0,
+        format_func=lambda topic: f"{topic} ({topic_counts.get(topic, 0)})",
         key="allsides_topic_filter",
         horizontal=True,
         help="依標題、摘要、AllSides 連結與三欄來源標題做關鍵字篩選；不會重新抓取資料，也不消耗 Gemini token。",
     )
+    nonzero_topics = [f"{topic} {count}" for topic, count in topic_counts.items() if topic != "全部" and count > 0]
+    if nonzero_topics:
+        st.caption("本批主題覆蓋：" + "｜".join(nonzero_topics))
     display_feed = _filter_allsides_roundups_by_topic(feed, selected_feed_topic or "全部")
     if selected_feed_topic and selected_feed_topic != "全部":
         st.caption(f"目前顯示「{selected_feed_topic}」相關 {len(display_feed)} 則；原始載入 {len(feed)} 則。")
@@ -7925,6 +7937,7 @@ def render_changelog_page() -> None:
 - **方法論長文移出側欄**：側欄只保留短提示，完整方法、限制與流程統一放在「📚 方法論」頁，降低操作干擾。
 - **方法論完整細節補回專頁**：原本側欄的長版方法說明已移入「📚 方法論」頁的「完整細節」分頁，以 expander 保留分析流程、檢索、證據、框架、資訊操作與透明度說明。
 - **全球情報主題篩選**：AllSides Roundups 新增「全部／台灣／中國／印太安全／半導體／朝鮮半島／日本／印度」快速篩選，不重新抓取資料也不消耗 Gemini token。
+- **全球情報主題覆蓋提示**：主題篩選選項會顯示目前批次的則數，並在篩選列下方摘要本批資料涵蓋哪些主題。
 - **Gemini 主題摘要優化**：「全球情報」的 Gemini 整理會依目前主題篩選範圍摘要，並改用相容 Streamlit 1.28 的水平 radio。
 - **Gemini 主題摘要快取**：不同主題的摘要會分開保存，切回已整理主題可直接查看，避免混用舊摘要與重複消耗 token。
 
