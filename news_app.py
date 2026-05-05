@@ -5382,6 +5382,7 @@ RSS_FEED_URLS = [
     "https://feeds.npr.org/1001/rss.xml",
     "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
     "https://www.theguardian.com/world/rss",
+    "https://www.aljazeera.com/xml/rss/all.xml",
 ]
 
 def _get_feed_source_badges(url_or_domain: str) -> List[str]:
@@ -5772,13 +5773,25 @@ def _title_fallback_from_url(url: str) -> str:
         return ""
 
 
+def _canonical_http_url(url: str) -> str:
+    """正規化 RSS 連結（protocol-relative `//`、空白）。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        return "https:" + u
+    return u
+
+
 def _fetch_rss_raw() -> List[Dict[str, Any]]:
     """從 RSS_FEED_URLS 抓取標題／連結／摘要，不依賴 Tavily。使用 requests + xml 解析。"""
     import xml.etree.ElementTree as ET
 
     entries: List[Dict[str, Any]] = []
-    # 使用常見瀏覽器 User-Agent，降低被部分來源拒絕的機率
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, application/atom+xml, text/xml;q=0.9, */*;q=0.8",
+    }
 
     def _local_name(tag: str) -> str:
         return tag.split("}")[-1] if "}" in tag else tag
@@ -5805,7 +5818,7 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
 
     for url in RSS_FEED_URLS:
         try:
-            r = requests.get(url, timeout=15, headers=headers)
+            r = requests.get(url, timeout=22, headers=headers)
             r.raise_for_status()
             r.encoding = r.encoding or "utf-8"
             text = r.text
@@ -5832,6 +5845,19 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                         if h.startswith("http"):
                             link = h
                             break
+                if not link:
+                    guid_el = _find_any(item, "guid")
+                    if guid_el is not None:
+                        gt = _rss_element_plain_text(guid_el) or ((guid_el.text or "").strip())
+                        if gt.startswith("http"):
+                            link = gt
+                if not link:
+                    id_el = item.find("{http://www.w3.org/2005/Atom}id")
+                    if id_el is not None:
+                        it = (id_el.text or "").strip()
+                        if it.startswith("http"):
+                            link = it
+                link = _canonical_http_url(link)
                 desc_el = (
                     _find_any(item, "description", "summary", "content")
                     or item.find("description")
@@ -5883,16 +5909,16 @@ def _rss_raw_to_feed_items(raw: List[Dict[str, Any]], max_items: int = 48) -> Li
     seen: set[str] = set()
     out: List[Dict[str, Any]] = []
     for r in raw:
-        url = _normalize_feed_field(r.get("url"))
-        if not url.startswith(("http://", "https://")):
-            continue
-        key = url.lower().rstrip("/")
-        if key in seen:
-            continue
-        seen.add(key)
+        url = _canonical_http_url(_normalize_feed_field(r.get("url")))
         title = _normalize_feed_field(r.get("title")) or ""
         if not title or title in ("（無標題）", "(No title)"):
             title = _title_fallback_from_url(url) or "（無標題）"
+        if not url.startswith(("http://", "https://")) and title == "（無標題）":
+            continue
+        key = url.lower().rstrip("/") if url.startswith(("http://", "https://")) else f"t:{title[:160].lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
         content = _normalize_feed_field(r.get("content") or "", list_join=" ")[:400]
         topic = _infer_topic_from_text(title, content)
         continent = _continent_hint_from_url(url)
@@ -5928,7 +5954,10 @@ def fetch_intelligence_feed_rss_display() -> List[Dict[str, Any]]:
     全球情報預設資料源：抓取 RSS 訂閱並轉為卡片列表，**不呼叫** Gemini／Tavily。
     """
     raw = _fetch_rss_raw()
-    return _rss_raw_to_feed_items(raw)
+    out = _rss_raw_to_feed_items(raw)
+    if raw and not out:
+        logger.warning("fetch_intelligence_feed_rss_display: 原始 RSS %d 筆但轉卡片 0 筆", len(raw))
+    return out
 
 
 @st.cache_data(ttl=1800)
@@ -6026,7 +6055,7 @@ def render_news_feed_page(
         "預設使用 **國際 RSS 訂閱** 匯集標題與摘要，速度較快、不耗 Tavily／Gemini；需要時再按下方按鈕做 **Gemini 綜整** 或 **Tavily 進階搜尋**。"
     )
 
-    current_source_key = "rss_primary_v1"
+    current_source_key = "rss_primary_v2"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
@@ -6042,10 +6071,18 @@ def render_news_feed_page(
             with st.spinner("正在抓取 RSS…（約數秒，不呼叫 AI）"):
                 fetch_intelligence_feed_rss_display.clear()
                 feed = fetch_intelligence_feed_rss_display()
+                if not feed:
+                    raw_retry = _fetch_rss_raw()
+                    feed = _rss_raw_to_feed_items(raw_retry, max_items=48)
+                    st.session_state["feed_diag_msg"] = (
+                        f"自動重試：原始 RSS **{len(raw_retry)}** 筆，可顯示 **{len(feed)}** 張卡片。"
+                    )
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
             st.session_state["feed_last_load_mode"] = "rss"
             st.session_state["feed_gemini_summarized"] = False
             st.session_state.pop("feed_llm_last_error", None)
+            if feed:
+                st.session_state.pop("feed_diag_msg", None)
         except Exception as e:
             logger.exception("載入 RSS 全球情報失敗")
             st.session_state["intelligence_feed_data"] = []
@@ -6146,13 +6183,31 @@ def render_news_feed_page(
         st.warning("**取得完成，但沒有可用要聞。**")
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
-- **RSS**：來源暫時無法連線、被阻擋或格式異常 → 請稍後重試或檢查網路／防火牆。
-- **Gemini 綜整**：Key 或配額問題 → 檢查側邊欄 Gemini Key，或改選 Flash 型號。
+- **RSS**：若完全抓不到國際新聞站，常見為 **網路／公司防火牆／代理** 阻擋 HTTPS，或暫時無法連線。
+- **Gemini 綜整**：Key 或配額問題 → 檢查側欄 Gemini Key，或改選 Flash 型號。
 - **Tavily**：配額或 Key 錯誤 → 見 [Tavily Dashboard](https://app.tavily.com/)。
             """)
-        if st.button("🔄 再試一次", key="feed_retry_empty"):
-            st.session_state["feed_do_fetch"] = True
-            st.rerun()
+        if st.button("🔧 診斷 RSS（繞過快取、直接連線）", key="feed_diag_btn"):
+            fetch_intelligence_feed_rss_display.clear()
+            with st.spinner("正在測試 RSS…"):
+                raw_diag = _fetch_rss_raw()
+                card_diag = _rss_raw_to_feed_items(raw_diag)
+            st.session_state["feed_diag_msg"] = (
+                f"診斷：訂閱 URL 共抓到 **{len(raw_diag)}** 筆原始條目，可顯示 **{len(card_diag)}** 張卡片。"
+                f" 若原始為 0，請檢查本機能否瀏覽國際網站或關閉攔截；若原始>0、卡片仍 0，請回報。"
+            )
+        _dm = st.session_state.get("feed_diag_msg")
+        if _dm:
+            st.info(_dm)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🔄 再試一次", key="feed_retry_empty"):
+                st.session_state["feed_do_fetch"] = True
+                st.rerun()
+        with col_b:
+            if st.button("清除診斷訊息", key="feed_clear_diag"):
+                st.session_state.pop("feed_diag_msg", None)
+                st.rerun()
         return
 
     col_info, col_refresh = st.columns([3, 1])
