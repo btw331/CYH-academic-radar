@@ -5748,6 +5748,70 @@ def _render_allsides_roundup_card(roundup: Dict[str, Any], index: int) -> None:
             st.rerun()
 
 
+def _format_allsides_roundups_for_llm(roundups: List[Dict[str, Any]], max_items: int = 8) -> str:
+    """將 AllSides roundups 壓成 Gemini 可讀的精簡輸入。"""
+    blocks: List[str] = []
+    for i, item in enumerate(roundups[:max_items], 1):
+        title = _normalize_feed_field(item.get("title"))
+        summary = _short_feed_text(_normalize_feed_field(item.get("summary"), list_join=" "), 500)
+        story_url = _normalize_feed_field(item.get("story_url") or item.get("url"))
+        lines = [f"[{i}] {title}", f"AllSides URL: {story_url}"]
+        if summary:
+            lines.append(f"AllSides summary: {summary}")
+        perspectives = item.get("perspectives") if isinstance(item.get("perspectives"), list) else []
+        for p in perspectives:
+            bias = _normalize_feed_field(p.get("bias"))
+            p_title = _normalize_feed_field(p.get("title"))
+            source = _normalize_feed_field(p.get("source"))
+            if p_title or source:
+                lines.append(f"- {bias}: {p_title or '（未提供標題）'} | {source}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def summarize_allsides_roundups_with_llm(
+    roundups: List[Dict[str, Any]],
+    api_key: str,
+    model_name: str = DEFAULT_GEMINI_MODEL,
+) -> str:
+    """用 Gemini 對 AllSides Asia/Taiwan roundups 做重點整理。"""
+    if not roundups:
+        return ""
+    if not api_key or not (api_key or "").strip():
+        raise ValueError("未提供 Gemini API Key")
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    system_prompt = """你是台灣使用者的國際新聞編輯與媒體識讀助理。請根據 AllSides 的 Asia/Taiwan headline roundups 做繁體中文重點整理。
+
+要求：
+- 不要臆測；若資料不足，請明確標示「目前 AllSides 摘要不足」。
+- 保留 Left / Center / Right 框架差異，避免把任何單一來源說法當成定論。
+- 台灣相關議題優先；其次才是中國、朝鮮半島、日本、印度與印太安全。
+- 請用繁體中文，語氣中性、清楚、可快速閱讀。
+
+輸出格式：
+## 今日總覽
+3-5 點，說明目前 AllSides 亞洲／台灣 roundups 的主軸。
+
+## 台灣相關重點
+若有台灣議題，列 3-5 點；若沒有，說明本批資料沒有明確台灣主題。
+
+## Left / Center / Right 框架差異
+用 3-6 點比較不同來源可能聚焦的角度（例如人權、安全、貿易、政策程序、政黨責任）。
+
+## 後續觀察
+列出 3-5 個值得追蹤的問題或指標。
+
+## 資訊限制
+用 1-3 點說明本整理只基於 AllSides roundups 與其連結摘要，並非完整原文查證。"""
+    user_prompt = f"""日期：{today_str}
+
+以下是 AllSides Asia/Taiwan headline roundups 的精簡資料。請依照指定格式整理：
+
+{_format_allsides_roundups_for_llm(roundups)}
+"""
+    return _call_llm_for_feed(system_prompt, user_prompt, model_name or DEFAULT_GEMINI_MODEL, api_key)
+
+
 def _is_single_camp_source(url_or_domain: str) -> bool:
     """若來源僅屬單一立場（僅藍或僅綠），回傳 True，用於同溫層警示。"""
     if not url_or_domain:
@@ -6476,6 +6540,11 @@ def render_news_feed_page(
     渲染「全球情報」：直接匯整 AllSides Headline Roundups。
     不再使用原本 RSS / Tavily 五大洲匯集作為主流程。
     """
+    google_key_stored = (st.session_state.get("google_api_key") or "").strip()
+    google_key_this_run = (google_key or "").strip()
+    feed_llm_key = google_key_this_run or google_key_stored or None
+    feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
+
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption(
         "直接匯整 AllSides 的 **Asia / Taiwan Headline Roundups**，優先呈現台灣與中國／印太相關議題，並以 Left / Center / Right 方式對照來源。"
@@ -6487,6 +6556,7 @@ def render_news_feed_page(
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
+        st.session_state["allsides_llm_summary"] = None
         st.session_state.pop("feed_diag_msg", None)
 
     if st.session_state.get("feed_do_fetch"):
@@ -6496,6 +6566,7 @@ def render_news_feed_page(
                 fetch_allsides_headline_roundups.clear()
                 feed = fetch_allsides_headline_roundups()
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
+            st.session_state["allsides_llm_summary"] = None
             st.session_state.pop("feed_diag_msg", None)
         except Exception as e:
             logger.exception("載入 AllSides Headline Roundups 失敗")
@@ -6503,7 +6574,28 @@ def render_news_feed_page(
             st.error(f"載入失敗：{str(e)[:200]}。")
         st.rerun()
 
-    col_load, col_src = st.columns([1, 3])
+    if st.session_state.get("feed_do_summary"):
+        st.session_state["feed_do_summary"] = False
+        feed_for_summary = st.session_state.get("intelligence_feed_data") or []
+        if not feed_for_summary:
+            st.warning("請先載入 AllSides Roundups。")
+        elif not feed_llm_key:
+            st.warning("⚠️ 請先在側邊欄輸入 Gemini Key，再進行重點整理。")
+        else:
+            try:
+                with st.spinner("Gemini 正在整理 AllSides 重點…"):
+                    st.session_state["allsides_llm_summary"] = summarize_allsides_roundups_with_llm(
+                        feed_for_summary,
+                        feed_llm_key,
+                        feed_llm_model,
+                    )
+            except Exception as e:
+                logger.exception("AllSides Gemini 重點整理失敗")
+                st.session_state["allsides_llm_summary"] = None
+                st.error(f"重點整理失敗：{str(e)[:200]}")
+        st.rerun()
+
+    col_load, col_summary, col_src = st.columns([1, 1, 2])
     with col_load:
         st.button(
             "⚖️ 載入 AllSides Roundups",
@@ -6511,6 +6603,14 @@ def render_news_feed_page(
             key="feed_fetch_btn",
             on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
             help="直接讀取 AllSides Asia / Taiwan 相關 Headline Roundups；若標籤頁被擋，使用內建 AllSides 台灣／亞洲種子集。",
+        )
+    with col_summary:
+        st.button(
+            "✨ Gemini 重點整理",
+            type="secondary",
+            key="feed_summary_btn",
+            on_click=lambda: st.session_state.update({"feed_do_summary": True}),
+            help="用 Gemini 將目前 AllSides 亞洲／台灣 roundups 整理成總覽、台灣重點與左右中框架差異。",
         )
     with col_src:
         st.caption("資料來源：AllSides Asia / Taiwan Headline Roundups。標籤頁若被 Cloudflare 擋住，會改用內建的 AllSides 台灣／亞洲 roundup 連結。")
@@ -6551,6 +6651,8 @@ def render_news_feed_page(
     with col_info:
         st.success(f"已載入 {len(feed)} 則 AllSides 亞洲／台灣 Roundups。")
         st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位；台灣相關議題優先。")
+        if st.session_state.get("allsides_llm_summary"):
+            st.caption(f"✨ 已用 Gemini 整理（{feed_llm_model}）。")
     with col_refresh:
         if st.button("🔄 重新整理", key="feed_refresh_btn"):
             try:
@@ -6558,9 +6660,15 @@ def render_news_feed_page(
                 with st.spinner("重新取得 AllSides…"):
                     feed_new = fetch_allsides_headline_roundups()
                 st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
+                st.session_state["allsides_llm_summary"] = None
             except Exception as e:
                 st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
+
+    summary_text = st.session_state.get("allsides_llm_summary")
+    if summary_text:
+        with st.expander("✨ Gemini 摘要與重點整理", expanded=True):
+            st.markdown(summary_text)
 
     for idx, roundup in enumerate(feed):
         _render_allsides_roundup_card(roundup, idx)
