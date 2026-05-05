@@ -6797,6 +6797,7 @@ def render_news_feed_page(
         st.session_state["intelligence_feed_source"] = current_source_key
         st.session_state["allsides_llm_summary"] = None
         st.session_state["allsides_card_summaries"] = {}
+        st.session_state["feed_auto_fetch_attempted"] = False
         st.session_state.pop("feed_diag_msg", None)
 
     if st.session_state.get("feed_do_fetch"):
@@ -6814,6 +6815,22 @@ def render_news_feed_page(
             st.session_state["intelligence_feed_data"] = []
             st.error(f"載入失敗：{str(e)[:200]}。")
         st.rerun()
+
+    if (
+        st.session_state.get("intelligence_feed_data") is None
+        and not st.session_state.get("feed_auto_fetch_attempted")
+    ):
+        st.session_state["feed_auto_fetch_attempted"] = True
+        try:
+            with st.spinner("首次進入，正在自動載入 AllSides Headline Roundups…"):
+                feed = fetch_allsides_headline_roundups()
+            st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
+            st.session_state["allsides_llm_summary"] = None
+            st.session_state["allsides_card_summaries"] = {}
+        except Exception as e:
+            logger.exception("首次自動載入 AllSides Headline Roundups 失敗")
+            st.session_state["intelligence_feed_data"] = []
+            st.warning(f"首次自動載入失敗：{str(e)[:200]}。可稍後按「重新整理」再試。")
 
     if st.session_state.get("feed_do_summary"):
         st.session_state["feed_do_summary"] = False
@@ -6858,7 +6875,7 @@ def render_news_feed_page(
 
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
-        st.info("請點擊 **「⚖️ 載入 AllSides Roundups」**。此步驟不呼叫 Gemini；只有按下摘要或單則比較時才會使用 Gemini token。")
+        st.info("正在準備 AllSides Roundups。此步驟不呼叫 Gemini；只有按下摘要或單則比較時才會使用 Gemini token。")
         return
     if not feed:
         st.warning("**取得完成，但沒有抓到 AllSides Headline Roundups。**")
