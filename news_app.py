@@ -5507,6 +5507,16 @@ ALLSIDES_ASIA_TAIWAN_KEYWORDS = (
     "japan", "korea", "north korea", "south korea", "philippines",
     "india", "pakistan", "semiconductor", "tsmc",
 )
+ALLSIDES_TOPIC_FILTERS = {
+    "全部": (),
+    "台灣": ("taiwan", "taipei", "tsai", "lai ching-te", "william lai", "taiwanese", "台灣", "臺灣", "台北", "賴清德", "蔡英文"),
+    "中國": ("china", "chinese", "beijing", "xi jinping", "ccp", "中國", "北京", "習近平", "中共"),
+    "印太安全": ("indo-pacific", "south china sea", "taiwan strait", "military drill", "navy", "defense", "security", "philippines", "印太", "南海", "台海", "臺海", "軍演", "國防", "安全"),
+    "半導體": ("semiconductor", "chip", "chips", "tsmc", "supply chain", "ai chip", "半導體", "晶片", "台積電", "供應鏈"),
+    "朝鮮半島": ("north korea", "south korea", "korea", "kim jong", "pyongyang", "seoul", "北韓", "南韓", "韓國", "朝鮮", "平壤", "首爾"),
+    "日本": ("japan", "japanese", "tokyo", "kishida", "ishiba", "日本", "東京"),
+    "印度": ("india", "indian", "modi", "new delhi", "pakistan", "印度", "莫迪", "新德里", "巴基斯坦"),
+}
 ALLSIDES_MIN_ROUNDUPS = 6
 ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS = [
     {
@@ -5642,6 +5652,37 @@ def _supplement_allsides_roundups(
 def _allsides_item_matches_asia_taiwan(title: str, summary: str = "", url: str = "") -> bool:
     haystack = f"{title} {summary} {url}".lower()
     return any(k in haystack for k in ALLSIDES_ASIA_TAIWAN_KEYWORDS)
+
+
+def _allsides_roundup_search_text(roundup: Dict[str, Any]) -> str:
+    parts = [
+        _normalize_feed_field(roundup.get("title")),
+        _normalize_feed_field(roundup.get("summary"), list_join=" "),
+        _normalize_feed_field(roundup.get("story_url") or roundup.get("url")),
+        _normalize_feed_field(roundup.get("analysis_keywords")),
+    ]
+    perspectives = roundup.get("perspectives") if isinstance(roundup.get("perspectives"), list) else []
+    for perspective in perspectives:
+        if not isinstance(perspective, dict):
+            continue
+        parts.extend([
+            _normalize_feed_field(perspective.get("title")),
+            _normalize_feed_field(perspective.get("source")),
+            _normalize_feed_field(perspective.get("url")),
+        ])
+    return " ".join(p for p in parts if p).lower()
+
+
+def _filter_allsides_roundups_by_topic(roundups: List[Dict[str, Any]], topic: str) -> List[Dict[str, Any]]:
+    keywords = ALLSIDES_TOPIC_FILTERS.get(topic) or ()
+    if not keywords:
+        return roundups
+    out: List[Dict[str, Any]] = []
+    for roundup in roundups:
+        haystack = _allsides_roundup_search_text(roundup)
+        if any(keyword.lower() in haystack for keyword in keywords):
+            out.append(roundup)
+    return out
 
 
 def _fetch_allsides_rss_filtered_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
@@ -6933,6 +6974,22 @@ def render_news_feed_page(
                 st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
 
+    topic_options = list(ALLSIDES_TOPIC_FILTERS.keys())
+    selected_feed_topic = st.segmented_control(
+        "主題篩選",
+        options=topic_options,
+        default=st.session_state.get("allsides_topic_filter", "全部") if st.session_state.get("allsides_topic_filter", "全部") in topic_options else "全部",
+        key="allsides_topic_filter",
+        help="依標題、摘要、AllSides 連結與三欄來源標題做關鍵字篩選；不會重新抓取資料，也不消耗 Gemini token。",
+    )
+    display_feed = _filter_allsides_roundups_by_topic(feed, selected_feed_topic or "全部")
+    if selected_feed_topic and selected_feed_topic != "全部":
+        st.caption(f"目前顯示「{selected_feed_topic}」相關 {len(display_feed)} 則；原始載入 {len(feed)} 則。")
+        if not display_feed:
+            st.info("此批 Roundups 沒有符合這個主題的項目，可切回「全部」或按「重新整理」。")
+    else:
+        st.caption("目前顯示全部 Roundups。")
+
     summary_text = st.session_state.get("allsides_llm_summary")
     if summary_text:
         with st.expander("✨ Gemini 摘要與重點整理", expanded=True):
@@ -6940,7 +6997,7 @@ def render_news_feed_page(
     else:
         st.caption("省 token 建議：先閱讀卡片摘要；只對重要單則使用「✨ 比較此議題框架」，最後才使用整批重點整理。")
 
-    for idx, roundup in enumerate(feed):
+    for idx, roundup in enumerate(display_feed):
         _render_allsides_roundup_card(roundup, idx, feed_llm_key, feed_llm_model)
 
 
@@ -7843,6 +7900,7 @@ def render_changelog_page() -> None:
 - **全球情報移至側欄最上方並設為預設入口**：先看 AllSides 亞洲／台灣 Roundups，再進入摘要、單則框架比較或深度分析。
 - **側欄設定減量**：分析引擎、詳盡度、盲測模式與 Tavily 搜尋設定只在「多元議題分析」頁顯示；舊情報匯入只在分析相關頁面顯示。
 - **方法論長文移出側欄**：側欄只保留短提示，完整方法、限制與流程統一放在「📚 方法論」頁，降低操作干擾。
+- **全球情報主題篩選**：AllSides Roundups 新增「全部／台灣／中國／印太安全／半導體／朝鮮半島／日本／印度」快速篩選，不重新抓取資料也不消耗 Gemini token。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
