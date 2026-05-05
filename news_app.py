@@ -6837,6 +6837,7 @@ def render_news_feed_page(
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
         st.session_state["allsides_llm_summary"] = None
+        st.session_state["allsides_llm_summaries_by_topic"] = {}
         st.session_state["allsides_card_summaries"] = {}
         st.session_state["feed_auto_fetch_attempted"] = False
         st.session_state.pop("feed_diag_msg", None)
@@ -6849,6 +6850,7 @@ def render_news_feed_page(
                 feed = fetch_allsides_headline_roundups()
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
             st.session_state["allsides_llm_summary"] = None
+            st.session_state["allsides_llm_summaries_by_topic"] = {}
             st.session_state["allsides_card_summaries"] = {}
             st.session_state.pop("feed_diag_msg", None)
         except Exception as e:
@@ -6867,6 +6869,7 @@ def render_news_feed_page(
                 feed = fetch_allsides_headline_roundups()
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
             st.session_state["allsides_llm_summary"] = None
+            st.session_state["allsides_llm_summaries_by_topic"] = {}
             st.session_state["allsides_card_summaries"] = {}
         except Exception as e:
             logger.exception("首次自動載入 AllSides Headline Roundups 失敗")
@@ -6938,8 +6941,9 @@ def render_news_feed_page(
         if any((x.get("source_mode") == "built_in_seed") for x in feed if isinstance(x, dict)):
             st.warning("目前混有內建參考資料，請把它視為閱讀範例與歷史 Roundup 補足，不要當成最新新聞。")
         st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位；台灣相關議題優先。")
-        if st.session_state.get("allsides_llm_summary"):
-            st.caption(f"✨ 已用 Gemini 整理（{feed_llm_model}）。")
+        summary_cache = st.session_state.get("allsides_llm_summaries_by_topic") or {}
+        if summary_cache:
+            st.caption(f"✨ 已用 Gemini 整理：{', '.join(summary_cache.keys())}（{feed_llm_model}）。")
     with col_refresh:
         if st.button("🔄 重新整理", key="feed_refresh_btn"):
             try:
@@ -6948,6 +6952,7 @@ def render_news_feed_page(
                     feed_new = fetch_allsides_headline_roundups()
                 st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
                 st.session_state["allsides_llm_summary"] = None
+                st.session_state["allsides_llm_summaries_by_topic"] = {}
                 st.session_state["allsides_card_summaries"] = {}
             except Exception as e:
                 st.error(f"重新整理失敗：{str(e)[:200]}")
@@ -6982,30 +6987,38 @@ def render_news_feed_page(
         else:
             try:
                 with st.spinner(f"Gemini 正在整理「{selected_feed_topic or '全部'}」重點…"):
-                    st.session_state["allsides_llm_summary"] = summarize_allsides_roundups_with_llm(
+                    topic_key = selected_feed_topic or "全部"
+                    summary_cache = dict(st.session_state.get("allsides_llm_summaries_by_topic") or {})
+                    summary_cache[topic_key] = summarize_allsides_roundups_with_llm(
                         feed_for_summary,
                         feed_llm_key,
                         feed_llm_model,
                     )
-                    st.session_state["allsides_llm_summary_topic"] = selected_feed_topic or "全部"
+                    st.session_state["allsides_llm_summaries_by_topic"] = summary_cache
+                    st.session_state["allsides_llm_summary"] = summary_cache[topic_key]
+                    st.session_state["allsides_llm_summary_topic"] = topic_key
             except Exception as e:
                 logger.exception("AllSides Gemini 重點整理失敗")
+                topic_key = selected_feed_topic or "全部"
+                summary_cache = dict(st.session_state.get("allsides_llm_summaries_by_topic") or {})
+                summary_cache.pop(topic_key, None)
+                st.session_state["allsides_llm_summaries_by_topic"] = summary_cache
                 st.session_state["allsides_llm_summary"] = None
                 st.session_state.pop("allsides_llm_summary_topic", None)
                 st.error(f"重點整理失敗：{str(e)[:200]}")
         st.rerun()
 
-    summary_text = st.session_state.get("allsides_llm_summary")
+    current_topic_key = selected_feed_topic or "全部"
+    summary_cache = st.session_state.get("allsides_llm_summaries_by_topic") or {}
+    summary_text = summary_cache.get(current_topic_key)
     if summary_text:
         with st.expander("✨ Gemini 摘要與重點整理", expanded=True):
-            summary_topic = st.session_state.get("allsides_llm_summary_topic")
-            if summary_topic:
-                st.caption(f"整理範圍：{summary_topic}")
-                if summary_topic != (selected_feed_topic or "全部"):
-                    st.info("目前篩選主題已變更；若要更新摘要，請再按一次「Gemini 整理目前主題」。")
+            st.caption(f"整理範圍：{current_topic_key}｜已快取，可切換主題後再切回查看。")
             st.markdown(summary_text)
     else:
-        st.caption("省 token 建議：先閱讀卡片摘要；只對重要單則使用「✨ 比較此議題框架」，最後才使用整批重點整理。")
+        cached_topics = ", ".join(summary_cache.keys())
+        cache_note = f" 已快取主題：{cached_topics}。" if cached_topics else ""
+        st.caption(f"省 token 建議：先閱讀卡片摘要；只對重要單則使用「✨ 比較此議題框架」，最後才使用目前主題整理。{cache_note}")
 
     for idx, roundup in enumerate(display_feed):
         _render_allsides_roundup_card(roundup, idx, feed_llm_key, feed_llm_model)
@@ -7913,6 +7926,7 @@ def render_changelog_page() -> None:
 - **方法論完整細節補回專頁**：原本側欄的長版方法說明已移入「📚 方法論」頁的「完整細節」分頁，以 expander 保留分析流程、檢索、證據、框架、資訊操作與透明度說明。
 - **全球情報主題篩選**：AllSides Roundups 新增「全部／台灣／中國／印太安全／半導體／朝鮮半島／日本／印度」快速篩選，不重新抓取資料也不消耗 Gemini token。
 - **Gemini 主題摘要優化**：「全球情報」的 Gemini 整理會依目前主題篩選範圍摘要，並改用相容 Streamlit 1.28 的水平 radio。
+- **Gemini 主題摘要快取**：不同主題的摘要會分開保存，切回已整理主題可直接查看，避免混用舊摘要與重複消耗 token。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
