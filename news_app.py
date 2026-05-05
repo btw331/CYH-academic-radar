@@ -41,11 +41,6 @@ from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_core.prompts import ChatPromptTemplate
 from tenacity import retry, stop_after_attempt, wait_exponential
 from tavily import TavilyClient
-from feed_allsides import (
-    allsides_source_mode_label as _allsides_source_mode_label,
-    allsides_source_mode_note as _allsides_source_mode_note,
-    fetch_allsides_headline_roundups,
-)
 warnings.filterwarnings("ignore")
 os.environ["on_bad_lines"] = "skip"
 
@@ -5485,7 +5480,7 @@ def _short_feed_text(text: str, limit: int = 120) -> str:
     return (t[:limit].rstrip() + "…") if len(t) > limit else t
 
 
-def _legacy_allsides_source_mode_label(mode: str) -> str:
+def _allsides_source_mode_label(mode: str) -> str:
     labels = {
         "allsides_tag_page": "AllSides 即時標籤頁",
         "allsides_rss_filter": "AllSides RSS 關鍵字過濾",
@@ -5494,7 +5489,7 @@ def _legacy_allsides_source_mode_label(mode: str) -> str:
     return labels.get(mode or "", "未知來源")
 
 
-def _legacy_allsides_source_mode_note(mode: str) -> str:
+def _allsides_source_mode_note(mode: str) -> str:
     notes = {
         "allsides_tag_page": "即時資料：直接由 AllSides 標籤頁解析，最接近目前頁面內容。",
         "allsides_rss_filter": "部分即時：由 AllSides RSS 以 Asia/Taiwan 關鍵字過濾，可能不是完整三欄 Roundup。",
@@ -5705,7 +5700,7 @@ def _fetch_allsides_rss_filtered_roundups(max_roundups: int = 12) -> List[Dict[s
 
 
 @st.cache_data(ttl=1800)
-def _legacy_fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
+def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
     """
     擷取 AllSides Asia / Taiwan 相關 Headline Roundups。
     AllSides 的 tag/search 頁有時會擋一般程式請求；若無法讀取，使用內建的 Asia/Taiwan seed roundups。
