@@ -7899,6 +7899,37 @@ def render_report_navigation(report_text: str, key_prefix: str) -> None:
         st.toast("已重新套用報告清理與排版")
         st.rerun()
 
+
+def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
+    """彙整來源類型與證據強度，供報告前快速檢視使用。"""
+    category_counts = Counter((s.get("source_category") or s.get("category") or "OTHER") for s in sources)
+    evidence_counts = Counter(s.get("evidence_level", "未標註") for s in sources)
+    missing = []
+    if not (category_counts.get("OFFICIAL", 0) or category_counts.get("NEUTRAL", 0)):
+        missing.append("官方／中立來源")
+    if not category_counts.get("INTL", 0):
+        missing.append("國際來源")
+    if category_counts.get("BLUE", 0) == 0 and category_counts.get("GREEN", 0) == 0:
+        missing.append("藍綠政黨／立場來源")
+    elif category_counts.get("BLUE", 0) == 0:
+        missing.append("泛藍來源")
+    elif category_counts.get("GREEN", 0) == 0:
+        missing.append("泛綠來源")
+
+    total = len(sources)
+    strong = evidence_counts.get("極強", 0) + evidence_counts.get("強", 0)
+    weak = evidence_counts.get("中弱", 0) + evidence_counts.get("弱", 0)
+    strong_ratio = strong / total if total else 0
+    weak_ratio = weak / total if total else 0
+    return {
+        "category_counts": category_counts,
+        "evidence_counts": evidence_counts,
+        "missing": missing,
+        "strong_ratio": strong_ratio,
+        "weak_ratio": weak_ratio,
+    }
+
+
 def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[Dict]], validation: Optional[Dict[str, Any]] = None) -> None:
     """在長報告前提供低負擔摘要，幫助使用者先判斷品質與風險。"""
     sources = sources or []
@@ -7910,6 +7941,7 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
     score_text = f"{validation_score:.0f}/100" if isinstance(validation_score, (int, float)) else "未驗證"
     source_count = len(sources)
     timeline_count = len(data.get("timeline", [])) if isinstance(data, dict) else 0
+    source_mix = summarize_source_mix_for_quick_view(sources)
 
     st.markdown("### 📌 報告快速檢視")
     c1, c2, c3, c4 = st.columns(4)
@@ -7922,6 +7954,31 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
     with c4:
         st.metric("格式驗證", score_text)
     st.caption(f"時間軸事件：{timeline_count} 筆；此區塊是閱讀長報告前的品質提示，不取代完整分析。")
+
+    if sources:
+        category_counts = source_mix["category_counts"]
+        category_line = []
+        for cat in ("BLUE", "GREEN", "OFFICIAL", "INTL", "CHINA", "INDIE", "NEUTRAL", "OTHER"):
+            count = category_counts.get(cat, 0)
+            if count:
+                label, _ = get_category_meta(cat)
+                category_line.append(f"{label} {count}")
+        if category_line:
+            st.caption("來源視角分布：" + "｜".join(category_line))
+
+        evidence_line = "｜".join(f"{level} {count}" for level, count in source_mix["evidence_counts"].items() if count)
+        if evidence_line:
+            st.caption(f"證據強度分布：{evidence_line}")
+
+        warnings = []
+        if source_mix["missing"]:
+            warnings.append("可能缺少：" + "、".join(source_mix["missing"]))
+        if source_mix["weak_ratio"] >= 0.4:
+            warnings.append("弱證據來源比例偏高")
+        if source_count >= 4 and source_mix["strong_ratio"] < 0.2:
+            warnings.append("強證據來源比例偏低")
+        if warnings:
+            st.warning("快速檢視提醒：" + "；".join(warnings))
 
 def render_changelog_page() -> None:
     """本次改版與近期調整說明（維護者請同步更新此頁內容）。"""
@@ -7940,6 +7997,7 @@ def render_changelog_page() -> None:
 - **全球情報主題覆蓋提示**：主題篩選選項會顯示目前批次的則數，並在篩選列下方摘要本批資料涵蓋哪些主題。
 - **Gemini 主題摘要優化**：「全球情報」的 Gemini 整理會依目前主題篩選範圍摘要，並改用相容 Streamlit 1.28 的水平 radio。
 - **Gemini 主題摘要快取**：不同主題的摘要會分開保存，切回已整理主題可直接查看，避免混用舊摘要與重複消耗 token。
+- **報告快速檢視強化**：多元議題與文本分析報告前新增來源視角分布、證據強度分布與缺口提示，幫助先判斷報告風險。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
