@@ -4982,6 +4982,12 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
+
+        【⚠️ 引用文獻與連結規則】：
+        - 內文每個重要判斷需標註 [Source X]。
+        - 報告末尾必須加入「## 📚 引用文獻列表」，逐列列出實際使用的 Source ID、媒體/網域、標題與 URL。
+        - URL 必須從 Context 中該 Source 的「(URL: ...)」原樣複製；若該 Source 沒有 URL，請寫「URL：未提供」，不可捏造。
+        - 引用文獻列表不得只寫媒體名稱或 Source ID，必須包含可檢查的 URL 或明確標註未提供。
         
         **⚠️ 標題與內文風格**：報告開頭請以一句 **# 簡短標題** 總括本議題；標題須**中性、平衡報導風格**，勿使用戰爭隱喻或聳動用語（如「開戰」「對決」「烽火」）。全文各節小標與表格內文字亦須符合平衡報導與去軍事化表述。
         
@@ -5103,6 +5109,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         
         ### [REPORT_TEXT]
         (Markdown 報告 - 繁體中文)
+        報告末尾請加入「## 📚 引用文獻列表」，若輸入中有 Source ID 或 URL，必須逐列列出；若輸入未提供 URL，請明確標註「URL：未提供」，不可捏造連結。
         1. **🎯 CLA 深度解構 (Causal Layered Analysis)**
            - Litany / System / Worldview / Myth
         2. **🔮 未來趨勢路徑模擬 (Scenario Planning)**
@@ -5135,6 +5142,7 @@ def run_strategic_analysis(query: str, context_text: str, model_name: str, api_k
         - 只能引用 Context 中的內容。
         - 單篇新聞一律標註為 [Source 1]。
         - 分析必須引用原文片段或具體用詞，避免空泛評論。
+        - 報告末尾必須加入「## 📚 引用文獻列表」，列出 Source 1 的標題與 URL；若使用者貼上的文本沒有 URL，請標註「URL：未提供」。
         - 若證據不足，請明確標註「資訊不足」，不要臆測。
 
         【輸出格式 (嚴格遵守)】：
@@ -7297,6 +7305,47 @@ def parse_gemini_data(text: str) -> Dict[str, Any]:
     
     return data
 
+def _escape_markdown_table_cell(value: Any) -> str:
+    text = _normalize_feed_field(value)
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def build_reference_links_markdown(sources: Optional[List[Dict]], blind_mode: bool = False) -> str:
+    """用實際來源資料產生含 URL 的引用文獻表，避免只依賴 LLM 自行列參考文獻。"""
+    if not sources:
+        return ""
+    rows = ["## 📚 引用文獻列表（系統補齊來源連結）", "", "| 編號 | 媒體/網域 | 標題摘要 | 證據強度 | 連結 |", "|:---:|:---|:---|:---|:---|"]
+    for i, source in enumerate(sources, 1):
+        url = _normalize_feed_field(source.get("url"))
+        domain = get_domain_name(url) if url else _normalize_feed_field(source.get("source") or source.get("domain") or "未知來源")
+        media_name = domain
+        for key, label in DOMAIN_NAME_MAP.items():
+            if key in domain:
+                media_name = label
+                break
+        if blind_mode:
+            media_name = "*****"
+        title = _normalize_feed_field(source.get("title")) or "No Title"
+        if len(title) > TITLE_TRUNCATE_LENGTH:
+            title = title[:TITLE_TRUNCATE_LENGTH] + "..."
+        evidence_level = _normalize_feed_field(source.get("evidence_level")) or "未標註"
+        link = f"[開啟原文]({url})" if url.startswith(("http://", "https://")) else "（無連結）"
+        rows.append(
+            f"| **{i}** | `{_escape_markdown_table_cell(media_name)}` | {_escape_markdown_table_cell(title)} | {_escape_markdown_table_cell(evidence_level)} | {link} |"
+        )
+    return "\n".join(rows)
+
+
+def append_reference_links_to_report(report_text: str, sources: Optional[List[Dict]], blind_mode: bool = False) -> str:
+    references = build_reference_links_markdown(sources, blind_mode)
+    if not references:
+        return report_text or ""
+    report = report_text or ""
+    if "引用文獻列表（系統補齊來源連結）" in report:
+        return report
+    return report.rstrip() + "\n\n---\n\n" + references
+
+
 def create_full_html_report(data_result, scenario_result, sources, blind_mode) -> str:
     # [V37.3] 使用重構後的邏輯
     table_rows = process_timeline_rows(data_result.get("timeline", []), sources, blind_mode)
@@ -7314,14 +7363,14 @@ def create_full_html_report(data_result, scenario_result, sources, blind_mode) -
 
     report_html_1 = ""
     if data_result:
-        raw_md = data_result.get("report_text", "")
+        raw_md = append_reference_links_to_report(data_result.get("report_text", ""), sources, blind_mode)
         html_content = markdown.markdown(raw_md, extensions=['tables'])
         final_html = format_citation_style(html_content)
         report_html_1 = f'<div class="report-paper"><h3>📝 平衡報導分析</h3>{final_html}</div>'
 
     report_html_2 = ""
     if scenario_result:
-        raw_md_2 = scenario_result.get("report_text", "")
+        raw_md_2 = append_reference_links_to_report(scenario_result.get("report_text", ""), sources, blind_mode)
         html_content_2 = markdown.markdown(raw_md_2, extensions=['tables'])
         final_html_2 = format_citation_style(html_content_2)
         report_html_2 = f'<div class="report-paper"><h3>🔮 未來發展推演報告</h3>{final_html_2}</div>'
@@ -7426,6 +7475,15 @@ def convert_data_to_md(data):
     report_text = data.get('report_text', '')
     if not isinstance(report_text, str):
         report_text = str(report_text) if report_text else ''
+    sources = data.get("sources", [])
+    if not isinstance(sources, list):
+        try:
+            sources = st.session_state.get("sources", [])
+        except Exception:
+            sources = []
+    if not isinstance(sources, list):
+        sources = []
+    report_text = append_reference_links_to_report(report_text, sources)
     
     timeline_df = pd.DataFrame(timeline)
     timeline_md = timeline_df.to_markdown(index=False) if not timeline_df.empty else "無時間軸資料"
@@ -8069,6 +8127,7 @@ def render_changelog_page() -> None:
 - **來源集中度提示**：報告快速檢視新增主要來源網域與單一網域集中度警示，避免少數媒體重複稿件被誤判為多源共識。
 - **來源時間分布提示**：報告快速檢視新增來源日期範圍、未知日期、同日集中與過舊資料提醒，提升資料時效判讀。
 - **分析深度補強**：多元議題分析新增 Key Assumptions Check 與 Devil's Advocacy / Red Team 輸出要求，要求列出關鍵假設、脆弱結論、替代解釋與反證查核優先序。
+- **引用連結補齊**：多元議題、文本分析與未來推演報告會在文末自動附上「系統補齊來源連結」表，Markdown／HTML／頁面顯示使用同一份實際來源資料，降低 LLM 漏列 URL 的風險。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
@@ -8304,7 +8363,7 @@ flowchart LR
         with st.expander("13. 研究透明度與可重現性", expanded=False):
             st.markdown("""
             - 報告需說明使用方法與框架。
-            - 所有引用來源應標註來源 ID 或 URL。
+            - 所有引用來源應標註來源 ID 與 URL；若 LLM 未完整列出，系統會依實際 sources 自動補上一份含連結的引用文獻表。
             - 對資料不足、時間限制、語言限制與來源限制明確揭露。
             - 區分事實、推論與不確定判斷。
             - 支援匯出 HTML、Markdown 與完整狀態 JSON。
@@ -8563,6 +8622,7 @@ with st.sidebar:
         export_data = None
         if result and isinstance(result, dict):
             export_data = result.copy()
+            export_data["sources"] = st.session_state.get("sources", [])
             scenario_result = st.session_state.get('scenario_result')
             if scenario_result and isinstance(scenario_result, dict):
                 report_text = export_data.get('report_text', '')
@@ -8710,7 +8770,11 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                 st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
         render_analysis_summary_cards(text_result, st.session_state.get("text_analysis_sources"), validation)
         render_report_navigation(text_result.get("report_text", ""), "text_analysis")
-        render_report_paper(text_result.get("report_text", ""))
+        text_display_report = append_reference_links_to_report(
+            text_result.get("report_text", ""),
+            st.session_state.get("text_analysis_sources"),
+        )
+        render_report_paper(text_display_report)
         text_pdf = create_pdf_report(
             "新聞文本分析報告",
             text_result.get("report_text", ""),
@@ -8725,9 +8789,11 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             )
         else:
             st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取 Windows 中文字型。'}")
+        text_export_data = dict(text_result)
+        text_export_data["sources"] = st.session_state.get("text_analysis_sources", [])
         st.download_button(
             "📥 下載新聞文本分析 (Markdown)",
-            convert_data_to_md(text_result),
+            convert_data_to_md(text_export_data),
             "news_text_analysis.md",
             "text/markdown",
         )
@@ -9308,7 +9374,8 @@ else:
                     "report_text_preview": report_text[:500] if report_text else "（空）"
                 })
         else:
-            render_report_paper(report_text)
+            display_report_text = append_reference_links_to_report(report_text, st.session_state.get("sources"), blind_mode)
+            render_report_paper(display_report_text)
             st.markdown("### 📥 下載目前分析結果")
             current_pdf = create_pdf_report("多元觀點分析報告", report_text, st.session_state.get("sources"))
             if current_pdf:
@@ -9320,9 +9387,11 @@ else:
                 )
             else:
                 st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取 Windows 中文字型。'}")
+            export_data = dict(data)
+            export_data["sources"] = st.session_state.get("sources", [])
             st.download_button(
                 "📥 下載分析結果 (Markdown)",
-                convert_data_to_md(data),
+                convert_data_to_md(export_data),
                 "analysis_report.md",
                 "text/markdown",
             )
@@ -9331,7 +9400,11 @@ else:
             st.markdown("---")
             if st.button("🚀 將此結果餵給未來發展推演 (資訊滾動)", type="secondary"):
                 with st.spinner("🔮 正在讀取前次情報，啟動 CLA 層次分析與未來推演..."):
-                    current_report = data.get("report_text", "")
+                    current_report = append_reference_links_to_report(
+                        data.get("report_text", ""),
+                        st.session_state.get("sources"),
+                        blind_mode,
+                    )
                     effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
                     effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
                     raw_text = run_strategic_analysis(
@@ -9346,7 +9419,12 @@ else:
         st.markdown("---")
         st.markdown("### 🔮 未來發展推演報告")
         scenario_data = st.session_state.scenario_result
-        formatted_scenario = format_citation_style(scenario_data.get("report_text", ""))
+        scenario_report_text = append_reference_links_to_report(
+            scenario_data.get("report_text", ""),
+            st.session_state.get("sources"),
+            blind_mode,
+        )
+        formatted_scenario = format_citation_style(scenario_report_text)
         html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
         render_report_navigation(scenario_data.get("report_text", ""), "scenario")
         st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
@@ -9361,28 +9439,4 @@ else:
 
     if st.session_state.sources:
         st.markdown("---")
-        st.markdown("### 📚 引用文獻列表")
-        md_table = "| 編號 | 媒體/網域 | 標題摘要 | 證據強度 | 連結 |\n|:---:|:---|:---|:---|:---|\n"
-        for i, s in enumerate(st.session_state.sources):
-            domain = get_domain_name(s.get('url'))
-        
-            media_name = domain
-            for k, v in DOMAIN_NAME_MAP.items():
-                if k in domain: media_name = v
-            
-            if blind_mode: media_name = "*****"
-        
-            title = s.get('title', 'No Title')
-            if len(title) > TITLE_TRUNCATE_LENGTH: title = title[:TITLE_TRUNCATE_LENGTH] + "..."
-        
-            # 顯示證據強度標記
-            evidence_level = s.get('evidence_level', '中等')
-            evidence_emoji = (
-                "🟢" if evidence_level in ("強", "極強") else
-                "🟡" if evidence_level in ("中等", "中強") else
-                "🟠" if evidence_level == "中弱" else "🔴"
-            )
-            url = s.get('url')
-            evidence_mark = f"{evidence_emoji} {evidence_level}" if 'evidence_level' in s else ""
-            md_table += f"| **{i+1}** | `{media_name}` | {title} | {evidence_mark} | [點擊]({url}) |\n"
-        st.markdown(md_table)
+        st.markdown(build_reference_links_markdown(st.session_state.sources, blind_mode))
