@@ -5480,9 +5480,24 @@ def _short_feed_text(text: str, limit: int = 120) -> str:
     return (t[:limit].rstrip() + "…") if len(t) > limit else t
 
 
+def _allsides_source_mode_label(mode: str) -> str:
+    labels = {
+        "allsides_tag_page": "AllSides 即時標籤頁",
+        "allsides_rss_filter": "AllSides RSS 關鍵字過濾",
+        "built_in_seed": "內建台灣／亞洲參考資料",
+    }
+    return labels.get(mode or "", "未知來源")
+
+
 ALLSIDES_BALANCED_NEWS_URL = "https://www.allsides.com/unbiased-balanced-news"
 ALLSIDES_ASIA_URL = "https://www.allsides.com/tags/asia?search=asia"
 ALLSIDES_TAIWAN_URL = "https://www.allsides.com/tags/taiwan?search=taiwan"
+ALLSIDES_RSS_URL = "https://www.allsides.com/rss/news"
+ALLSIDES_ASIA_TAIWAN_KEYWORDS = (
+    "taiwan", "china", "asia", "indo-pacific", "south china sea",
+    "japan", "korea", "north korea", "south korea", "philippines",
+    "india", "pakistan", "semiconductor", "tsmc",
+)
 ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS = [
     {
         "title": "US, Taiwan Agree to Talks on New Trade Deal Amid China Tensions",
@@ -5558,6 +5573,78 @@ def _allsides_abs_url(href: str) -> str:
     return urljoin(ALLSIDES_BALANCED_NEWS_URL, href or "")
 
 
+def _with_allsides_source_meta(items: List[Dict[str, Any]], source_mode: str) -> List[Dict[str, Any]]:
+    """替 AllSides roundups 補上資料來源模式，讓 UI 能清楚顯示是即時頁、RSS 或內建 seed。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    out: List[Dict[str, Any]] = []
+    for item in items:
+        copied = dict(item)
+        copied["source_mode"] = source_mode
+        copied["fetched_at"] = copied.get("fetched_at") or now
+        out.append(copied)
+    return out
+
+
+def _allsides_item_matches_asia_taiwan(title: str, summary: str = "", url: str = "") -> bool:
+    haystack = f"{title} {summary} {url}".lower()
+    return any(k in haystack for k in ALLSIDES_ASIA_TAIWAN_KEYWORDS)
+
+
+def _fetch_allsides_rss_filtered_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
+    """
+    AllSides tag 頁被擋時的第二 fallback：讀公開 RSS，再用 Asia/Taiwan 關鍵字過濾。
+    RSS 是單篇新聞，不一定是完整 Headline Roundup，因此呈現為單欄來源卡。
+    """
+    import xml.etree.ElementTree as ET
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    }
+    try:
+        resp = requests.get(ALLSIDES_RSS_URL, timeout=22, headers=headers)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.text)
+    except Exception as e:
+        logger.info("_fetch_allsides_rss_filtered_roundups: RSS failed: %s", str(e))
+        return []
+
+    def _find_text(elem: Any, name: str) -> str:
+        found = elem.find(name)
+        return _clean_allsides_text(found.text or "") if found is not None else ""
+
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in root.iter("item"):
+        title = _find_text(item, "title")
+        url = _canonical_http_url(_find_text(item, "link"))
+        summary = _clean_allsides_text(_find_text(item, "description"))
+        if not title or not _allsides_item_matches_asia_taiwan(title, summary, url):
+            continue
+        key = url or title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "title": title,
+            "summary": summary or "AllSides RSS Asia/Taiwan related item.",
+            "story_url": url,
+            "perspectives": [{
+                "bias": "Center",
+                "title": title,
+                "url": url,
+                "source": "AllSides RSS",
+                "source_url": ALLSIDES_RSS_URL,
+            }],
+            "source": "AllSides RSS",
+            "url": url,
+            "analysis_keywords": title,
+        })
+        if len(out) >= max_roundups:
+            break
+    return out
+
+
 @st.cache_data(ttl=1800)
 def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
     """
@@ -5568,7 +5655,11 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
         from bs4 import BeautifulSoup
     except Exception as e:
         logger.error("fetch_allsides_headline_roundups: 缺少 beautifulsoup4: %s", str(e))
-        return ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups]
+        rss_fallback = _fetch_allsides_rss_filtered_roundups(max_roundups)
+        return _with_allsides_source_meta(
+            rss_fallback if rss_fallback else ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups],
+            "allsides_rss_filter" if rss_fallback else "built_in_seed",
+        )
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -5645,6 +5736,7 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
             "source": "AllSides",
             "url": story_url,
             "analysis_keywords": title,
+            "source_mode": "allsides_tag_page",
         })
 
     for page_url in (ALLSIDES_TAIWAN_URL, ALLSIDES_ASIA_URL):
@@ -5684,15 +5776,24 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
                     "source": "AllSides",
                     "url": story_url,
                     "analysis_keywords": title,
+                    "source_mode": "allsides_tag_page",
                 })
                 seen_story_urls.add(story_url)
 
     if not out:
-        out = ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups]
-    return out
+        rss_fallback = _fetch_allsides_rss_filtered_roundups(max_roundups)
+        if rss_fallback:
+            return _with_allsides_source_meta(rss_fallback, "allsides_rss_filter")
+        return _with_allsides_source_meta(ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups], "built_in_seed")
+    return _with_allsides_source_meta(out, "allsides_tag_page")
 
 
-def _render_allsides_roundup_card(roundup: Dict[str, Any], index: int) -> None:
+def _render_allsides_roundup_card(
+    roundup: Dict[str, Any],
+    index: int,
+    feed_llm_key: Optional[str] = None,
+    feed_llm_model: str = DEFAULT_GEMINI_MODEL,
+) -> None:
     """呈現單則 AllSides Headline Roundup。"""
     title = _normalize_feed_field(roundup.get("title")) or "（無標題）"
     summary = _normalize_feed_field(roundup.get("summary"), list_join="\n")
@@ -5734,7 +5835,32 @@ def _render_allsides_roundup_card(roundup: Dict[str, Any], index: int) -> None:
                     else:
                         st.caption(p_source)
 
-        if st.button("🔍 用此議題做多元分析", key=f"allsides_deep_{news_id}", type="primary"):
+        col_compare, col_deep = st.columns([1, 1])
+        with col_compare:
+            if st.button("✨ 比較此議題框架", key=f"allsides_compare_{news_id}", type="secondary"):
+                if not feed_llm_key:
+                    st.warning("⚠️ 請先在側邊欄輸入 Gemini Key。")
+                else:
+                    try:
+                        with st.spinner("Gemini 正在比較左／中／右框架…"):
+                            st.session_state.setdefault("allsides_card_summaries", {})
+                            st.session_state["allsides_card_summaries"][news_id] = compare_single_allsides_roundup_with_llm(
+                                roundup,
+                                feed_llm_key,
+                                feed_llm_model,
+                            )
+                    except Exception as e:
+                        logger.exception("單則 AllSides 框架比較失敗")
+                        st.error(f"框架比較失敗：{str(e)[:200]}")
+        with col_deep:
+            deep_clicked = st.button("🔍 用此議題做多元分析", key=f"allsides_deep_{news_id}", type="primary")
+
+        card_summary = (st.session_state.get("allsides_card_summaries") or {}).get(news_id)
+        if card_summary:
+            with st.expander("✨ 此議題框架比較", expanded=True):
+                st.markdown(card_summary)
+
+        if deep_clicked:
             st.session_state["query"] = title
             st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
             st.session_state["keyword_plan"] = None
@@ -5767,6 +5893,24 @@ def _format_allsides_roundups_for_llm(roundups: List[Dict[str, Any]], max_items:
                 lines.append(f"- {bias}: {p_title or '（未提供標題）'} | {source}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def _format_single_allsides_roundup_for_llm(roundup: Dict[str, Any]) -> str:
+    """單則 AllSides roundup 的 LLM 精簡輸入。"""
+    title = _normalize_feed_field(roundup.get("title"))
+    summary = _normalize_feed_field(roundup.get("summary"), list_join=" ")
+    story_url = _normalize_feed_field(roundup.get("story_url") or roundup.get("url"))
+    lines = [f"Title: {title}", f"AllSides URL: {story_url}"]
+    if summary:
+        lines.append(f"AllSides summary: {_short_feed_text(summary, 900)}")
+    perspectives = roundup.get("perspectives") if isinstance(roundup.get("perspectives"), list) else []
+    for p in perspectives:
+        bias = _normalize_feed_field(p.get("bias"))
+        p_title = _normalize_feed_field(p.get("title"))
+        source = _normalize_feed_field(p.get("source"))
+        p_url = _normalize_feed_field(p.get("url"))
+        lines.append(f"- {bias}: {p_title or '（未提供標題）'} | {source} | {p_url}")
+    return "\n".join(lines)
 
 
 def summarize_allsides_roundups_with_llm(
@@ -5808,6 +5952,43 @@ def summarize_allsides_roundups_with_llm(
 以下是 AllSides Asia/Taiwan headline roundups 的精簡資料。請依照指定格式整理：
 
 {_format_allsides_roundups_for_llm(roundups)}
+"""
+    return _call_llm_for_feed(system_prompt, user_prompt, model_name or DEFAULT_GEMINI_MODEL, api_key)
+
+
+def compare_single_allsides_roundup_with_llm(
+    roundup: Dict[str, Any],
+    api_key: str,
+    model_name: str = DEFAULT_GEMINI_MODEL,
+) -> str:
+    """用 Gemini 對單則 AllSides roundup 做 Left / Center / Right 框架比較。"""
+    if not api_key or not (api_key or "").strip():
+        raise ValueError("未提供 Gemini API Key")
+    system_prompt = """你是台灣使用者的媒體識讀助理。請針對單則 AllSides headline roundup，比較 Left / Center / Right 三欄的可能框架差異。
+
+要求：
+- 僅根據輸入的 AllSides 標題、摘要與三方來源標題整理，不要補不存在的事實。
+- 若某一欄缺資料，直接說明該欄資料不足。
+- 台灣、兩岸、印太安全、科技供應鏈相關意涵優先。
+- 請用繁體中文，簡潔但要有判讀價值。
+
+輸出格式：
+## 一句話摘要
+用 1-2 句說明這則 roundup 的核心。
+
+## 左／中／右框架比較
+- Left：
+- Center：
+- Right：
+
+## 台灣或印太觀察
+2-4 點。
+
+## 閱讀提醒
+1-3 點，提醒哪些地方需要看原文或更多來源。"""
+    user_prompt = f"""以下是單則 AllSides roundup：
+
+{_format_single_allsides_roundup_for_llm(roundup)}
 """
     return _call_llm_for_feed(system_prompt, user_prompt, model_name or DEFAULT_GEMINI_MODEL, api_key)
 
@@ -6550,13 +6731,14 @@ def render_news_feed_page(
         "直接匯整 AllSides 的 **Asia / Taiwan Headline Roundups**，優先呈現台灣與中國／印太相關議題，並以 Left / Center / Right 方式對照來源。"
     )
 
-    current_source_key = "allsides_headline_roundups_v1"
+    current_source_key = "allsides_headline_roundups_v2"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
         st.session_state["allsides_llm_summary"] = None
+        st.session_state["allsides_card_summaries"] = {}
         st.session_state.pop("feed_diag_msg", None)
 
     if st.session_state.get("feed_do_fetch"):
@@ -6567,6 +6749,7 @@ def render_news_feed_page(
                 feed = fetch_allsides_headline_roundups()
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
             st.session_state["allsides_llm_summary"] = None
+            st.session_state["allsides_card_summaries"] = {}
             st.session_state.pop("feed_diag_msg", None)
         except Exception as e:
             logger.exception("載入 AllSides Headline Roundups 失敗")
@@ -6650,6 +6833,12 @@ def render_news_feed_page(
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
         st.success(f"已載入 {len(feed)} 則 AllSides 亞洲／台灣 Roundups。")
+        mode_counts = Counter(_normalize_feed_field(x.get("source_mode")) or "unknown" for x in feed)
+        mode_text = "｜".join(f"{_allsides_source_mode_label(k)} {v}" for k, v in mode_counts.items())
+        fetched_at = _normalize_feed_field(feed[0].get("fetched_at")) if feed and isinstance(feed[0], dict) else ""
+        st.caption(f"資料來源狀態：{mode_text}" + (f"｜更新：{fetched_at}" if fetched_at else ""))
+        if any((x.get("source_mode") == "built_in_seed") for x in feed if isinstance(x, dict)):
+            st.warning("目前使用內建參考資料，代表 AllSides 即時標籤頁與 RSS fallback 可能無法取得足夠亞洲／台灣資料。")
         st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位；台灣相關議題優先。")
         if st.session_state.get("allsides_llm_summary"):
             st.caption(f"✨ 已用 Gemini 整理（{feed_llm_model}）。")
@@ -6661,6 +6850,7 @@ def render_news_feed_page(
                     feed_new = fetch_allsides_headline_roundups()
                 st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
                 st.session_state["allsides_llm_summary"] = None
+                st.session_state["allsides_card_summaries"] = {}
             except Exception as e:
                 st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
@@ -6671,7 +6861,7 @@ def render_news_feed_page(
             st.markdown(summary_text)
 
     for idx, roundup in enumerate(feed):
-        _render_allsides_roundup_card(roundup, idx)
+        _render_allsides_roundup_card(roundup, idx, feed_llm_key, feed_llm_model)
 
 
 # 政治／經濟／科技新聞卡片外框色（方便閱讀區分）
