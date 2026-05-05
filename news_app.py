@@ -21,7 +21,7 @@ import sys
 from io import BytesIO
 from html import unescape
 from pathlib import Path
-from urllib.parse import urlparse, quote, unquote
+from urllib.parse import urlparse, quote, unquote, urljoin
 from typing import List, Dict, Any, Tuple, Optional, Set
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
@@ -5480,6 +5480,175 @@ def _short_feed_text(text: str, limit: int = 120) -> str:
     return (t[:limit].rstrip() + "…") if len(t) > limit else t
 
 
+ALLSIDES_BALANCED_NEWS_URL = "https://www.allsides.com/unbiased-balanced-news"
+
+
+def _clean_allsides_text(text: str) -> str:
+    """清理 AllSides HTML 文字中的多餘空白與常見編碼雜訊。"""
+    t = unescape(text or "")
+    t = t.replace("�X", "—").replace("��", "'")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _allsides_abs_url(href: str) -> str:
+    return urljoin(ALLSIDES_BALANCED_NEWS_URL, href or "")
+
+
+@st.cache_data(ttl=1800)
+def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, Any]]:
+    """
+    直接擷取 AllSides Balanced News 的 Headline Roundups。
+    僅讀取公開頁面，不登入、不呼叫 Tavily/Gemini。
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except Exception as e:
+        logger.error("fetch_allsides_headline_roundups: 缺少 beautifulsoup4: %s", str(e))
+        return []
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        resp = requests.get(ALLSIDES_BALANCED_NEWS_URL, timeout=25, headers=headers)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error("fetch_allsides_headline_roundups: 取得頁面失敗: %s", str(e))
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    cards = soup.select(".headline-roundup")
+    out: List[Dict[str, Any]] = []
+
+    for card in cards[:max_roundups]:
+        content = card.select_one(".headline-roundup-content") or card
+        heading = content.find(["h2", "h3"]) or card.find(["h2", "h3"])
+        if not heading:
+            continue
+        title = _clean_allsides_text(heading.get_text(" ", strip=True))
+        story_link = heading.find("a") or card.find("a", href=re.compile(r"^/story/"))
+        story_url = _allsides_abs_url(story_link.get("href")) if story_link else ALLSIDES_BALANCED_NEWS_URL
+
+        paragraphs: List[str] = []
+        for p in content.find_all("p"):
+            text = _clean_allsides_text(p.get_text(" ", strip=True))
+            if not text:
+                continue
+            if text.lower().startswith(("written by", "learn more", "support our mission", "suggest an improvement")):
+                continue
+            paragraphs.append(text)
+            if len(paragraphs) >= 3:
+                break
+        summary = "\n\n".join(paragraphs)
+
+        perspectives: List[Dict[str, str]] = []
+        trio = card.select_one(".news-trio")
+        if trio:
+            for item in trio.select(".news-item"):
+                cls = set(item.get("class") or [])
+                if "left" in cls:
+                    bias = "Left"
+                elif "right" in cls:
+                    bias = "Right"
+                elif "center" in cls:
+                    bias = "Center"
+                else:
+                    label = _clean_allsides_text(item.get_text(" ", strip=True))
+                    bias = "Left" if "From the Left" in label else "Right" if "From the Right" in label else "Center" if "From the Center" in label else "Other"
+                links = item.find_all("a")
+                news_link = links[0] if links else None
+                source_link = links[1] if len(links) > 1 else None
+                perspectives.append({
+                    "bias": bias,
+                    "title": _clean_allsides_text(news_link.get_text(" ", strip=True)) if news_link else "",
+                    "url": _allsides_abs_url(news_link.get("href")) if news_link else "",
+                    "source": _clean_allsides_text(source_link.get_text(" ", strip=True)) if source_link else "",
+                    "source_url": _allsides_abs_url(source_link.get("href")) if source_link else "",
+                })
+        else:
+            text = _clean_allsides_text(card.get_text(" ", strip=True))
+            match = re.search(r"See how\s+(.+?)\s+cover this story", text, flags=re.I)
+            if match:
+                names = re.split(r"\s*,\s*|\s+and\s+", match.group(1))
+                for idx, name in enumerate([n.strip(" ,") for n in names if n.strip(" ,")][:3]):
+                    perspectives.append({
+                        "bias": ["Left", "Center", "Right"][idx] if idx < 3 else "Other",
+                        "title": "",
+                        "url": "",
+                        "source": name,
+                        "source_url": "",
+                    })
+
+        out.append({
+            "title": title,
+            "summary": summary,
+            "story_url": story_url,
+            "perspectives": perspectives,
+            "source": "AllSides",
+            "url": story_url,
+            "analysis_keywords": title,
+        })
+
+    return out
+
+
+def _render_allsides_roundup_card(roundup: Dict[str, Any], index: int) -> None:
+    """呈現單則 AllSides Headline Roundup。"""
+    title = _normalize_feed_field(roundup.get("title")) or "（無標題）"
+    summary = _normalize_feed_field(roundup.get("summary"), list_join="\n")
+    story_url = _normalize_feed_field(roundup.get("story_url") or roundup.get("url"))
+    perspectives = roundup.get("perspectives") if isinstance(roundup.get("perspectives"), list) else []
+    news_id = hashlib.md5(f"allsides_{title}_{index}".encode("utf-8")).hexdigest()[:12]
+
+    with st.container(border=True):
+        st.caption("HEADLINE ROUNDUP · AllSides")
+        if story_url.startswith(("http://", "https://")):
+            st.markdown(f"### [{title}]({story_url})")
+        else:
+            st.markdown(f"### {title}")
+        if summary:
+            st.write(summary[:900] + ("…" if len(summary) > 900 else ""))
+
+        cols = st.columns(3)
+        column_defs = [("Left", "From the Left", "🟦"), ("Center", "From the Center", "⬜"), ("Right", "From the Right", "🟥")]
+        for col, (bias, label, icon) in zip(cols, column_defs):
+            with col:
+                st.markdown(f"**{icon} {label}**")
+                match = next((p for p in perspectives if _normalize_feed_field(p.get("bias")) == bias), None)
+                if not match:
+                    st.caption("AllSides 此則未提供")
+                    continue
+                p_title = _normalize_feed_field(match.get("title"))
+                p_url = _normalize_feed_field(match.get("url"))
+                p_source = _normalize_feed_field(match.get("source"))
+                p_source_url = _normalize_feed_field(match.get("source_url"))
+                if p_title and p_url.startswith(("http://", "https://")):
+                    st.markdown(f"[{p_title}]({p_url})")
+                elif p_title:
+                    st.write(p_title)
+                elif p_source:
+                    st.write("此來源觀點")
+                if p_source:
+                    if p_source_url.startswith(("http://", "https://")):
+                        st.caption(f"[{p_source}]({p_source_url})")
+                    else:
+                        st.caption(p_source)
+
+        if st.button("🔍 用此議題做多元分析", key=f"allsides_deep_{news_id}", type="primary"):
+            st.session_state["query"] = title
+            st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
+            st.session_state["keyword_plan"] = None
+            st.session_state["result"] = None
+            st.session_state["scenario_result"] = None
+            st.session_state["sources"] = None
+            st.session_state["manipulation_signals"] = None
+            st.session_state["cofacts_rumors"] = []
+            st.session_state["volume_analysis"] = None
+            st.session_state["stance_analysis"] = None
+            st.rerun()
+
+
 def _is_single_camp_source(url_or_domain: str) -> bool:
     """若來源僅屬單一立場（僅藍或僅綠），回傳 True，用於同溫層警示。"""
     if not url_or_domain:
@@ -6205,160 +6374,65 @@ def render_news_feed_page(
     gemini_model: str = DEFAULT_GEMINI_MODEL,
 ) -> None:
     """
-    渲染「全球情報」儀表板：預設 **RSS 訂閱**（免 Tavily／免 Gemini 即可瀏覽）；
-    可選 **Gemini 一次綜整** 或 **Tavily 進階五大洲搜尋**。
+    渲染「全球情報」：直接匯整 AllSides Headline Roundups。
+    不再使用原本 RSS / Tavily 五大洲匯集作為主流程。
     """
-    google_key_stored = (st.session_state.get("google_api_key") or "").strip()
-    google_key_this_run = (google_key or "").strip()
-    feed_llm_key = google_key_this_run or google_key_stored or None
-    feed_llm_model = gemini_model or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
-    tavily_key = (tavily_key or "").strip()
-
     st.markdown("## 📰 全球情報 (News Feed)")
     st.caption(
-        "預設使用 **國際 RSS 訂閱** 匯集標題與摘要，速度較快、不耗 Tavily／Gemini；需要時再按下方按鈕做 **Gemini 綜整** 或 **Tavily 進階搜尋**。"
+        "直接匯整 [AllSides Balanced News](https://www.allsides.com/unbiased-balanced-news) 的 **Headline Roundups**，以 Left / Center / Right 方式呈現同一議題的不同來源。"
     )
 
-    current_source_key = "rss_primary_v2"
+    current_source_key = "allsides_headline_roundups_v1"
     if "intelligence_feed_source" not in st.session_state:
         st.session_state["intelligence_feed_source"] = None
     if st.session_state.get("intelligence_feed_source") != current_source_key:
         st.session_state["intelligence_feed_data"] = None
         st.session_state["intelligence_feed_source"] = current_source_key
-        st.session_state["feed_last_load_mode"] = None
-        st.session_state["feed_gemini_summarized"] = False
+        st.session_state.pop("feed_diag_msg", None)
 
-    # --- 載入 RSS（預設）---
     if st.session_state.get("feed_do_fetch"):
         st.session_state["feed_do_fetch"] = False
         try:
-            with st.spinner("正在抓取 RSS…（約數秒，不呼叫 AI）"):
-                fetch_intelligence_feed_rss_display.clear()
-                feed = fetch_intelligence_feed_rss_display()
-                if not feed:
-                    raw_retry = _fetch_rss_raw()
-                    feed = _rss_raw_to_feed_items(raw_retry, max_items=48)
-                    st.session_state["feed_diag_msg"] = (
-                        f"自動重試：原始 RSS **{len(raw_retry)}** 筆，可顯示 **{len(feed)}** 張卡片。"
-                    )
+            with st.spinner("正在載入 AllSides Headline Roundups…"):
+                fetch_allsides_headline_roundups.clear()
+                feed = fetch_allsides_headline_roundups()
             st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
-            st.session_state["feed_last_load_mode"] = "rss"
-            st.session_state["feed_gemini_summarized"] = False
-            st.session_state.pop("feed_llm_last_error", None)
-            if feed:
-                st.session_state.pop("feed_diag_msg", None)
+            st.session_state.pop("feed_diag_msg", None)
         except Exception as e:
-            logger.exception("載入 RSS 全球情報失敗")
+            logger.exception("載入 AllSides Headline Roundups 失敗")
             st.session_state["intelligence_feed_data"] = []
-            st.error(f"載入失敗：{str(e)[:200]}。請檢查網路或稍後再試。")
+            st.error(f"載入失敗：{str(e)[:200]}。")
         st.rerun()
 
-    # --- 可選：Gemini 一次綜整（需 Key）---
-    if st.session_state.get("feed_do_gemini"):
-        st.session_state["feed_do_gemini"] = False
-        if not feed_llm_key or (isinstance(feed_llm_key, str) and not feed_llm_key.strip()):
-            st.warning("⚠️ 請在側邊欄「🔑 模型與金鑰」輸入 **Gemini API Key** 後再試。")
-        else:
-            try:
-                with st.spinner("Gemini 綜整中…（約 1 次 API、10～40 秒）"):
-                    fetch_intelligence_feed_rss.clear()
-                    feed = fetch_intelligence_feed_rss(feed_llm_key, feed_llm_model)
-                st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
-                st.session_state["feed_last_load_mode"] = "gemini"
-                st.session_state["feed_gemini_summarized"] = True
-                st.session_state.pop("feed_llm_last_error", None)
-            except Exception as e:
-                logger.exception("Gemini 綜整全球情報失敗")
-                st.session_state["intelligence_feed_data"] = []
-                st.error(f"綜整失敗：{str(e)[:200]}")
-        st.rerun()
-
-    # --- 可選：Tavily 五大洲（進階）---
-    if st.session_state.get("feed_do_tavily"):
-        st.session_state["feed_do_tavily"] = False
-        if not tavily_key:
-            st.warning("⚠️ 請在側邊欄「🔍 搜尋設定」輸入 **Tavily API Key**。")
-            st.rerun()
-        try:
-            with st.spinner("正在以 Tavily 搜尋五大洲…（較久，約 1～3 分鐘）"):
-                fetch_intelligence_feed_tavily.clear()
-                feed = fetch_intelligence_feed_tavily(
-                    tavily_key,
-                    feed_llm_key if feed_llm_key else None,
-                    feed_llm_model,
-                    use_whitelist=st.session_state.get("feed_tavily_whitelist", False),
-                    save_tokens=st.session_state.get("feed_save_tokens", False),
-                )
-            st.session_state["intelligence_feed_data"] = feed if isinstance(feed, list) else []
-            st.session_state["feed_last_load_mode"] = "tavily"
-            st.session_state["feed_gemini_summarized"] = bool(feed_llm_key)
-        except Exception as e:
-            logger.exception("Tavily 載入全球情報失敗")
-            st.session_state["intelligence_feed_data"] = []
-            st.error(f"載入失敗：{str(e)[:200]}。請檢查 API 金鑰與網路後重試。")
-        st.rerun()
-
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
+    col_load, col_src = st.columns([1, 3])
+    with col_load:
         st.button(
-            "📡 載入 RSS 要聞",
+            "⚖️ 載入 AllSides Roundups",
             type="primary",
             key="feed_fetch_btn",
             on_click=lambda: st.session_state.update({"feed_do_fetch": True}),
-            help="從訂閱來源抓取標題／摘要，不依賴 Tavily 與 Gemini。",
+            help="直接讀取 AllSides Balanced News 公開頁面的 Headline Roundups。",
         )
-    with c2:
-        st.button(
-            "✨ Gemini 綜整",
-            type="secondary",
-            key="feed_gemini_btn",
-            on_click=lambda: st.session_state.update({"feed_do_gemini": True}),
-            help="以 1 次 Gemini 將 RSS 彙整為繁中摘要與五大洲分類（需 Gemini Key）。",
-        )
-    with c3:
-        st.caption("先載入 RSS 再綜整，或直接使用右側進階 Tavily。")
-
-    with st.expander("進階：Tavily 搜尋五大洲（較慢、耗配額）", expanded=False):
-        st.checkbox(
-            "僅從白名單網域搜尋",
-            value=False,
-            key="feed_tavily_whitelist",
-            help="與多元議題分析相同的藍／綠／官方／國際白名單，限制 Tavily 來源。",
-        )
-        st.checkbox(
-            "精簡輸入（省 Token）",
-            value=False,
-            key="feed_save_tokens",
-            help="縮短送入 Gemini／Tavily 彙整的摘錄長度（僅影響含 AI 的 Tavily 流程）。",
-        )
-        st.button(
-            "🌐 以 Tavily 載入五大洲",
-            type="secondary",
-            key="feed_tavily_btn",
-            on_click=lambda: st.session_state.update({"feed_do_tavily": True}),
-            help="需側邊欄 Tavily Key；有 Gemini Key 時會一併摘要。",
-        )
+    with col_src:
+        st.caption("資料來源：AllSides Headline Roundups。AllSides 主張「unbiased news doesn't exist」，所以用 Left / Center / Right 對照呈現。")
 
     feed = st.session_state.get("intelligence_feed_data")
     if feed is None:
-        st.info("請先點擊 **「📡 載入 RSS 要聞」**（不需 API Key 即可瀏覽）。")
+        st.info("請點擊 **「⚖️ 載入 AllSides Roundups」**。")
         return
     if not feed:
-        st.warning("**取得完成，但沒有可用要聞。**")
+        st.warning("**取得完成，但沒有抓到 AllSides Headline Roundups。**")
         with st.expander("🔍 可能原因與建議", expanded=True):
             st.markdown("""
-- **RSS**：若完全抓不到國際新聞站，常見為 **網路／公司防火牆／代理** 阻擋 HTTPS，或暫時無法連線。
-- **Gemini 綜整**：Key 或配額問題 → 檢查側欄 Gemini Key，或改選 Flash 型號。
-- **Tavily**：配額或 Key 錯誤 → 見 [Tavily Dashboard](https://app.tavily.com/)。
+- **AllSides**：頁面 HTML 結構改版、暫時無法連線，或被網路／防火牆阻擋。
+- 可直接開啟 [AllSides Balanced News](https://www.allsides.com/unbiased-balanced-news) 確認本機是否能連線。
             """)
-        if st.button("🔧 診斷 RSS（繞過快取、直接連線）", key="feed_diag_btn"):
-            fetch_intelligence_feed_rss_display.clear()
-            with st.spinner("正在測試 RSS…"):
-                raw_diag = _fetch_rss_raw()
-                card_diag = _rss_raw_to_feed_items(raw_diag)
+        if st.button("🔧 診斷 AllSides", key="feed_diag_btn"):
+            fetch_allsides_headline_roundups.clear()
+            with st.spinner("正在測試 AllSides…"):
+                diag = fetch_allsides_headline_roundups()
             st.session_state["feed_diag_msg"] = (
-                f"診斷：訂閱 URL 共抓到 **{len(raw_diag)}** 筆原始條目，可顯示 **{len(card_diag)}** 張卡片。"
-                f" 若原始為 0，請檢查本機能否瀏覽國際網站或關閉攔截；若原始>0、卡片仍 0，請回報。"
+                f"診斷：AllSides 目前可解析 **{len(diag)}** 則 Headline Roundups。"
             )
         _dm = st.session_state.get("feed_diag_msg")
         if _dm:
@@ -6376,86 +6450,21 @@ def render_news_feed_page(
 
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
-        st.success(f"已載入 {len(feed)} 則要聞。")
-        continent_counts = Counter(_normalize_feed_field(x.get("continent")) or "其他" for x in feed)
-        st.caption("洲別分布：" + "｜".join(f"{c} {continent_counts.get(c, 0)}" for c in list(CONTINENT_ORDER) + ["其他"] if continent_counts.get(c, 0)))
-        if st.session_state.get("feed_gemini_summarized"):
-            st.caption(f"📌 本批資料已用 **Gemini** 綜整（{feed_llm_model}）。")
-        elif st.session_state.get("feed_last_load_mode") == "tavily":
-            st.caption(f"📌 來源：**Tavily** 五大洲搜尋" + (f"；摘要：**Gemini**（{feed_llm_model}）" if feed_llm_key else "（原文模式，未取得 Gemini Key）"))
-        else:
-            st.caption("📌 來源：**RSS 訂閱**（英文／原文標題為主；可按「✨ Gemini 綜整」改為繁中統整）。")
-        feed_err = st.session_state.pop("feed_llm_last_error", None)
-        if feed_err:
-            _fe = str(feed_err)
-            st.warning(f"⚠️ 上一輪部分摘要失敗或備援為原文。錯誤：{_fe[:300]}")
+        st.success(f"已載入 {len(feed)} 則 AllSides Headline Roundups。")
+        st.caption("每則包含 AllSides 摘要與 Left / Center / Right 來源欄位（依 AllSides 頁面提供內容）。")
     with col_refresh:
         if st.button("🔄 重新整理", key="feed_refresh_btn"):
-            mode = st.session_state.get("feed_last_load_mode") or "rss"
             try:
-                if mode == "gemini" and feed_llm_key:
-                    fetch_intelligence_feed_rss.clear()
-                    with st.spinner("重新綜整中…"):
-                        feed_new = fetch_intelligence_feed_rss(feed_llm_key, feed_llm_model)
-                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
-                elif mode == "tavily" and tavily_key:
-                    fetch_intelligence_feed_tavily.clear()
-                    with st.spinner("重新取得中…"):
-                        feed_new = fetch_intelligence_feed_tavily(
-                            tavily_key,
-                            feed_llm_key if feed_llm_key else None,
-                            feed_llm_model,
-                            use_whitelist=st.session_state.get("feed_tavily_whitelist", False),
-                            save_tokens=st.session_state.get("feed_save_tokens", False),
-                        )
-                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
-                else:
-                    fetch_intelligence_feed_rss_display.clear()
-                    with st.spinner("重新抓取 RSS…"):
-                        feed_new = fetch_intelligence_feed_rss_display()
-                    st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
-                    st.session_state["feed_gemini_summarized"] = False
-                    st.session_state["feed_last_load_mode"] = "rss"
+                fetch_allsides_headline_roundups.clear()
+                with st.spinner("重新取得 AllSides…"):
+                    feed_new = fetch_allsides_headline_roundups()
+                st.session_state["intelligence_feed_data"] = feed_new if feed_new else []
             except Exception as e:
                 st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
 
-    _render_balanced_feed_overview(feed)
-
-    grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    for item in feed:
-        cont = _normalize_feed_field(item.get("continent")) or "其他"
-        topic = _normalize_feed_field(item.get("topic")) or "政治"
-        if topic not in TOPIC_ORDER:
-            topic = "政治"
-        grouped.setdefault(cont, {}).setdefault(topic, []).append(item)
-
-    continents_tabs = list(CONTINENT_ORDER)
-    if grouped.get("其他"):
-        continents_tabs = continents_tabs + ["其他"]
-    tab_labels = [f"{CONTINENT_EMOJI.get(c, '📌')} {c}" for c in continents_tabs]
-    tabs = st.tabs(tab_labels)
-    card_index = [0]
-
-    for tab, continent in zip(tabs, continents_tabs):
-        with tab:
-            cont_data = grouped.get(continent, {})
-            for topic in TOPIC_ORDER:
-                items = cont_data.get(topic, [])
-                if not items:
-                    continue
-                st.markdown(f"### {topic}")
-                for i in range(0, len(items), 2):
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        idx = card_index[0]
-                        card_index[0] += 1
-                        _render_feed_card(items[i], idx, len(feed))
-                    with col2:
-                        if i + 1 < len(items):
-                            idx = card_index[0]
-                            card_index[0] += 1
-                            _render_feed_card(items[i + 1], idx, len(feed))
+    for idx, roundup in enumerate(feed):
+        _render_allsides_roundup_card(roundup, idx)
 
 
 # 政治／經濟／科技新聞卡片外框色（方便閱讀區分）
@@ -7590,45 +7599,40 @@ with st.sidebar:
                     else:
                         st.error(message)
 
-    if is_deep_analysis_page or is_feed_page:
+    if is_deep_analysis_page:
         with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
             tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="用於「多元議題分析」新聞搜尋；「全球情報」進階 Tavily 載入時亦需要。", key="tavily_key")
             if tavily_key:
                 st.success("✅ Tavily 搜尋已啟用")
-            elif is_deep_analysis_page:
+            else:
                 st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
-            else:
-                st.caption("全球情報預設使用 **RSS**，不需 Tavily；僅在「進階：Tavily 搜尋五大洲」時需要填寫。")
 
-            if is_deep_analysis_page:
-                st.info("ℹ️ 多元議題分析會使用 Tavily 搜尋、公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
-                search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
-                max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
-                use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
-                st.session_state.use_cache = use_cache
-                enable_google_fact_check = st.toggle(
-                    "🧪 啟用 Google Fact Check 查核",
-                    value=st.session_state.get("enable_google_fact_check", False),
-                    help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
-                    key="enable_google_fact_check",
-                )
-                if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
-                    deleted = clear_cache()
-                    st.success(f"✅ 已清除 {deleted} 條過期快取")
-                selected_regions = st.multiselect(
-                    "搜尋視角",
-                    ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
-                    default=["🇹🇼 台灣 (Taiwan)"],
-                    help="視角決定保底網域與是否觸發英文檢索。"
-                )
-                enable_english_for_regions = st.checkbox(
-                    "歐洲/美洲自動加入英文檢索",
-                    value=st.session_state.get("enable_english_for_regions", True),
-                    key="enable_english_for_regions",
-                    help="可關閉以僅使用中文查詢對歐美網域保底。",
-                )
-            else:
-                st.caption("「全球情報」預設 **RSS**，下方天數／視角僅用於 **多元議題分析**；進階 Tavily 請在本頁按鈕區操作。")
+            st.info("ℹ️ 多元議題分析會使用 Tavily 搜尋、公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
+            search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
+            max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
+            use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
+            st.session_state.use_cache = use_cache
+            enable_google_fact_check = st.toggle(
+                "🧪 啟用 Google Fact Check 查核",
+                value=st.session_state.get("enable_google_fact_check", False),
+                help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
+                key="enable_google_fact_check",
+            )
+            if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
+                deleted = clear_cache()
+                st.success(f"✅ 已清除 {deleted} 條過期快取")
+            selected_regions = st.multiselect(
+                "搜尋視角",
+                ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
+                default=["🇹🇼 台灣 (Taiwan)"],
+                help="視角決定保底網域與是否觸發英文檢索。"
+            )
+            enable_english_for_regions = st.checkbox(
+                "歐洲/美洲自動加入英文檢索",
+                value=st.session_state.get("enable_english_for_regions", True),
+                key="enable_english_for_regions",
+                help="可關閉以僅使用中文查詢對歐美網域保底。",
+            )
 
     with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
         uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
