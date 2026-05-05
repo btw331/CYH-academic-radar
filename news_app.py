@@ -7905,6 +7905,8 @@ def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
     category_counts = Counter((s.get("source_category") or s.get("category") or "OTHER") for s in sources)
     evidence_counts = Counter(s.get("evidence_level", "未標註") for s in sources)
     domain_counts: Counter[str] = Counter()
+    parsed_dates: List[datetime] = []
+    date_counts: Counter[str] = Counter()
     for source in sources:
         url_or_source = _normalize_feed_field(source.get("url") or source.get("source") or source.get("domain"))
         domain = ""
@@ -7915,6 +7917,10 @@ def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
                 domain = url_or_source
         domain = (domain or "未知網域").lower().replace("www.", "")
         domain_counts[domain] += 1
+        parsed_dt = _parse_source_datetime(source)
+        if parsed_dt:
+            parsed_dates.append(parsed_dt)
+            date_counts[parsed_dt.strftime("%Y-%m-%d")] += 1
     missing = []
     if not (category_counts.get("OFFICIAL", 0) or category_counts.get("NEUTRAL", 0)):
         missing.append("官方／中立來源")
@@ -7934,10 +7940,21 @@ def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
     weak_ratio = weak / total if total else 0
     top_domain_count = domain_counts.most_common(1)[0][1] if domain_counts else 0
     top_domain_share = top_domain_count / total if total else 0
+    unknown_date_count = max(0, total - len(parsed_dates))
+    old_count = sum(1 for dt in parsed_dates if (datetime.now() - dt).days > 90)
+    old_ratio = old_count / len(parsed_dates) if parsed_dates else 0
+    max_same_date_count = date_counts.most_common(1)[0][1] if date_counts else 0
+    same_date_share = max_same_date_count / len(parsed_dates) if parsed_dates else 0
     return {
         "category_counts": category_counts,
         "evidence_counts": evidence_counts,
         "domain_counts": domain_counts,
+        "date_counts": date_counts,
+        "min_date": min(parsed_dates).strftime("%Y-%m-%d") if parsed_dates else "",
+        "max_date": max(parsed_dates).strftime("%Y-%m-%d") if parsed_dates else "",
+        "unknown_date_count": unknown_date_count,
+        "old_ratio": old_ratio,
+        "same_date_share": same_date_share,
         "missing": missing,
         "strong_ratio": strong_ratio,
         "weak_ratio": weak_ratio,
@@ -7990,6 +8007,14 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
             domain_line = "｜".join(f"{domain} {count}" for domain, count in top_domains)
             st.caption(f"主要來源網域：{domain_line}")
 
+        if source_mix["min_date"] and source_mix["max_date"]:
+            date_line = f"{source_mix['min_date']} ～ {source_mix['max_date']}"
+            if source_mix["unknown_date_count"]:
+                date_line += f"｜未知日期 {source_mix['unknown_date_count']}"
+            st.caption(f"來源時間範圍：{date_line}")
+        elif source_mix["unknown_date_count"]:
+            st.caption(f"來源時間範圍：未取得可解析日期（未知日期 {source_mix['unknown_date_count']}）")
+
         warnings = []
         if source_mix["missing"]:
             warnings.append("可能缺少：" + "、".join(source_mix["missing"]))
@@ -7999,6 +8024,12 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
             warnings.append("強證據來源比例偏低")
         if source_count >= 4 and source_mix["top_domain_share"] >= 0.5:
             warnings.append("來源過度集中於單一網域")
+        if source_count >= 4 and source_mix["same_date_share"] >= 0.6:
+            warnings.append("來源發布時間高度集中")
+        if source_mix["old_ratio"] >= 0.5:
+            warnings.append("可解析日期中過半來源超過 90 天")
+        if source_count >= 4 and source_mix["unknown_date_count"] / source_count >= 0.5:
+            warnings.append("過半來源缺少可解析日期")
         if warnings:
             st.warning("快速檢視提醒：" + "；".join(warnings))
 
@@ -8021,6 +8052,7 @@ def render_changelog_page() -> None:
 - **Gemini 主題摘要快取**：不同主題的摘要會分開保存，切回已整理主題可直接查看，避免混用舊摘要與重複消耗 token。
 - **報告快速檢視強化**：多元議題與文本分析報告前新增來源視角分布、證據強度分布與缺口提示，幫助先判斷報告風險。
 - **來源集中度提示**：報告快速檢視新增主要來源網域與單一網域集中度警示，避免少數媒體重複稿件被誤判為多源共識。
+- **來源時間分布提示**：報告快速檢視新增來源日期範圍、未知日期、同日集中與過舊資料提醒，提升資料時效判讀。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
