@@ -5383,7 +5383,45 @@ RSS_FEED_URLS = [
     "https://rss.nytimes.com/services/xml/rss/nyt/World.xml",
     "https://www.theguardian.com/world/rss",
     "https://www.aljazeera.com/xml/rss/all.xml",
+    # 平衡報導版面用：補充不同立場來源（RSS 若失效會自動略過）
+    "https://moxie.foxnews.com/google-publisher/world.xml",
+    "https://nypost.com/news/feed/",
+    "https://www.washingtontimes.com/rss/headlines/news/world/",
+    "https://thehill.com/feed/",
 ]
+RSS_ITEMS_PER_FEED = 8
+
+SOURCE_BIAS_LABELS = {
+    "left": "Left",
+    "lean_left": "Lean Left",
+    "center": "Center",
+    "lean_right": "Lean Right",
+    "right": "Right",
+    "unknown": "Unknown",
+}
+
+SOURCE_BIAS_GROUP = {
+    "left": "Left",
+    "lean_left": "Left",
+    "center": "Center",
+    "lean_right": "Right",
+    "right": "Right",
+    "unknown": "Other",
+}
+
+SOURCE_BIAS_BY_DOMAIN = {
+    "theguardian.com": "left",
+    "nytimes.com": "lean_left",
+    "npr.org": "lean_left",
+    "aljazeera.com": "lean_left",
+    "bbc.com": "center",
+    "bbc.co.uk": "center",
+    "reuters.com": "center",
+    "thehill.com": "center",
+    "foxnews.com": "right",
+    "nypost.com": "right",
+    "washingtontimes.com": "lean_right",
+}
 
 def _get_feed_source_badges(url_or_domain: str) -> List[str]:
     """
@@ -5411,6 +5449,35 @@ def _get_feed_source_badges(url_or_domain: str) -> List[str]:
     if not badges:
         badges.append("📌 其他來源")
     return badges
+
+
+def _feed_source_domain(item: Dict[str, Any]) -> str:
+    """從情報卡資料取出可比對的來源網域。"""
+    ref = _normalize_feed_field(item.get("url")) or _normalize_feed_field(item.get("source"))
+    if not ref:
+        return ""
+    try:
+        domain = get_domain_name(ref) if ref.startswith(("http://", "https://")) else ref
+    except Exception:
+        domain = ref
+    return (domain or "").lower().replace("www.", "")
+
+
+def _feed_source_bias(item: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    回傳 (bias_key, source_domain)。這不是精密評級，只供 AllSides-inspired 版面做初步分欄。
+    未列入的來源會顯示為 Unknown，不硬分到左右。
+    """
+    domain = _feed_source_domain(item)
+    for known, bias in SOURCE_BIAS_BY_DOMAIN.items():
+        if domain == known or domain.endswith("." + known) or known in domain:
+            return bias, domain
+    return "unknown", domain
+
+
+def _short_feed_text(text: str, limit: int = 120) -> str:
+    t = re.sub(r"\s+", " ", _normalize_feed_field(text)).strip()
+    return (t[:limit].rstrip() + "…") if len(t) > limit else t
 
 
 def _is_single_camp_source(url_or_domain: str) -> bool:
@@ -5783,6 +5850,38 @@ def _canonical_http_url(url: str) -> str:
     return u
 
 
+def _continent_hint_from_feed_url(feed_url: str) -> str:
+    """從 RSS feed URL 本身推斷洲別，避免只靠文章 URL 造成分類偏斜。"""
+    u = (feed_url or "").lower()
+    if "/asia" in u or "asia-pacific" in u:
+        return "亞洲"
+    if "/europe" in u:
+        return "歐洲"
+    if "/africa" in u:
+        return "非洲"
+    if "us_and_canada" in u or "americas" in u:
+        return "美洲"
+    if "australia" in u or "oceania" in u or "pacific" in u:
+        return "大洋洲"
+    return ""
+
+
+def _continent_hint_from_text(title: str, content: str, url: str = "") -> str:
+    """從標題、摘要、URL 的地名關鍵字粗分洲別。"""
+    text = f"{title} {content} {url}".lower()
+    keyword_groups = [
+        ("大洋洲", ("australia", "new zealand", "oceania", "pacific islands", "fiji", "png", "papua")),
+        ("非洲", ("africa", "nigeria", "kenya", "ghana", "mali", "sudan", "ethiopia", "south africa", "egypt", "congo", "somalia")),
+        ("亞洲", ("asia", "china", "japan", "korea", "taiwan", "india", "pakistan", "iran", "israel", "gaza", "palestinian", "thailand", "philippines", "indonesia", "vietnam", "singapore", "malaysia", "afghanistan")),
+        ("歐洲", ("europe", "ukraine", "russia", "moscow", "eu ", "e.u.", "france", "germany", "britain", "uk ", "italy", "spain", "poland", "austria", "belgium")),
+        ("美洲", ("united states", " u.s.", " us ", "america", "canada", "mexico", "brazil", "argentina", "venezuela", "colombia", "caribbean")),
+    ]
+    for continent, keywords in keyword_groups:
+        if any(k in text for k in keywords):
+            return continent
+    return ""
+
+
 def _fetch_rss_raw() -> List[Dict[str, Any]]:
     """從 RSS_FEED_URLS 抓取標題／連結／摘要，不依賴 Tavily。使用 requests + xml 解析。"""
     import xml.etree.ElementTree as ET
@@ -5817,6 +5916,8 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
         return (el.text or "").strip()
 
     for url in RSS_FEED_URLS:
+        source_count = 0
+        feed_continent_hint = _continent_hint_from_feed_url(url)
         try:
             r = requests.get(url, timeout=22, headers=headers)
             r.raise_for_status()
@@ -5876,11 +5977,20 @@ def _fetch_rss_raw() -> List[Dict[str, Any]]:
                 if not title:
                     title = _title_fallback_from_url(link)
                 if title or link:
-                    entries.append({"title": title or "（無標題）", "url": link, "content": desc})
+                    entries.append({
+                        "title": title or "（無標題）",
+                        "url": link,
+                        "content": desc,
+                        "feed_url": url,
+                        "continent_hint": feed_continent_hint,
+                    })
+                    source_count += 1
+                    if source_count >= RSS_ITEMS_PER_FEED:
+                        break
         except ET.ParseError as e:
             logger.warning("_fetch_rss_raw: 解析 %s 失敗: %s", url, str(e))
             continue
-    return entries[:60]
+    return entries[:80]
 
 
 def _continent_hint_from_url(url: str) -> str:
@@ -5888,13 +5998,13 @@ def _continent_hint_from_url(url: str) -> str:
     u = (url or "").lower()
     if "asia" in u or "asia-pacific" in u or "china" in u or "japan" in u or "korea" in u or "taiwan" in u:
         return "亞洲"
-    if "europe" in u or "eu." in u or "bbc.co.uk" in u:
+    if "europe" in u or "eu." in u:
         return "歐洲"
     if "africa" in u:
         return "非洲"
     if "australia" in u or "pacific" in u or "nz" in u:
         return "大洋洲"
-    if "us" in u or "americas" in u or "reuters.com" in u:
+    if "/us" in u or "us_and_canada" in u or "americas" in u or "united-states" in u:
         return "美洲"
     return "其他"
 
@@ -5921,12 +6031,17 @@ def _rss_raw_to_feed_items(raw: List[Dict[str, Any]], max_items: int = 48) -> Li
         seen.add(key)
         content = _normalize_feed_field(r.get("content") or "", list_join=" ")[:400]
         topic = _infer_topic_from_text(title, content)
-        continent = _continent_hint_from_url(url)
+        continent = (
+            _normalize_feed_field(r.get("continent_hint"))
+            or _continent_hint_from_text(title, content, url)
+            or _continent_hint_from_url(url)
+        )
         domain = ""
         try:
             domain = urlparse(url).netloc or ""
         except Exception:
             pass
+        bias_key, _ = _feed_source_bias({"url": url, "source": domain})
         out.append({
             "continent": continent,
             "topic": topic,
@@ -5937,6 +6052,7 @@ def _rss_raw_to_feed_items(raw: List[Dict[str, Any]], max_items: int = 48) -> Li
             "source": domain,
             "url": url,
             "analysis_keywords": title,
+            "bias": bias_key,
         })
         if len(out) >= max_items:
             break
@@ -6033,6 +6149,54 @@ def fetch_intelligence_feed_rss(
     except Exception as e:
         logger.error("fetch_intelligence_feed_rss: 摘要失敗: %s", str(e))
         return _rss_fallback_from_raw(raw)
+
+
+def _render_balanced_feed_overview(feed: List[Dict[str, Any]]) -> None:
+    """
+    AllSides-inspired 平衡報導總覽：依 Left / Center / Right 分欄，讓使用者快速看到來源光譜。
+    這不是 AllSides 官方資料，只是以本地 RSS 來源的已知傾向做初步分欄。
+    """
+    if not feed:
+        return
+    grouped: Dict[str, List[Dict[str, Any]]] = {"Left": [], "Center": [], "Right": [], "Other": []}
+    for item in feed:
+        bias_key = _normalize_feed_field(item.get("bias"))
+        if not bias_key:
+            bias_key, _ = _feed_source_bias(item)
+        group = SOURCE_BIAS_GROUP.get(bias_key, "Other")
+        grouped.setdefault(group, []).append(item)
+
+    with st.expander("⚖️ 平衡報導總覽（Left / Center / Right）", expanded=True):
+        st.caption("參考 AllSides 的平衡報導概念：同一批 RSS 來源按媒體傾向分欄，方便掃讀不同來源。未評級來源列為 Other。")
+        bias_cols = st.columns(4)
+        columns = [
+            ("Left", "左／偏左來源", "🟦"),
+            ("Center", "中間來源", "⬜"),
+            ("Right", "右／偏右來源", "🟥"),
+            ("Other", "未分類", "📌"),
+        ]
+        for col, (group, label, icon) in zip(bias_cols, columns):
+            with col:
+                st.markdown(f"#### {icon} {label}")
+                items = grouped.get(group, [])[:6]
+                if not items:
+                    st.caption("目前無來源")
+                    continue
+                for item in items:
+                    title = _normalize_feed_field(item.get("title")) or "（無標題）"
+                    summary = _short_feed_text(_normalize_feed_field(item.get("summary")), 110)
+                    url = _normalize_feed_field(item.get("url"))
+                    source = _normalize_feed_field(item.get("source")) or _feed_source_domain(item)
+                    bias_key = _normalize_feed_field(item.get("bias")) or _feed_source_bias(item)[0]
+                    bias_label = SOURCE_BIAS_LABELS.get(bias_key, "Unknown")
+                    with st.container(border=True):
+                        if url.startswith(("http://", "https://")):
+                            st.markdown(f"**[{title}]({url})**")
+                        else:
+                            st.markdown(f"**{title}**")
+                        if summary:
+                            st.caption(summary)
+                        st.caption(f"{source or '未知來源'} · {bias_label}")
 
 
 def render_news_feed_page(
@@ -6213,6 +6377,8 @@ def render_news_feed_page(
     col_info, col_refresh = st.columns([3, 1])
     with col_info:
         st.success(f"已載入 {len(feed)} 則要聞。")
+        continent_counts = Counter(_normalize_feed_field(x.get("continent")) or "其他" for x in feed)
+        st.caption("洲別分布：" + "｜".join(f"{c} {continent_counts.get(c, 0)}" for c in list(CONTINENT_ORDER) + ["其他"] if continent_counts.get(c, 0)))
         if st.session_state.get("feed_gemini_summarized"):
             st.caption(f"📌 本批資料已用 **Gemini** 綜整（{feed_llm_model}）。")
         elif st.session_state.get("feed_last_load_mode") == "tavily":
@@ -6253,6 +6419,8 @@ def render_news_feed_page(
             except Exception as e:
                 st.error(f"重新整理失敗：{str(e)[:200]}")
             st.rerun()
+
+    _render_balanced_feed_overview(feed)
 
     grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     for item in feed:
