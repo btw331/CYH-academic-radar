@@ -5498,6 +5498,7 @@ ALLSIDES_ASIA_TAIWAN_KEYWORDS = (
     "japan", "korea", "north korea", "south korea", "philippines",
     "india", "pakistan", "semiconductor", "tsmc",
 )
+ALLSIDES_MIN_ROUNDUPS = 6
 ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS = [
     {
         "title": "US, Taiwan Agree to Talks on New Trade Deal Amid China Tensions",
@@ -5585,6 +5586,50 @@ def _with_allsides_source_meta(items: List[Dict[str, Any]], source_mode: str) ->
     return out
 
 
+def _allsides_roundup_key(item: Dict[str, Any]) -> str:
+    return (
+        _normalize_feed_field(item.get("story_url"))
+        or _normalize_feed_field(item.get("url"))
+        or _normalize_feed_field(item.get("title")).lower()
+    )
+
+
+def _supplement_allsides_roundups(
+    items: List[Dict[str, Any]],
+    max_roundups: int = 12,
+    min_roundups: int = ALLSIDES_MIN_ROUNDUPS,
+) -> List[Dict[str, Any]]:
+    """
+    AllSides tag/RSS 常只回少量亞洲台灣資料；不足時用內建 AllSides seed 補滿基本可讀量。
+    會保留每則的 source_mode，因此 UI 可清楚顯示混合來源。
+    """
+    out: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append_many(candidates: List[Dict[str, Any]]) -> None:
+        for c in candidates:
+            if len(out) >= max_roundups:
+                return
+            key = _allsides_roundup_key(c)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+
+    _append_many(items)
+    if len(out) >= min_roundups:
+        return out
+
+    rss_fallback = _with_allsides_source_meta(_fetch_allsides_rss_filtered_roundups(max_roundups), "allsides_rss_filter")
+    _append_many(rss_fallback)
+    if len(out) >= min_roundups:
+        return out
+
+    seed_fallback = _with_allsides_source_meta(ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS, "built_in_seed")
+    _append_many(seed_fallback)
+    return out
+
+
 def _allsides_item_matches_asia_taiwan(title: str, summary: str = "", url: str = "") -> bool:
     haystack = f"{title} {summary} {url}".lower()
     return any(k in haystack for k in ALLSIDES_ASIA_TAIWAN_KEYWORDS)
@@ -5655,11 +5700,11 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
         from bs4 import BeautifulSoup
     except Exception as e:
         logger.error("fetch_allsides_headline_roundups: 缺少 beautifulsoup4: %s", str(e))
-        rss_fallback = _fetch_allsides_rss_filtered_roundups(max_roundups)
-        return _with_allsides_source_meta(
-            rss_fallback if rss_fallback else ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups],
-            "allsides_rss_filter" if rss_fallback else "built_in_seed",
+        rss_fallback = _with_allsides_source_meta(
+            _fetch_allsides_rss_filtered_roundups(max_roundups),
+            "allsides_rss_filter",
         )
+        return _supplement_allsides_roundups(rss_fallback, max_roundups)
 
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -5781,11 +5826,12 @@ def fetch_allsides_headline_roundups(max_roundups: int = 12) -> List[Dict[str, A
                 seen_story_urls.add(story_url)
 
     if not out:
-        rss_fallback = _fetch_allsides_rss_filtered_roundups(max_roundups)
-        if rss_fallback:
-            return _with_allsides_source_meta(rss_fallback, "allsides_rss_filter")
-        return _with_allsides_source_meta(ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS[:max_roundups], "built_in_seed")
-    return _with_allsides_source_meta(out, "allsides_tag_page")
+        rss_fallback = _with_allsides_source_meta(
+            _fetch_allsides_rss_filtered_roundups(max_roundups),
+            "allsides_rss_filter",
+        )
+        return _supplement_allsides_roundups(rss_fallback, max_roundups)
+    return _supplement_allsides_roundups(_with_allsides_source_meta(out, "allsides_tag_page"), max_roundups)
 
 
 def _render_allsides_roundup_card(
