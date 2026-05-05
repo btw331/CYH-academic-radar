@@ -7904,6 +7904,17 @@ def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
     """彙整來源類型與證據強度，供報告前快速檢視使用。"""
     category_counts = Counter((s.get("source_category") or s.get("category") or "OTHER") for s in sources)
     evidence_counts = Counter(s.get("evidence_level", "未標註") for s in sources)
+    domain_counts: Counter[str] = Counter()
+    for source in sources:
+        url_or_source = _normalize_feed_field(source.get("url") or source.get("source") or source.get("domain"))
+        domain = ""
+        if url_or_source:
+            try:
+                domain = get_domain_name(url_or_source) if url_or_source.startswith(("http://", "https://")) else url_or_source
+            except Exception:
+                domain = url_or_source
+        domain = (domain or "未知網域").lower().replace("www.", "")
+        domain_counts[domain] += 1
     missing = []
     if not (category_counts.get("OFFICIAL", 0) or category_counts.get("NEUTRAL", 0)):
         missing.append("官方／中立來源")
@@ -7921,12 +7932,16 @@ def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
     weak = evidence_counts.get("中弱", 0) + evidence_counts.get("弱", 0)
     strong_ratio = strong / total if total else 0
     weak_ratio = weak / total if total else 0
+    top_domain_count = domain_counts.most_common(1)[0][1] if domain_counts else 0
+    top_domain_share = top_domain_count / total if total else 0
     return {
         "category_counts": category_counts,
         "evidence_counts": evidence_counts,
+        "domain_counts": domain_counts,
         "missing": missing,
         "strong_ratio": strong_ratio,
         "weak_ratio": weak_ratio,
+        "top_domain_share": top_domain_share,
     }
 
 
@@ -7970,6 +7985,11 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
         if evidence_line:
             st.caption(f"證據強度分布：{evidence_line}")
 
+        top_domains = source_mix["domain_counts"].most_common(5)
+        if top_domains:
+            domain_line = "｜".join(f"{domain} {count}" for domain, count in top_domains)
+            st.caption(f"主要來源網域：{domain_line}")
+
         warnings = []
         if source_mix["missing"]:
             warnings.append("可能缺少：" + "、".join(source_mix["missing"]))
@@ -7977,6 +7997,8 @@ def render_analysis_summary_cards(data: Dict[str, Any], sources: Optional[List[D
             warnings.append("弱證據來源比例偏高")
         if source_count >= 4 and source_mix["strong_ratio"] < 0.2:
             warnings.append("強證據來源比例偏低")
+        if source_count >= 4 and source_mix["top_domain_share"] >= 0.5:
+            warnings.append("來源過度集中於單一網域")
         if warnings:
             st.warning("快速檢視提醒：" + "；".join(warnings))
 
@@ -7998,6 +8020,7 @@ def render_changelog_page() -> None:
 - **Gemini 主題摘要優化**：「全球情報」的 Gemini 整理會依目前主題篩選範圍摘要，並改用相容 Streamlit 1.28 的水平 radio。
 - **Gemini 主題摘要快取**：不同主題的摘要會分開保存，切回已整理主題可直接查看，避免混用舊摘要與重複消耗 token。
 - **報告快速檢視強化**：多元議題與文本分析報告前新增來源視角分布、證據強度分布與缺口提示，幫助先判斷報告風險。
+- **來源集中度提示**：報告快速檢視新增主要來源網域與單一網域集中度警示，避免少數媒體重複稿件被誤判為多源共識。
 
 ### 模型與金鑰（簡化）
 - **僅支援 Google Gemini**：已移除 Grok、Groq、OpenRouter 與 OpenAI 備援等選項，降低設定複雜度。
