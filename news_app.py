@@ -7921,6 +7921,16 @@ with st.sidebar:
             st.session_state["current_page"] = page
             st.rerun()
 
+    st.markdown("##### 全球情報")
+    st.caption("AllSides 亞洲／台灣平衡報導與重點整理")
+    if st.button(
+        "📰 全球情報 (News Feed)",
+        key="sidebar_nav_feed",
+        use_container_width=True,
+        type="primary" if _cur_nav == "📰 全球情報 (News Feed)" else "secondary",
+    ):
+        _sidebar_nav_to("📰 全球情報 (News Feed)")
+
     st.markdown("##### 議題與文本分析")
     st.caption("多源查證、深度報告與單篇新聞結構化分析")
     if st.button(
@@ -7938,15 +7948,8 @@ with st.sidebar:
     ):
         _sidebar_nav_to("🧾 新聞文本分析 (Text Analysis)")
 
-    st.markdown("##### 全球情報與方法論")
-    st.caption("要聞儀表與實裝方法說明")
-    if st.button(
-        "📰 全球情報 (News Feed)",
-        key="sidebar_nav_feed",
-        use_container_width=True,
-        type="primary" if _cur_nav == "📰 全球情報 (News Feed)" else "secondary",
-    ):
-        _sidebar_nav_to("📰 全球情報 (News Feed)")
+    st.markdown("##### 方法論")
+    st.caption("實裝方法與限制說明")
     if st.button(
         "📚 方法論 (Methodology)",
         key="sidebar_nav_meth",
