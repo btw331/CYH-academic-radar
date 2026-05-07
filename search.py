@@ -218,6 +218,32 @@ EVIDENCE_PATTERNS = [
     ("敘述性回顧/評論", 1, ["review", "narrative review", "commentary", "editorial"]),
 ]
 
+REPORT_DEPTHS = {
+    "標準報告": """
+請輸出中等篇幅報告，重點放在核心結論、代表性研究、限制與建議。
+""",
+    "深度分析": """
+請輸出較長且細緻的深度分析。必須包含：
+1. 核心結論摘要。
+2. 證據地圖：依研究設計與證據強度整理。
+3. 代表性研究逐篇分析：每篇說明研究問題、方法、樣本/材料/資料集、主要結果、限制與 citation。
+4. 研究之間的一致與不一致之處。
+5. 方法學限制與可能偏誤。
+6. 對實務應用或後續研究的具體建議。
+""",
+    "研究級長報告": """
+請輸出完整研究級長報告，內容需盡可能詳盡但避免空泛。必須包含：
+1. Executive Summary：8-12 句，全部附 citation。
+2. Background：定義核心概念、研究脈絡與為何重要。
+3. Evidence Matrix：用 Markdown 表格整理至少 8-15 篇最重要來源，欄位含 citation、年份、研究設計、對象/材料/資料集、方法、主要發現、限制、證據權重。
+4. Thematic Synthesis：依主題分段整合，不要只逐篇摘要。
+5. Controversies and Boundary Conditions：哪些情境下結論可能不同。
+6. Methodological Critique：搜尋結果與研究方法的偏誤、限制、外推性。
+7. Practical / Research Recommendations：具體可執行建議，每點附 citation。
+8. Open Questions：未解問題與未來 3-5 年值得追蹤方向。
+""",
+}
+
 
 st.set_page_config(
     page_title="Gemini x 學術搜尋",
@@ -1222,8 +1248,9 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     return buffer.getvalue()
 
 
-def generate_report(query, papers, web_sources, api_key, model_name, template_name):
+def generate_report(query, papers, web_sources, api_key, model_name, template_name, report_depth):
     template = get_template(template_name)
+    depth_instruction = REPORT_DEPTHS.get(report_depth, REPORT_DEPTHS["標準報告"])
 
     prompt = f"""
 你是一位嚴謹的學術研究助理。請用台灣繁體中文回答，並以證據品質為優先。
@@ -1237,6 +1264,12 @@ def generate_report(query, papers, web_sources, api_key, model_name, template_na
 【領域特化輸出要求】
 {template.get("report_focus", "")}
 
+【報告詳細度】
+{report_depth}
+
+【詳細度要求】
+{depth_instruction}
+
 【整合學術資料庫論文資料】
 {format_paper_context(papers)}
 
@@ -1244,14 +1277,15 @@ def generate_report(query, papers, web_sources, api_key, model_name, template_na
 {format_web_context(web_sources)}
 
 【輸出格式】
-1. 先用 5-8 句話回答核心結論。
-2. 整理最重要研究，包含年份、研究設計、族群/樣本、主要發現、限制。
+1. 先回答核心結論，長度依報告詳細度調整。
+2. 整理最重要研究，包含年份、研究設計、族群/樣本/材料/資料集、方法、主要發現、限制。
 3. 優先引用「正式論文」與較高「證據等級」的資料；預印本與一般網頁只能作為最新線索。
 4. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章，並指出來源資料庫。
 5. 每一段只要包含研究發現、年份、數據、比較或建議，就必須附 citation，格式只能使用 [論文1]、[論文2]、[網頁1] 這種標記。
 6. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
-7. 最後給實務建議，分成「較有把握」與「仍需保留」，每一點也必須附 citation。
+7. 最後給實務建議或研究建議，分成「較有把握」與「仍需保留」，每一點也必須附 citation。
 8. 不要輸出沒有 citation 的學術結論；如果沒有足夠來源，請明確說「目前來源不足」。
+9. 不要只列點堆砌。需要在段落中解釋研究之間如何互相支持、矛盾或補充。
 """
     report = generate_with_gemini(prompt, api_key, model_name)
     return report + build_citation_section(papers, web_sources)
@@ -1383,6 +1417,12 @@ def sidebar():
             index=0,
             help="依領域自動補英文關鍵字、Tavily 學術網域與報告結構。",
         )
+        report_depth = st.selectbox(
+            "報告詳細度",
+            list(REPORT_DEPTHS.keys()),
+            index=1,
+            help="內容不夠時可選研究級長報告，但生成時間與 token 用量會增加。",
+        )
         topic_query = st.session_state.get("topic_query", "").strip()
         if st.button("用 Gemini 建議關鍵字", use_container_width=True):
             if not gemini_key:
@@ -1425,6 +1465,7 @@ def sidebar():
         tavily_key,
         model_name,
         template_name,
+        report_depth,
         custom_terms,
         paper_limit,
         biomedical_limit,
@@ -1439,6 +1480,7 @@ def topic_search_tab(
     tavily_key,
     model_name,
     template_name,
+    report_depth,
     custom_terms,
     paper_limit,
     biomedical_limit,
@@ -1526,6 +1568,7 @@ def topic_search_tab(
                     gemini_key,
                     model_name,
                     template_name,
+                    report_depth,
                 )
 
     if st.session_state.report:
@@ -1616,6 +1659,7 @@ def main():
         tavily_key,
         model_name,
         template_name,
+        report_depth,
         custom_terms,
         paper_limit,
         biomedical_limit,
@@ -1634,6 +1678,7 @@ def main():
             tavily_key,
             model_name,
             template_name,
+            report_depth,
             custom_terms,
             paper_limit,
             biomedical_limit,
