@@ -28,10 +28,6 @@ LINEAGE_FIELDS = (
 )
 
 GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
     "gemini-3.1-flash",
     "gemini-3.1-pro",
     "gemini-3.0-flash",
@@ -39,10 +35,10 @@ GEMINI_MODELS = [
 ]
 
 GEMINI_FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
+    "gemini-3.1-flash",
+    "gemini-3.1-pro",
+    "gemini-3.0-flash",
+    "gemini-3.0-pro",
 ]
 
 ACADEMIC_DOMAINS = [
@@ -637,6 +633,28 @@ def generate_with_gemini(prompt, api_key, preferred_model):
     )
 
 
+def build_citation_section(papers, web_sources):
+    lines = ["\n\n## Citation Sources"]
+    for index, paper in enumerate(papers, start=1):
+        identifier = paper_identifier(paper) or "No DOI/PMID"
+        source = paper.get("source", "Semantic Scholar")
+        year = paper.get("year", "N/A")
+        venue = paper.get("venue", "N/A")
+        url = paper.get("url", "")
+        lines.append(
+            f"- [論文{index}] {paper.get('title', 'Untitled')} ({year}). "
+            f"{venue}. {identifier}. Source: {source}. {url}"
+        )
+
+    for index, source in enumerate(web_sources, start=1):
+        lines.append(
+            f"- [網頁{index}] {source.get('title', 'Untitled')}. "
+            f"{source.get('url', '')}"
+        )
+
+    return "\n".join(lines)
+
+
 def generate_report(query, papers, web_sources, api_key, model_name):
 
     prompt = f"""
@@ -656,11 +674,13 @@ def generate_report(query, papers, web_sources, api_key, model_name):
 2. 整理最重要研究，包含年份、研究設計、族群/樣本、主要發現、限制。
 3. 優先引用「正式論文」與較高「證據等級」的資料；預印本與一般網頁只能作為最新線索。
 4. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章，並指出來源資料庫。
-5. 引用時使用 [論文1]、[網頁1] 這種標記。
+5. 每一段只要包含研究發現、年份、數據、比較或建議，就必須附 citation，格式只能使用 [論文1]、[論文2]、[網頁1] 這種標記。
 6. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
-7. 最後給實務建議，分成「較有把握」與「仍需保留」。
+7. 最後給實務建議，分成「較有把握」與「仍需保留」，每一點也必須附 citation。
+8. 不要輸出沒有 citation 的學術結論；如果沒有足夠來源，請明確說「目前來源不足」。
 """
-    return generate_with_gemini(prompt, api_key, model_name)
+    report = generate_with_gemini(prompt, api_key, model_name)
+    return report + build_citation_section(papers, web_sources)
 
 
 def generate_lineage_report(lineage, question, api_key, model_name):
@@ -781,7 +801,7 @@ def sidebar():
             "Gemini 模型",
             GEMINI_MODELS,
             index=0,
-            help="Gemini 3.x 若帳號或 API 尚未開放，系統會自動 fallback 到 2.5/1.5 穩定模型。",
+            help="僅使用 Gemini 3.1/3.0 系列；若 API 尚未開放這些模型，報告會直接提示失敗。",
         )
         start_year = st.number_input(
             "搜尋年份（起始）",
@@ -795,7 +815,7 @@ def sidebar():
         biomedical_limit = st.slider("PubMed / Europe PMC 論文數", 5, 30, 12)
         web_limit = st.slider("Tavily 最新來源數", 0, 15, 5)
 
-        st.caption("預設優先搜尋近年正式論文，Tavily 用來補最新網頁與 preprint 線索。")
+        st.caption("預設僅使用 Gemini 3.1/3.0 與近年正式論文；學術報告會要求段落內 citation，並附來源清單。")
 
     return gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year
 
