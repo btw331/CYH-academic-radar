@@ -14,6 +14,8 @@ SEMANTIC_SCHOLAR_PAPER_URL = "https://api.semanticscholar.org/graph/v1/paper"
 PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
 EUROPE_PMC_SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+OPENALEX_WORKS_URL = "https://api.openalex.org/works"
+CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 REQUEST_HEADERS = {"User-Agent": "AcademicSearch/1.0"}
 REQUEST_TIMEOUT = 15
 
@@ -47,13 +49,157 @@ ACADEMIC_DOMAINS = [
     "crossref.org",
     "biorxiv.org",
     "medrxiv.org",
+    "arxiv.org",
     "nature.com",
     "springer.com",
     "sciencedirect.com",
+    "wiley.com",
+    "acs.org",
+    "rsc.org",
+    "iopscience.iop.org",
+    "aip.scitation.org",
     "frontiersin.org",
     "tandfonline.com",
     "mdpi.com",
 ]
+
+RESEARCH_TEMPLATES = {
+    "通用學術搜尋": {
+        "expansion": [
+            "recent research",
+            "systematic review",
+            "meta-analysis",
+            "DOI",
+            "citation",
+        ],
+        "domains": [],
+        "report_focus": """
+請使用通用學術報告格式：核心結論、重要研究、方法與證據等級、限制、未來方向、實務或研究建議。
+""",
+    },
+    "運動科學 / 生理學": {
+        "expansion": [
+            "exercise physiology",
+            "training adaptation",
+            "concurrent training",
+            "interference effect",
+            "endurance training",
+            "resistance training",
+            "strength",
+            "hypertrophy",
+            "power",
+            "VO2max",
+            "trained participants",
+        ],
+        "domains": [
+            "pubmed.ncbi.nlm.nih.gov",
+            "pmc.ncbi.nlm.nih.gov",
+            "europepmc.org",
+            "frontiersin.org",
+            "tandfonline.com",
+            "sciencedirect.com",
+        ],
+        "report_focus": """
+請特別分開討論：肌力、肌肥大、爆發力、VO2max；有氧模式如跑步/腳踏車/HIIT/Zone 2；訓練安排如同日、間隔數小時、不同日；並標出對訓練實務最有用的結論。
+""",
+    },
+    "醫學 / 臨床研究": {
+        "expansion": [
+            "clinical trial",
+            "randomized controlled trial",
+            "cohort study",
+            "systematic review",
+            "meta-analysis",
+            "guideline",
+            "PMID",
+            "PubMed",
+        ],
+        "domains": [
+            "pubmed.ncbi.nlm.nih.gov",
+            "pmc.ncbi.nlm.nih.gov",
+            "europepmc.org",
+            "cochranelibrary.com",
+            "nejm.org",
+            "thelancet.com",
+            "jamanetwork.com",
+        ],
+        "report_focus": """
+請特別分開討論：研究設計、受試者/病人族群、主要與次要 outcome、效益與風險、臨床適用性、指南或共識是否一致。
+""",
+    },
+    "材料科學 / 顯微分析": {
+        "expansion": [
+            "transmission electron microscopy",
+            "TEM",
+            "scanning transmission electron microscopy",
+            "STEM",
+            "electron energy loss spectroscopy",
+            "EELS",
+            "STEM-EELS",
+            "monochromated EELS",
+            "core-loss EELS",
+            "low-loss EELS",
+            "spectrum imaging",
+            "chemical mapping",
+            "oxidation state",
+            "plasmon",
+            "phonon EELS",
+            "4D-STEM",
+            "in situ TEM",
+            "cryo TEM",
+            "machine learning EELS",
+        ],
+        "domains": [
+            "nature.com",
+            "sciencedirect.com",
+            "springer.com",
+            "wiley.com",
+            "acs.org",
+            "rsc.org",
+            "iopscience.iop.org",
+            "aip.scitation.org",
+            "arxiv.org",
+        ],
+        "report_focus": """
+請特別分開討論：儀器硬體進展、能量/空間解析度、spectrum imaging 與定量方法、denoising/機器學習分析、in situ/cryo/4D-STEM 整合、代表性材料應用，以及未來 3-5 年趨勢。
+""",
+    },
+    "AI / Computer Science": {
+        "expansion": [
+            "artificial intelligence",
+            "machine learning",
+            "deep learning",
+            "benchmark",
+            "dataset",
+            "arXiv",
+            "conference",
+            "NeurIPS",
+            "ICML",
+            "ICLR",
+            "ACL",
+            "CVPR",
+        ],
+        "domains": [
+            "arxiv.org",
+            "openreview.net",
+            "proceedings.neurips.cc",
+            "proceedings.mlr.press",
+            "aclanthology.org",
+            "thecvf.com",
+            "semanticscholar.org",
+        ],
+        "report_focus": """
+請特別分開討論：核心方法、資料集與 benchmark、與前作比較、實驗設計、可重現性、開源資源、實際限制與後續研究方向。
+""",
+    },
+    "自訂模板": {
+        "expansion": [],
+        "domains": [],
+        "report_focus": """
+請依使用者問題本身判斷最合適的學術報告結構，仍需保持 citation 與證據品質。
+""",
+    },
+}
 
 PREPRINT_MARKERS = ["arxiv", "biorxiv", "medrxiv", "preprint"]
 SOURCE_TYPE_SCORE = {
@@ -100,10 +246,24 @@ def normalize_query(query):
     return re.sub(r"\s+", " ", query.strip())
 
 
-def build_academic_query(query, start_year):
+def get_template(template_name):
+    return RESEARCH_TEMPLATES.get(template_name, RESEARCH_TEMPLATES["通用學術搜尋"])
+
+
+def template_expansion(template_name):
+    return " ".join(get_template(template_name).get("expansion", []))
+
+
+def template_domains(template_name):
+    domains = get_template(template_name).get("domains", [])
+    merged = domains + [domain for domain in ACADEMIC_DOMAINS if domain not in domains]
+    return merged
+
+
+def build_academic_query(query, start_year, template_name="通用學術搜尋", custom_terms=""):
     terms = [
         query,
-        query_expansion(query),
+        query_expansion(query, template_name, custom_terms),
         "recent",
         "systematic review",
         "meta-analysis",
@@ -118,7 +278,7 @@ def build_academic_query(query, start_year):
     return " ".join(terms)
 
 
-def query_expansion(query):
+def query_expansion(query, template_name="通用學術搜尋", custom_terms=""):
     expansions = {
         "有氧": "aerobic exercise endurance training",
         "肌力": "resistance training strength training",
@@ -126,9 +286,15 @@ def query_expansion(query):
         "肌肥大": "hypertrophy muscle growth",
         "不相容": "interference effect concurrent training",
         "併行訓練": "concurrent training interference effect",
+        "穿透式電子顯微鏡": "transmission electron microscopy TEM STEM",
+        "電子顯微鏡": "electron microscopy TEM STEM",
+        "EELS": "electron energy loss spectroscopy EELS STEM-EELS",
+        "能量損失": "electron energy loss spectroscopy EELS",
+        "材料": "materials science characterization",
+        "顯微": "microscopy characterization",
     }
     extra_terms = [value for key, value in expansions.items() if key in query]
-    return " ".join(extra_terms)
+    return " ".join(extra_terms + [template_expansion(template_name), custom_terms])
 
 
 def paper_authors(paper):
@@ -315,10 +481,28 @@ def annotate_web_sources(sources):
     )
 
 
+def abstract_from_inverted_index(inverted_index):
+    if not inverted_index:
+        return ""
+    positioned_words = []
+    for word, positions in inverted_index.items():
+        for position in positions:
+            positioned_words.append((position, word))
+    return " ".join(word for _, word in sorted(positioned_words))
+
+
+def crossref_year(item):
+    for key in ["published-print", "published-online", "published"]:
+        date_parts = (item.get(key) or {}).get("date-parts") or []
+        if date_parts and date_parts[0]:
+            return date_parts[0][0]
+    return None
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_semantic_scholar(query, limit, start_year):
+def search_semantic_scholar(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     params = {
-        "query": f"{query} {query_expansion(query)}",
+        "query": f"{query} {query_expansion(query, template_name, custom_terms)}",
         "limit": min(limit * 3, 100),
         "fields": PAPER_FIELDS,
         "year": f"{start_year}-",
@@ -351,13 +535,13 @@ def search_semantic_scholar(query, limit, start_year):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_pubmed(query, limit, start_year):
+def search_pubmed(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     try:
         search_response = requests.get(
             PUBMED_SEARCH_URL,
             params={
                 "db": "pubmed",
-                "term": f"{query} {query_expansion(query)}",
+                "term": f"{query} {query_expansion(query, template_name, custom_terms)}",
                 "retmode": "json",
                 "retmax": limit,
                 "sort": "pub date",
@@ -420,14 +604,14 @@ def search_pubmed(query, limit, start_year):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_europe_pmc(query, limit, start_year):
+def search_europe_pmc(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     current_year = date.today().year
     try:
         response = requests.get(
             EUROPE_PMC_SEARCH_URL,
             params={
                 "query": (
-                    f"({query} {query_expansion(query)}) "
+                    f"({query} {query_expansion(query, template_name, custom_terms)}) "
                     f"AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]"
                 ),
                 "format": "json",
@@ -441,7 +625,7 @@ def search_europe_pmc(query, limit, start_year):
             response = requests.get(
                 EUROPE_PMC_SEARCH_URL,
                 params={
-                    "query": f"{query} {query_expansion(query)}",
+                    "query": f"{query} {query_expansion(query, template_name, custom_terms)}",
                     "format": "json",
                     "pageSize": limit,
                     "sort": "FIRST_PDATE_D desc",
@@ -483,13 +667,110 @@ def search_europe_pmc(query, limit, start_year):
     return papers
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_openalex(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
+    try:
+        response = requests.get(
+            OPENALEX_WORKS_URL,
+            params={
+                "search": f"{query} {query_expansion(query, template_name, custom_terms)}",
+                "per-page": limit,
+                "filter": f"from_publication_date:{start_year}-01-01",
+                "sort": "publication_date:desc",
+            },
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+    except requests.RequestException:
+        return []
+
+    papers = []
+    for item in results:
+        source = ((item.get("primary_location") or {}).get("source") or {}).get("display_name")
+        ids = item.get("ids") or {}
+        doi = (ids.get("doi") or "").replace("https://doi.org/", "") or None
+        pmid_match = re.search(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", ids.get("pmid", "") or "")
+        authors = [
+            {"name": (authorship.get("author") or {}).get("display_name")}
+            for authorship in item.get("authorships", [])
+            if (authorship.get("author") or {}).get("display_name")
+        ]
+        papers.append(
+            {
+                "paperId": item.get("id"),
+                "title": item.get("display_name", "Untitled"),
+                "year": item.get("publication_year"),
+                "venue": source or "OpenAlex",
+                "abstract": abstract_from_inverted_index(item.get("abstract_inverted_index")),
+                "tldr": None,
+                "citationCount": item.get("cited_by_count", 0),
+                "authors": authors,
+                "externalIds": {"DOI": doi, "PubMed": pmid_match.group(1) if pmid_match else None},
+                "url": item.get("doi") or item.get("id"),
+                "source": "OpenAlex",
+                "publication_types": [item.get("type")] if item.get("type") else [],
+            }
+        )
+    return papers
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_crossref(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
+    try:
+        response = requests.get(
+            CROSSREF_WORKS_URL,
+            params={
+                "query.bibliographic": f"{query} {query_expansion(query, template_name, custom_terms)}",
+                "rows": limit,
+                "filter": f"from-pub-date:{start_year}-01-01",
+                "sort": "published",
+                "order": "desc",
+            },
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        results = response.json().get("message", {}).get("items", [])
+    except requests.RequestException:
+        return []
+
+    papers = []
+    for item in results:
+        authors = [
+            {"name": " ".join(part for part in [author.get("given"), author.get("family")] if part)}
+            for author in item.get("author", [])
+        ]
+        titles = item.get("title") or []
+        venues = item.get("container-title") or []
+        papers.append(
+            {
+                "paperId": f"DOI:{item.get('DOI')}" if item.get("DOI") else item.get("URL"),
+                "title": titles[0] if titles else "Untitled",
+                "year": crossref_year(item),
+                "venue": venues[0] if venues else "Crossref",
+                "abstract": re.sub(r"<[^>]+>", "", item.get("abstract", "")),
+                "tldr": None,
+                "citationCount": item.get("is-referenced-by-count", 0),
+                "authors": authors,
+                "externalIds": {"DOI": item.get("DOI"), "PubMed": None},
+                "url": item.get("URL"),
+                "source": "Crossref",
+                "publication_types": [item.get("type")] if item.get("type") else [],
+            }
+        )
+    return papers
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
-def search_tavily(query, api_key, max_results, start_year):
+def search_tavily(query, api_key, max_results, start_year, template_name="通用學術搜尋", custom_terms=""):
     if not api_key:
         return []
 
     tavily = TavilyClient(api_key=api_key)
-    search_query = build_academic_query(query, start_year)
+    search_query = build_academic_query(query, start_year, template_name, custom_terms)
+    domains = template_domains(template_name)
     try:
         response = tavily.search(
             query=search_query,
@@ -497,10 +778,10 @@ def search_tavily(query, api_key, max_results, start_year):
             max_results=max_results,
             include_answer=True,
             include_raw_content=True,
-            include_domains=ACADEMIC_DOMAINS,
+            include_domains=domains,
         )
     except TypeError:
-        domain_query = " OR ".join([f"site:{domain}" for domain in ACADEMIC_DOMAINS[:6]])
+        domain_query = " OR ".join([f"site:{domain}" for domain in domains[:8]])
         try:
             response = tavily.search(
                 query=f"{search_query} {domain_query}",
@@ -653,13 +934,20 @@ def build_citation_section(papers, web_sources):
     return "\n".join(lines)
 
 
-def generate_report(query, papers, web_sources, api_key, model_name):
+def generate_report(query, papers, web_sources, api_key, model_name, template_name):
+    template = get_template(template_name)
 
     prompt = f"""
 你是一位嚴謹的學術研究助理。請用台灣繁體中文回答，並以證據品質為優先。
 
 【研究問題】
 {query}
+
+【研究領域模板】
+{template_name}
+
+【領域特化輸出要求】
+{template.get("report_focus", "")}
 
 【整合學術資料庫論文資料】
 {format_paper_context(papers)}
@@ -801,6 +1089,18 @@ def sidebar():
             index=0,
             help="僅使用 Gemini 3 preview 系列；若 API 尚未開放這些模型，報告會直接提示失敗。",
         )
+        template_name = st.selectbox(
+            "研究領域模板",
+            list(RESEARCH_TEMPLATES.keys()),
+            index=0,
+            help="依領域自動補英文關鍵字、Tavily 學術網域與報告結構。",
+        )
+        custom_terms = st.text_area(
+            "自訂補充關鍵字（可選）",
+            placeholder="例如：STEM-EELS phonon EELS battery materials",
+            height=80,
+            help="會附加到所有資料庫查詢，適合補專有名詞、技術名、材料名或族群。",
+        )
         start_year = st.number_input(
             "搜尋年份（起始）",
             min_value=1900,
@@ -811,17 +1111,40 @@ def sidebar():
         )
         paper_limit = st.slider("Semantic Scholar 論文數", 5, 30, 12)
         biomedical_limit = st.slider("PubMed / Europe PMC 論文數", 5, 30, 12)
+        index_limit = st.slider("OpenAlex / Crossref 論文數", 5, 30, 12)
         web_limit = st.slider("Tavily 最新來源數", 0, 15, 5)
 
-        st.caption("預設僅使用 Gemini 3 preview 與近年正式論文；學術報告會要求段落內 citation，並附來源清單。")
+        st.caption("預設僅使用 Gemini 3 preview 與近年正式論文；可用研究領域模板切換 query expansion、來源優先權與報告格式。")
 
-    return gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year
+    return (
+        gemini_key,
+        tavily_key,
+        model_name,
+        template_name,
+        custom_terms,
+        paper_limit,
+        biomedical_limit,
+        index_limit,
+        web_limit,
+        start_year,
+    )
 
 
-def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year):
+def topic_search_tab(
+    gemini_key,
+    tavily_key,
+    model_name,
+    template_name,
+    custom_terms,
+    paper_limit,
+    biomedical_limit,
+    index_limit,
+    web_limit,
+    start_year,
+):
     query = st.text_input(
         "研究問題",
-        placeholder="例如：有氧運動與肌力訓練不相容的最新研究有哪些？",
+        placeholder="例如：有氧運動與肌力訓練不相容，或 TEM-EELS 技術近年發展",
     )
     col_search, col_report = st.columns([1, 1])
 
@@ -837,17 +1160,32 @@ def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical
             return
 
         with st.status("正在搜尋多個學術資料庫與最新網頁來源...", expanded=True) as status:
+            st.write(f"套用研究領域模板：{template_name}")
             st.write("搜尋 Semantic Scholar：近年優先，並補高引用結果。")
-            semantic_papers = search_semantic_scholar(clean_query, paper_limit, start_year)
+            semantic_papers = search_semantic_scholar(clean_query, paper_limit, start_year, template_name, custom_terms)
             st.write(f"Semantic Scholar：{len(semantic_papers)} 筆")
             st.write("搜尋 PubMed 與 Europe PMC。")
-            pubmed_papers = search_pubmed(clean_query, biomedical_limit, start_year)
-            europe_pmc_papers = search_europe_pmc(clean_query, biomedical_limit, start_year)
+            pubmed_papers = search_pubmed(clean_query, biomedical_limit, start_year, template_name, custom_terms)
+            europe_pmc_papers = search_europe_pmc(clean_query, biomedical_limit, start_year, template_name, custom_terms)
             st.write(f"PubMed：{len(pubmed_papers)} 筆；Europe PMC：{len(europe_pmc_papers)} 筆")
+            st.write("搜尋 OpenAlex 與 Crossref。")
+            openalex_papers = search_openalex(clean_query, index_limit, start_year, template_name, custom_terms)
+            crossref_papers = search_crossref(clean_query, index_limit, start_year, template_name, custom_terms)
+            st.write(f"OpenAlex：{len(openalex_papers)} 筆；Crossref：{len(crossref_papers)} 筆")
             st.write("搜尋 Tavily 學術站點。")
-            web_sources = search_tavily(clean_query, tavily_key, web_limit, start_year) if web_limit else []
+            web_sources = (
+                search_tavily(clean_query, tavily_key, web_limit, start_year, template_name, custom_terms)
+                if web_limit
+                else []
+            )
             st.write(f"Tavily：{len(web_sources)} 筆")
-            papers = dedupe_papers(semantic_papers + pubmed_papers + europe_pmc_papers)
+            papers = dedupe_papers(
+                semantic_papers
+                + pubmed_papers
+                + europe_pmc_papers
+                + openalex_papers
+                + crossref_papers
+            )
             papers = sorted(papers, key=paper_sort_key, reverse=True)
             st.session_state.papers = papers
             st.session_state.web_sources = annotate_web_sources(web_sources)
@@ -879,6 +1217,7 @@ def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical
                     st.session_state.web_sources,
                     gemini_key,
                     model_name,
+                    template_name,
                 )
 
     if st.session_state.report:
@@ -949,7 +1288,18 @@ def lineage_tab(gemini_key, model_name):
 
 def main():
     init_session_state()
-    gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year = sidebar()
+    (
+        gemini_key,
+        tavily_key,
+        model_name,
+        template_name,
+        custom_terms,
+        paper_limit,
+        biomedical_limit,
+        index_limit,
+        web_limit,
+        start_year,
+    ) = sidebar()
 
     st.title("🔎 Gemini x 學術搜尋")
     st.caption("整合 Semantic Scholar 論文資料、Tavily 最新網頁線索與 Gemini 3 preview 報告生成。")
@@ -960,8 +1310,11 @@ def main():
             gemini_key,
             tavily_key,
             model_name,
+            template_name,
+            custom_terms,
             paper_limit,
             biomedical_limit,
+            index_limit,
             web_limit,
             start_year,
         )
