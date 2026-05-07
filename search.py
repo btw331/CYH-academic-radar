@@ -318,14 +318,26 @@ def search_semantic_scholar(query, limit, start_year):
         "fields": PAPER_FIELDS,
         "year": f"{start_year}-",
     }
-    response = requests.get(
-        SEMANTIC_SCHOLAR_SEARCH_URL,
-        params=params,
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    papers = response.json().get("data", [])
+    try:
+        response = requests.get(
+            SEMANTIC_SCHOLAR_SEARCH_URL,
+            params=params,
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if response.status_code == 400:
+            fallback_params = {key: value for key, value in params.items() if key != "year"}
+            response = requests.get(
+                SEMANTIC_SCHOLAR_SEARCH_URL,
+                params=fallback_params,
+                headers=REQUEST_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+        response.raise_for_status()
+        papers = response.json().get("data", [])
+    except requests.RequestException:
+        return []
+
     for paper in papers:
         paper["source"] = "Semantic Scholar"
     recent = sorted(papers, key=paper_sort_key, reverse=True)[:limit]
@@ -335,38 +347,45 @@ def search_semantic_scholar(query, limit, start_year):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_pubmed(query, limit, start_year):
-    search_response = requests.get(
-        PUBMED_SEARCH_URL,
-        params={
-            "db": "pubmed",
-            "term": f"{query} {query_expansion(query)}",
-            "retmode": "json",
-            "retmax": limit,
-            "sort": "pub date",
-            "datetype": "pdat",
-            "mindate": start_year,
-            "maxdate": date.today().year,
-        },
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    search_response.raise_for_status()
-    ids = search_response.json().get("esearchresult", {}).get("idlist", [])
+    try:
+        search_response = requests.get(
+            PUBMED_SEARCH_URL,
+            params={
+                "db": "pubmed",
+                "term": f"{query} {query_expansion(query)}",
+                "retmode": "json",
+                "retmax": limit,
+                "sort": "pub date",
+                "datetype": "pdat",
+                "mindate": start_year,
+                "maxdate": date.today().year,
+            },
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        search_response.raise_for_status()
+        ids = search_response.json().get("esearchresult", {}).get("idlist", [])
+    except requests.RequestException:
+        return []
+
     if not ids:
         return []
 
-    summary_response = requests.get(
-        PUBMED_SUMMARY_URL,
-        params={
-            "db": "pubmed",
-            "id": ",".join(ids),
-            "retmode": "json",
-        },
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    summary_response.raise_for_status()
-    result = summary_response.json().get("result", {})
+    try:
+        summary_response = requests.get(
+            PUBMED_SUMMARY_URL,
+            params={
+                "db": "pubmed",
+                "id": ",".join(ids),
+                "retmode": "json",
+            },
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        summary_response.raise_for_status()
+        result = summary_response.json().get("result", {})
+    except requests.RequestException:
+        return []
 
     papers = []
     for pubmed_id in result.get("uids", []):
@@ -398,22 +417,37 @@ def search_pubmed(query, limit, start_year):
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_europe_pmc(query, limit, start_year):
     current_year = date.today().year
-    response = requests.get(
-        EUROPE_PMC_SEARCH_URL,
-        params={
-            "query": (
-                f"({query} {query_expansion(query)}) "
-                f"AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]"
-            ),
-            "format": "json",
-            "pageSize": limit,
-            "sort": "FIRST_PDATE_D desc",
-        },
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    results = response.json().get("resultList", {}).get("result", [])
+    try:
+        response = requests.get(
+            EUROPE_PMC_SEARCH_URL,
+            params={
+                "query": (
+                    f"({query} {query_expansion(query)}) "
+                    f"AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]"
+                ),
+                "format": "json",
+                "pageSize": limit,
+                "sort": "FIRST_PDATE_D desc",
+            },
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if response.status_code == 400:
+            response = requests.get(
+                EUROPE_PMC_SEARCH_URL,
+                params={
+                    "query": f"{query} {query_expansion(query)}",
+                    "format": "json",
+                    "pageSize": limit,
+                    "sort": "FIRST_PDATE_D desc",
+                },
+                headers=REQUEST_HEADERS,
+                timeout=REQUEST_TIMEOUT,
+            )
+        response.raise_for_status()
+        results = response.json().get("resultList", {}).get("result", [])
+    except requests.RequestException:
+        return []
 
     papers = []
     for item in results:
@@ -462,13 +496,18 @@ def search_tavily(query, api_key, max_results, start_year):
         )
     except TypeError:
         domain_query = " OR ".join([f"site:{domain}" for domain in ACADEMIC_DOMAINS[:6]])
-        response = tavily.search(
-            query=f"{search_query} {domain_query}",
-            search_depth="advanced",
-            max_results=max_results,
-            include_answer=True,
-            include_raw_content=True,
-        )
+        try:
+            response = tavily.search(
+                query=f"{search_query} {domain_query}",
+                search_depth="advanced",
+                max_results=max_results,
+                include_answer=True,
+                include_raw_content=True,
+            )
+        except Exception:
+            return []
+    except Exception:
+        return []
     return response.get("results", [])
 
 
@@ -495,14 +534,17 @@ def fetch_paper_lineage(user_input):
             return None
         lookup_id = search_result[0]["paperId"]
 
-    response = requests.get(
-        f"{SEMANTIC_SCHOLAR_PAPER_URL}/{lookup_id}",
-        params={"fields": LINEAGE_FIELDS},
-        headers=REQUEST_HEADERS,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    paper = response.json()
+    try:
+        response = requests.get(
+            f"{SEMANTIC_SCHOLAR_PAPER_URL}/{lookup_id}",
+            params={"fields": LINEAGE_FIELDS},
+            headers=REQUEST_HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        paper = response.json()
+    except requests.RequestException:
+        return None
 
     references = sorted(
         [item for item in paper.get("references", []) if item.get("paperId")],
@@ -741,17 +783,24 @@ def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical
         with st.status("正在搜尋多個學術資料庫與最新網頁來源...", expanded=True) as status:
             st.write("搜尋 Semantic Scholar：近年優先，並補高引用結果。")
             semantic_papers = search_semantic_scholar(clean_query, paper_limit, start_year)
+            st.write(f"Semantic Scholar：{len(semantic_papers)} 筆")
             st.write("搜尋 PubMed 與 Europe PMC。")
             pubmed_papers = search_pubmed(clean_query, biomedical_limit, start_year)
             europe_pmc_papers = search_europe_pmc(clean_query, biomedical_limit, start_year)
+            st.write(f"PubMed：{len(pubmed_papers)} 筆；Europe PMC：{len(europe_pmc_papers)} 筆")
             st.write("搜尋 Tavily 學術站點。")
             web_sources = search_tavily(clean_query, tavily_key, web_limit, start_year) if web_limit else []
+            st.write(f"Tavily：{len(web_sources)} 筆")
             papers = dedupe_papers(semantic_papers + pubmed_papers + europe_pmc_papers)
             papers = sorted(papers, key=paper_sort_key, reverse=True)
             st.session_state.papers = papers
             st.session_state.web_sources = annotate_web_sources(web_sources)
             st.session_state.report = ""
-            status.update(label=f"搜尋完成：找到 {len(papers)} 筆去重後論文", state="complete", expanded=False)
+            if not papers and not web_sources:
+                status.update(label="搜尋完成，但各資料源都沒有回傳結果", state="complete", expanded=True)
+                st.warning("沒有找到可用結果。可能是資料庫暫時限流、查詢太窄，或搜尋年份太新。可放寬年份或改用英文關鍵字再試。")
+            else:
+                status.update(label=f"搜尋完成：找到 {len(papers)} 筆去重後論文", state="complete", expanded=False)
 
     if st.session_state.papers or st.session_state.web_sources:
         st.subheader("搜尋結果")
