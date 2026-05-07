@@ -1,157 +1,481 @@
-import streamlit as st
+import re
+from urllib.parse import unquote
+
 import google.generativeai as genai
+import pandas as pd
+import requests
+import streamlit as st
 from tavily import TavilyClient
 
-# --- 頁面設定 ---
-st.set_page_config(
-    page_title="Gemini 2.5 x Tavily 終極搜尋引擎", 
-    page_icon="🚀", 
-    layout="wide"
+
+SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
+SEMANTIC_SCHOLAR_PAPER_URL = "https://api.semanticscholar.org/graph/v1/paper"
+REQUEST_HEADERS = {"User-Agent": "AcademicSearch/1.0"}
+REQUEST_TIMEOUT = 15
+
+PAPER_FIELDS = (
+    "paperId,title,year,venue,abstract,tldr,citationCount,authors.name,"
+    "externalIds,url,publicationDate"
+)
+LINEAGE_FIELDS = (
+    "paperId,title,year,venue,citationCount,authors.name,abstract,tldr,"
+    "references.paperId,references.title,references.year,references.citationCount,"
+    "citations.paperId,citations.title,citations.year,citations.citationCount"
 )
 
-# --- 標題與簡介 ---
-st.title("🚀 Gemini 2.5 x Tavily 即時搜尋引擎")
-st.markdown("""
-這是一個結合 **Google 最新 Gemini 2.5 模型** 與 **Tavily 聯網搜尋** 的 RAG 工具。
-能為您從網路上抓取 2025 最新資訊，並整理成深度報告。
-""")
+GEMINI_MODELS = [
+    "gemini-3.1-flash",
+    "gemini-3.1-pro",
+    "gemini-3.0-flash",
+    "gemini-3.0-pro",
+]
 
-# --- 側邊欄：設定 API Key 與 模型 ---
-with st.sidebar:
-    st.header("⚙️ 核心設定")
-    
-    # 1. API Keys
-    with st.expander("🔑 API 金鑰 (點此展開)", expanded=True):
-        gemini_key = st.text_input("Gemini API Key", type="password", help="請至 Google AI Studio 申請")
-        tavily_key = st.text_input("Tavily API Key", type="password", help="請至 Tavily 官網申請")
-    
-    st.divider()
-    
-    # 2. 模型選擇器 (Gemini 2.5 全系列)
-    st.subheader("🧠 模型選擇 (Model)")
-    selected_model = st.selectbox(
-        "請選擇 Gemini 版本：",
-        [
-            "gemini-2.5-pro", 
-            "gemini-2.5-flash", 
-            "gemini-2.5-flash-lite"
-        ],
-        index=1, # 預設選 Flash (平衡)
-        help="Pro: 最聰明但較慢 | Flash: 平衡 | Lite: 最快"
+
+st.set_page_config(
+    page_title="Gemini x 學術搜尋",
+    page_icon="🔎",
+    layout="wide",
+)
+
+
+def init_session_state():
+    defaults = {
+        "papers": [],
+        "web_sources": [],
+        "report": "",
+        "lineage": None,
+    }
+    for key, value in defaults.items():
+        st.session_state.setdefault(key, value)
+
+
+def get_secret_or_empty(name):
+    try:
+        return st.secrets.get(name, "")
+    except Exception:
+        return ""
+
+
+def normalize_query(query):
+    return re.sub(r"\s+", " ", query.strip())
+
+
+def build_academic_query(query):
+    terms = [
+        query,
+        "recent",
+        "systematic review",
+        "meta-analysis",
+        "randomized controlled trial",
+        "cohort study",
+        "DOI",
+        "PMID",
+        "PubMed",
+        "2024",
+        "2025",
+        "2026",
+    ]
+    return " ".join(terms)
+
+
+def paper_authors(paper):
+    authors = paper.get("authors") or []
+    names = [author.get("name") for author in authors if author.get("name")]
+    if not names:
+        return "Unknown"
+    if len(names) <= 3:
+        return ", ".join(names)
+    return f"{names[0]} et al."
+
+
+def paper_summary(paper, limit=280):
+    tldr = paper.get("tldr") or {}
+    text = tldr.get("text") or paper.get("abstract") or ""
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def paper_identifier(paper):
+    external_ids = paper.get("externalIds") or {}
+    doi = external_ids.get("DOI")
+    pmid = external_ids.get("PubMed")
+    if doi:
+        return f"DOI: {doi}"
+    if pmid:
+        return f"PMID: {pmid}"
+    return paper.get("paperId", "")
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_semantic_scholar(query, limit):
+    response = requests.get(
+        SEMANTIC_SCHOLAR_SEARCH_URL,
+        params={"query": query, "limit": limit, "fields": PAPER_FIELDS},
+        headers=REQUEST_HEADERS,
+        timeout=REQUEST_TIMEOUT,
     )
-    
-    # 顯示模型特性提示
-    if "pro" in selected_model:
-        st.info("🔥 **Pro 版**：適合複雜推理、寫程式、深度報告。")
-    elif "lite" in selected_model:
-        st.success("⚡ **Lite 版**：極速回應，適合簡單查詢。")
-    else:
-        st.info("⚖️ **Flash 版**：速度與品質的最佳平衡 (推薦)。")
+    response.raise_for_status()
+    return response.json().get("data", [])
 
-    st.divider()
-    
-    # 3. 搜尋參數
-    st.subheader("🌍 搜尋設定")
-    search_depth = st.radio("搜尋深度", ["basic", "advanced"], index=1)
-    max_results = st.slider("參考資料數量", 10, 30, 50)
 
-# --- 核心功能函數 ---
+@st.cache_data(ttl=1800, show_spinner=False)
+def search_tavily(query, api_key, max_results):
+    if not api_key:
+        return []
 
-def get_tavily_search(query, api_key, depth="advanced", max_results=5):
-    """使用 Tavily 搜尋網路資料"""
     tavily = TavilyClient(api_key=api_key)
     response = tavily.search(
-        query=query,
-        search_depth=depth,
+        query=build_academic_query(query),
+        search_depth="advanced",
         max_results=max_results,
         include_answer=True,
-        include_raw_content=False
+        include_raw_content=True,
     )
-    return response
+    return response.get("results", [])
 
-def generate_gemini_response(query, search_results, api_key, model_name):
-    """將搜尋結果餵給指定的 Gemini 模型進行總結"""
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_paper_lineage(user_input):
+    clean_input = unquote(user_input).strip().replace('"', "")
+    if not clean_input:
+        return None
+
+    doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)", clean_input)
+    arxiv_match = re.search(r"(\d{4}\.\d{4,5})", clean_input)
+
+    lookup_id = None
+    if doi_match:
+        lookup_id = f"DOI:{doi_match.group(1)}"
+    elif arxiv_match:
+        lookup_id = f"arXiv:{arxiv_match.group(1)}"
+    elif len(clean_input) >= 30 and re.fullmatch(r"[a-fA-F0-9]+", clean_input):
+        lookup_id = clean_input
+
+    if not lookup_id:
+        search_result = search_semantic_scholar(clean_input, 1)
+        if not search_result:
+            return None
+        lookup_id = search_result[0]["paperId"]
+
+    response = requests.get(
+        f"{SEMANTIC_SCHOLAR_PAPER_URL}/{lookup_id}",
+        params={"fields": LINEAGE_FIELDS},
+        headers=REQUEST_HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    paper = response.json()
+
+    references = sorted(
+        [item for item in paper.get("references", []) if item.get("paperId")],
+        key=lambda item: item.get("citationCount") or 0,
+        reverse=True,
+    )[:8]
+    citations = sorted(
+        [item for item in paper.get("citations", []) if item.get("paperId")],
+        key=lambda item: item.get("year") or 0,
+        reverse=True,
+    )[:8]
+
+    return {"paper": paper, "references": references, "citations": citations}
+
+
+def format_paper_context(papers):
+    lines = []
+    for index, paper in enumerate(papers, start=1):
+        lines.append(
+            "\n".join(
+                [
+                    f"[論文{index}] {paper.get('title', 'Untitled')}",
+                    f"年份: {paper.get('year', 'N/A')}",
+                    f"期刊/會議: {paper.get('venue', 'N/A')}",
+                    f"作者: {paper_authors(paper)}",
+                    f"引用數: {paper.get('citationCount', 0)}",
+                    f"識別碼: {paper_identifier(paper)}",
+                    f"摘要: {paper_summary(paper, 900)}",
+                ]
+            )
+        )
+    return "\n\n".join(lines)
+
+
+def format_web_context(sources):
+    lines = []
+    for index, source in enumerate(sources, start=1):
+        content = source.get("raw_content") or source.get("content") or ""
+        lines.append(
+            "\n".join(
+                [
+                    f"[網頁{index}] {source.get('title', 'Untitled')}",
+                    f"網址: {source.get('url', '')}",
+                    f"內容: {content[:1200]}",
+                ]
+            )
+        )
+    return "\n\n".join(lines)
+
+
+def generate_report(query, papers, web_sources, api_key, model_name):
     genai.configure(api_key=api_key)
-    
-    # 使用使用者選擇的模型 (例如 gemini-2.5-pro)
     model = genai.GenerativeModel(model_name)
-    
-    # 組合 Context
-    context_text = ""
-    for i, result in enumerate(search_results.get('results', [])):
-        context_text += f"\n--- 來源 {i+1}: {result['title']} ---\n"
-        context_text += f"網址: {result['url']}\n"
-        context_text += f"內容: {result['content']}\n"
 
-    # Prompt Engineering
     prompt = f"""
-    你是一個專業的高級研究員，正在協助使用者進行深度調查。
-    
-    【使用者問題】："{query}"
-    
-    【搜尋到的最新資料】：
-    {context_text}
-    
-    【任務指令】：
-    請根據上述資料，撰寫一份**詳盡、結構清晰且無錯誤**的回答。
-    1. **深度優先**：請挖掘資料中的細節，不要只給表面答案。
-    2. **標註來源**：引用數據或觀點時，請用 [來源X] 標註。
-    3. **模型身分**：你現在使用的是 {model_name} 模型，請發揮你的長處。
-    4. **語言**：請使用台灣繁體中文。
-    
-    請開始撰寫報告：
-    """
-    
-    # 生成內容 (Stream 模式)
-    response = model.generate_content(prompt, stream=True)
-    return response
+你是一位嚴謹的學術研究助理。請用台灣繁體中文回答，並以證據品質為優先。
 
-# --- 主介面邏輯 ---
+【研究問題】
+{query}
 
-query = st.text_input("💬 請輸入您的問題：", placeholder="例如：2025年最新的 SBD 訓練科學研究有哪些？")
-search_btn = st.button("🚀 開始深度搜尋", type="primary")
+【Semantic Scholar 論文資料】
+{format_paper_context(papers)}
 
-if search_btn and query:
-    if not gemini_key or not tavily_key:
-        st.error("❌ 請先在側邊欄填入 API Keys 才能運作喔！")
-    else:
-        # 1. 搜尋階段
-        with st.status(f"🕵️‍♂️ 正在呼叫 Tavily 搜尋 (深度: {search_depth})...", expanded=True) as status:
-            try:
-                search_data = get_tavily_search(query, tavily_key, search_depth, max_results)
-                st.write(f"✅ 成功找到 {len(search_data['results'])} 筆資料，正在下載內容...")
-                status.update(label=f"搜尋完成！正在呼叫 {selected_model} 進行分析...", state="running", expanded=False)
-            except Exception as e:
-                st.error(f"搜尋發生錯誤: {e}")
-                st.stop()
+【Tavily 最新網頁資料】
+{format_web_context(web_sources)}
 
-        # 2. 顯示來源 (可折疊)
-        with st.expander("📚 點此查看搜尋到的原始來源"):
-            for res in search_data['results']:
-                st.markdown(f"**[{res['title']}]({res['url']})**")
-                st.caption(res['content'][:250] + "...")
+【輸出格式】
+1. 先用 5-8 句話回答核心結論。
+2. 整理最重要研究，包含年份、研究設計、族群/樣本、主要發現、限制。
+3. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章。
+4. 引用時使用 [論文1]、[網頁1] 這種標記。
+5. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
+6. 最後給實務建議，分成「較有把握」與「仍需保留」。
+"""
+    return model.generate_content(prompt).text
+
+
+def generate_lineage_report(lineage, question, api_key, model_name):
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+
+    paper = lineage["paper"]
+    references = lineage["references"]
+    citations = lineage["citations"]
+    context = "\n\n".join(
+        [
+            "【主論文】",
+            format_paper_context([paper]),
+            "【高引用參考文獻】",
+            format_paper_context(references),
+            "【近期引用文獻】",
+            format_paper_context(citations),
+        ]
+    )
+
+    prompt = f"""
+你是一位學術脈絡分析師。請用台灣繁體中文，根據以下主論文、參考文獻與引用文獻回答。
+
+【使用者關注】
+{question or "請分析這篇論文在領域中的位置、上游基礎與後續發展。"}
+
+{context}
+
+請輸出：
+1. 主論文的核心貢獻。
+2. 它承接了哪些上游研究。
+3. 後續研究如何延伸或修正它。
+4. 對閱讀這個領域的建議路徑。
+"""
+    return model.generate_content(prompt).text
+
+
+def render_paper_table(papers):
+    if not papers:
+        st.info("尚無論文資料。")
+        return
+
+    rows = [
+        {
+            "年份": paper.get("year"),
+            "標題": paper.get("title"),
+            "期刊/會議": paper.get("venue"),
+            "引用數": paper.get("citationCount", 0),
+            "作者": paper_authors(paper),
+            "識別碼": paper_identifier(paper),
+        }
+        for paper in papers
+    ]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+def render_sources(papers, web_sources):
+    with st.expander("查看論文來源", expanded=False):
+        for index, paper in enumerate(papers, start=1):
+            url = paper.get("url")
+            title = paper.get("title", "Untitled")
+            st.markdown(f"**[論文{index}] {title}**")
+            st.caption(
+                f"{paper.get('year', 'N/A')} | {paper.get('venue', 'N/A')} | "
+                f"Cited: {paper.get('citationCount', 0)} | {paper_identifier(paper)}"
+            )
+            if url:
+                st.markdown(url)
+            if summary := paper_summary(paper):
+                st.write(summary)
+            st.divider()
+
+    if web_sources:
+        with st.expander("查看最新網頁來源", expanded=False):
+            for index, source in enumerate(web_sources, start=1):
+                st.markdown(f"**[網頁{index}] [{source.get('title', 'Untitled')}]({source.get('url', '')})**")
+                st.caption((source.get("content") or "")[:300])
                 st.divider()
 
-        # 3. 生成階段
-        st.subheader(f"💡 {selected_model} 的深度報告")
-        result_container = st.empty()
-        full_response = ""
-        
-        try:
-            # 傳入 selected_model
-            response_stream = generate_gemini_response(query, search_data, gemini_key, selected_model)
-            
-            for chunk in response_stream:
-                if chunk.text:
-                    full_response += chunk.text
-                    result_container.markdown(full_response + "▌")
-            
-            result_container.markdown(full_response)
-            
-        except Exception as e:
-            st.error(f"生成失敗: {e}\n(請確認您的 API Key 是否有權限存取 2.5 模型)")
 
-# --- 頁尾 ---
-st.markdown("---")
-st.caption("Designed for Advanced Research | Powered by Gemini 2.5 Series & Tavily")
+def sidebar():
+    with st.sidebar:
+        st.header("設定")
 
+        default_gemini_key = get_secret_or_empty("GOOGLE_API_KEY")
+        default_tavily_key = get_secret_or_empty("TAVILY_API_KEY")
+
+        gemini_key = st.text_input(
+            "Gemini API Key",
+            value=default_gemini_key,
+            type="password",
+        )
+        tavily_key = st.text_input(
+            "Tavily API Key（可選，用於最新網頁補強）",
+            value=default_tavily_key,
+            type="password",
+        )
+
+        model_name = st.selectbox("Gemini 模型", GEMINI_MODELS, index=0)
+        paper_limit = st.slider("Semantic Scholar 論文數", 5, 30, 12)
+        web_limit = st.slider("Tavily 最新來源數", 0, 15, 5)
+
+        st.caption("預設以 Gemini 3.1 系列與學術資料庫為主，Tavily 用來補最新網頁線索。")
+
+    return gemini_key, tavily_key, model_name, paper_limit, web_limit
+
+
+def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, web_limit):
+    query = st.text_input(
+        "研究問題",
+        placeholder="例如：有氧運動與肌力訓練不相容的最新研究有哪些？",
+    )
+    col_search, col_report = st.columns([1, 1])
+
+    with col_search:
+        search_clicked = st.button("搜尋文獻", type="primary", use_container_width=True)
+    with col_report:
+        report_clicked = st.button("產生學術報告", use_container_width=True)
+
+    if search_clicked:
+        clean_query = normalize_query(query)
+        if not clean_query:
+            st.warning("請先輸入研究問題。")
+            return
+
+        with st.status("正在搜尋 Semantic Scholar 與最新網頁來源...", expanded=True) as status:
+            papers = search_semantic_scholar(clean_query, paper_limit)
+            web_sources = search_tavily(clean_query, tavily_key, web_limit) if web_limit else []
+            st.session_state.papers = papers
+            st.session_state.web_sources = web_sources
+            st.session_state.report = ""
+            status.update(label="搜尋完成", state="complete", expanded=False)
+
+    if st.session_state.papers or st.session_state.web_sources:
+        st.subheader("搜尋結果")
+        render_paper_table(st.session_state.papers)
+        render_sources(st.session_state.papers, st.session_state.web_sources)
+
+    if report_clicked:
+        if not query.strip():
+            st.warning("請先輸入研究問題。")
+        elif not gemini_key:
+            st.error("請先輸入 Gemini API Key。")
+        elif not st.session_state.papers and not st.session_state.web_sources:
+            st.warning("請先搜尋文獻，再產生報告。")
+        else:
+            with st.spinner(f"正在使用 {model_name} 產生報告..."):
+                st.session_state.report = generate_report(
+                    query,
+                    st.session_state.papers,
+                    st.session_state.web_sources,
+                    gemini_key,
+                    model_name,
+                )
+
+    if st.session_state.report:
+        st.subheader("學術報告")
+        st.markdown(st.session_state.report)
+        st.download_button(
+            "下載報告 Markdown",
+            st.session_state.report,
+            file_name="academic_report.md",
+            mime="text/markdown",
+        )
+
+
+def lineage_tab(gemini_key, model_name):
+    user_input = st.text_input(
+        "輸入 DOI、arXiv ID、Semantic Scholar Paper ID 或論文標題",
+        placeholder="例如：10.xxxx/xxxxx",
+    )
+    question = st.text_input(
+        "想分析的角度（可選）",
+        placeholder="例如：這篇論文如何影響後續 concurrent training 研究？",
+    )
+
+    col_fetch, col_ai = st.columns([1, 1])
+    with col_fetch:
+        fetch_clicked = st.button("建立引用脈絡", type="primary", use_container_width=True)
+    with col_ai:
+        analyze_clicked = st.button("分析脈絡", use_container_width=True)
+
+    if fetch_clicked:
+        if not user_input.strip():
+            st.warning("請先輸入論文資訊。")
+            return
+        with st.spinner("正在讀取引用與參考文獻..."):
+            st.session_state.lineage = fetch_paper_lineage(user_input)
+        if not st.session_state.lineage:
+            st.error("找不到這篇論文，請改用 DOI、Paper ID 或更完整標題。")
+
+    if st.session_state.lineage:
+        lineage = st.session_state.lineage
+        st.subheader("主論文")
+        render_paper_table([lineage["paper"]])
+
+        left, right = st.columns(2)
+        with left:
+            st.subheader("高引用參考文獻")
+            render_paper_table(lineage["references"])
+        with right:
+            st.subheader("近期引用文獻")
+            render_paper_table(lineage["citations"])
+
+    if analyze_clicked:
+        if not gemini_key:
+            st.error("請先輸入 Gemini API Key。")
+        elif not st.session_state.lineage:
+            st.warning("請先建立引用脈絡。")
+        else:
+            with st.spinner(f"正在使用 {model_name} 分析脈絡..."):
+                result = generate_lineage_report(
+                    st.session_state.lineage,
+                    question,
+                    gemini_key,
+                    model_name,
+                )
+            st.subheader("脈絡分析")
+            st.markdown(result)
+
+
+def main():
+    init_session_state()
+    gemini_key, tavily_key, model_name, paper_limit, web_limit = sidebar()
+
+    st.title("🔎 Gemini x 學術搜尋")
+    st.caption("整合 Semantic Scholar 論文資料、Tavily 最新網頁線索與 Gemini 3.0/3.1 報告生成。")
+
+    tab_topic, tab_lineage = st.tabs(["主題搜尋", "單篇論文脈絡"])
+    with tab_topic:
+        topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, web_limit)
+    with tab_lineage:
+        lineage_tab(gemini_key, model_name)
+
+    st.divider()
+    st.caption("Designed for academic research. 請以原始論文與正式資料庫作為最終判讀依據。")
+
+
+if __name__ == "__main__":
+    main()
