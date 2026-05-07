@@ -1382,7 +1382,7 @@ def parse_markdown_table_row(line):
     return [clean_pdf_symbols(cell.strip()) for cell in line.strip().strip("|").split("|")]
 
 
-def markdown_table_to_cards(table_rows, Paragraph, Spacer, styles):
+def markdown_table_to_cards(table_rows, Paragraph, Spacer, Table, TableStyle, colors, styles, available_width):
     if len(table_rows) < 2:
         return []
 
@@ -1392,16 +1392,42 @@ def markdown_table_to_cards(table_rows, Paragraph, Spacer, styles):
 
     for row_index, row in enumerate(rows, start=1):
         normalized_row = row + [""] * (len(headers) - len(row))
-        story_items.append(Paragraph(f"證據項目 {row_index}", styles["card_title"]))
+        card_rows = [[Paragraph(f"證據項目 {row_index}", styles["card_title"]), ""]]
         for header, value in zip(headers, normalized_row):
             if not value:
                 continue
-            story_items.append(
-                Paragraph(
-                    f'<b>{pdf_markup_text(header)}：</b>{pdf_markup_text(value)}',
-                    styles["card"],
-                )
+            card_rows.append(
+                [
+                    Paragraph(f"<b>{pdf_markup_text(header)}</b>", styles["card_label"]),
+                    Paragraph(pdf_markup_text(value), styles["card"]),
+                ]
             )
+
+        if len(card_rows) == 1:
+            continue
+
+        card = Table(
+            card_rows,
+            colWidths=[available_width * 0.22, available_width * 0.78],
+            hAlign="LEFT",
+        )
+        card.setStyle(
+            TableStyle(
+                [
+                    ("SPAN", (0, 0), (-1, 0)),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E8F0FE")),
+                    ("BACKGROUND", (0, 1), (0, -1), colors.HexColor("#F8FAFD")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#D0D7DE")),
+                    ("INNERGRID", (0, 1), (-1, -1), 0.25, colors.HexColor("#E5E7EB")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]
+            )
+        )
+        story_items.append(card)
         story_items.append(Spacer(1, 8))
 
     return story_items
@@ -1451,7 +1477,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         fontSize=11,
         leading=18,
         spaceAfter=9,
-        alignment=4,
+        alignment=0,
     )
     heading_style = ParagraphStyle(
         "TraditionalChineseHeading",
@@ -1493,8 +1519,14 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         fontSize=9.4,
         leading=14,
         spaceAfter=4,
-        leftIndent=10,
         alignment=0,
+    )
+    card_label_style = ParagraphStyle(
+        "TraditionalChineseCardLabel",
+        parent=card_style,
+        fontSize=8.8,
+        leading=13,
+        textColor="#3C4043",
     )
     card_title_style = ParagraphStyle(
         "TraditionalChineseCardTitle",
@@ -1506,7 +1538,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         textColor="#174EA6",
         alignment=0,
     )
-    pdf_styles = {"card": card_style, "card_title": card_title_style}
+    pdf_styles = {"card": card_style, "card_label": card_label_style, "card_title": card_title_style}
 
     story = []
     available_width = A4[0] - 3.8 * cm
@@ -1542,7 +1574,11 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
                             normalized_rows,
                             Paragraph,
                             Spacer,
+                            Table,
+                            TableStyle,
+                            colors,
                             pdf_styles,
+                            available_width,
                         )
                     )
                 else:
@@ -1573,13 +1609,15 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
                     story.append(Spacer(1, 10))
             continue
 
-        if line.startswith("### "):
+        if line.startswith("#### "):
+            story.append(Paragraph(pdf_markup_text(line[5:]), subheading_style))
+        elif line.startswith("### "):
             story.append(Paragraph(pdf_markup_text(line[4:]), subheading_style))
         elif line.startswith("## "):
             story.append(Paragraph(pdf_markup_text(line[3:]), heading_style))
         elif line.startswith("# "):
             story.append(Paragraph(pdf_markup_text(line[2:]), heading_style))
-        elif line.startswith("- "):
+        elif line.startswith("- ") or line.startswith("* "):
             story.append(Paragraph("• " + pdf_markup_text(line[2:]), bullet_style))
         else:
             story.append(Paragraph(pdf_markup_text(line), base_style))
