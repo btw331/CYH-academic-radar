@@ -1,5 +1,7 @@
 import re
+import tempfile
 from datetime import date
+from pathlib import Path
 from urllib.parse import unquote
 
 import google.generativeai as genai
@@ -20,6 +22,9 @@ REQUEST_HEADERS = {"User-Agent": "AcademicSearch/1.0"}
 REQUEST_TIMEOUT = 15
 FAST_REQUEST_TIMEOUT = 8
 MAX_INDEX_QUERY_VARIANTS = 4
+PDF_FONT_NAME = "NotoSansTC"
+PDF_FONT_FILE = "NotoSansTC-Regular.ttf"
+PDF_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf"
 
 PAPER_FIELDS = (
     "paperId,title,year,venue,abstract,tldr,citationCount,authors.name,"
@@ -1180,6 +1185,49 @@ def build_citation_section(papers, web_sources):
     return "\n".join(lines)
 
 
+def get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont):
+    candidate_paths = [
+        Path(__file__).with_name(PDF_FONT_FILE),
+        Path(tempfile.gettempdir()) / PDF_FONT_FILE,
+    ]
+
+    for font_path in candidate_paths:
+        if font_path.exists():
+            try:
+                pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, str(font_path)))
+                return PDF_FONT_NAME
+            except Exception:
+                continue
+
+    download_path = Path(tempfile.gettempdir()) / PDF_FONT_FILE
+    try:
+        response = requests.get(PDF_FONT_URL, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        if len(response.content) > 10000:
+            download_path.write_bytes(response.content)
+            pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, str(download_path)))
+            return PDF_FONT_NAME
+    except Exception:
+        pass
+
+    for fallback_font in ["STSong-Light", "MSung-Light"]:
+        try:
+            pdfmetrics.registerFont(UnicodeCIDFont(fallback_font))
+            return fallback_font
+        except Exception:
+            continue
+
+    return "Helvetica"
+
+
+def clean_pdf_markdown_line(line):
+    cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    cleaned = cleaned.replace("⚠️", "[注意]").replace("❌", "[錯誤]").replace("✅", "[完成]")
+    cleaned = cleaned.replace("▌", "")
+    return cleaned
+
+
 def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     try:
         from html import escape
@@ -1190,12 +1238,13 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         from reportlab.lib.units import cm
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
     except ImportError:
         return None
 
     buffer = BytesIO()
-    pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"))
+    font_name = get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont)
 
     doc = SimpleDocTemplate(
         buffer,
@@ -1210,7 +1259,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     base_style = ParagraphStyle(
         "TraditionalChinese",
         parent=styles["BodyText"],
-        fontName="MSung-Light",
+        fontName=font_name,
         fontSize=10.5,
         leading=16,
         spaceAfter=8,
@@ -1238,10 +1287,9 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         elif line.startswith("# "):
             story.append(Paragraph(escape(line[2:]), heading_style))
         elif line.startswith("- "):
-            story.append(Paragraph("• " + escape(line[2:]), base_style))
+            story.append(Paragraph("- " + escape(clean_pdf_markdown_line(line[2:])), base_style))
         else:
-            cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
-            cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+            cleaned = clean_pdf_markdown_line(line)
             story.append(Paragraph(escape(cleaned), base_style))
 
     doc.build(story)
