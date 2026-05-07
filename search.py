@@ -260,6 +260,67 @@ def template_domains(template_name):
     return merged
 
 
+def keyword_trigger_expansion(query):
+    expansions = {
+        "有氧": "aerobic exercise endurance training",
+        "肌力": "resistance training strength training",
+        "重訓": "resistance training strength training",
+        "肌肥大": "hypertrophy muscle growth",
+        "不相容": "interference effect concurrent training",
+        "併行訓練": "concurrent training interference effect",
+        "穿透式電子顯微鏡": "transmission electron microscopy TEM STEM",
+        "電子顯微鏡": "electron microscopy TEM STEM",
+        "EELS": "electron energy loss spectroscopy EELS STEM-EELS",
+        "能量損失": "electron energy loss spectroscopy EELS",
+        "材料": "materials science characterization",
+        "顯微": "microscopy characterization",
+    }
+    return " ".join(value for key, value in expansions.items() if key in query)
+
+
+def compact_search_query(text, max_terms=32):
+    tokens = normalize_query(text).split()
+    seen = set()
+    compacted = []
+    for token in tokens:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        compacted.append(token)
+        if len(compacted) >= max_terms:
+            break
+    return " ".join(compacted)
+
+
+def search_query_variants(query, template_name="通用學術搜尋", custom_terms=""):
+    base = normalize_query(query)
+    trigger_terms = keyword_trigger_expansion(query)
+    template_terms = template_expansion(template_name)
+    custom_terms = normalize_query(custom_terms)
+
+    candidates = [
+        f"{base} {trigger_terms} {custom_terms}",
+        f"{base} {trigger_terms}",
+        f"{base} {custom_terms}",
+        f"{trigger_terms} {custom_terms}",
+        f"{base} {template_terms}",
+        custom_terms,
+        trigger_terms,
+        base,
+    ]
+
+    variants = []
+    seen = set()
+    for candidate in candidates:
+        compacted = compact_search_query(candidate)
+        if not compacted or compacted.lower() in seen:
+            continue
+        seen.add(compacted.lower())
+        variants.append(compacted)
+    return variants
+
+
 def build_academic_query(query, start_year, template_name="通用學術搜尋", custom_terms=""):
     terms = [
         query,
@@ -279,22 +340,7 @@ def build_academic_query(query, start_year, template_name="通用學術搜尋", 
 
 
 def query_expansion(query, template_name="通用學術搜尋", custom_terms=""):
-    expansions = {
-        "有氧": "aerobic exercise endurance training",
-        "肌力": "resistance training strength training",
-        "重訓": "resistance training strength training",
-        "肌肥大": "hypertrophy muscle growth",
-        "不相容": "interference effect concurrent training",
-        "併行訓練": "concurrent training interference effect",
-        "穿透式電子顯微鏡": "transmission electron microscopy TEM STEM",
-        "電子顯微鏡": "electron microscopy TEM STEM",
-        "EELS": "electron energy loss spectroscopy EELS STEM-EELS",
-        "能量損失": "electron energy loss spectroscopy EELS",
-        "材料": "materials science characterization",
-        "顯微": "microscopy characterization",
-    }
-    extra_terms = [value for key, value in expansions.items() if key in query]
-    return " ".join(extra_terms + [template_expansion(template_name), custom_terms])
+    return " ".join([keyword_trigger_expansion(query), template_expansion(template_name), custom_terms])
 
 
 def paper_authors(paper):
@@ -501,30 +547,37 @@ def crossref_year(item):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_semantic_scholar(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
-    params = {
-        "query": f"{query} {query_expansion(query, template_name, custom_terms)}",
-        "limit": min(limit * 3, 100),
-        "fields": PAPER_FIELDS,
-        "year": f"{start_year}-",
-    }
-    try:
-        response = requests.get(
-            SEMANTIC_SCHOLAR_SEARCH_URL,
-            params=params,
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code == 400:
-            fallback_params = {key: value for key, value in params.items() if key != "year"}
+    papers = []
+    for search_query in search_query_variants(query, template_name, custom_terms):
+        params = {
+            "query": search_query,
+            "limit": min(limit * 3, 100),
+            "fields": PAPER_FIELDS,
+            "year": f"{start_year}-",
+        }
+        try:
             response = requests.get(
                 SEMANTIC_SCHOLAR_SEARCH_URL,
-                params=fallback_params,
+                params=params,
                 headers=REQUEST_HEADERS,
                 timeout=REQUEST_TIMEOUT,
             )
-        response.raise_for_status()
-        papers = response.json().get("data", [])
-    except requests.RequestException:
+            if response.status_code == 400:
+                fallback_params = {key: value for key, value in params.items() if key != "year"}
+                response = requests.get(
+                    SEMANTIC_SCHOLAR_SEARCH_URL,
+                    params=fallback_params,
+                    headers=REQUEST_HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                )
+            response.raise_for_status()
+            papers = response.json().get("data", [])
+        except requests.RequestException:
+            continue
+        if papers:
+            break
+
+    if not papers:
         return []
 
     for paper in papers:
@@ -536,26 +589,39 @@ def search_semantic_scholar(query, limit, start_year, template_name="通用學�
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_pubmed(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
-    try:
-        search_response = requests.get(
-            PUBMED_SEARCH_URL,
-            params={
+    ids = []
+    for search_query in search_query_variants(query, template_name, custom_terms):
+        for use_date_filter in [True, False]:
+            params = {
                 "db": "pubmed",
-                "term": f"{query} {query_expansion(query, template_name, custom_terms)}",
+                "term": search_query,
                 "retmode": "json",
                 "retmax": limit,
                 "sort": "pub date",
-                "datetype": "pdat",
-                "mindate": start_year,
-                "maxdate": date.today().year,
-            },
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        search_response.raise_for_status()
-        ids = search_response.json().get("esearchresult", {}).get("idlist", [])
-    except requests.RequestException:
-        return []
+            }
+            if use_date_filter:
+                params.update(
+                    {
+                        "datetype": "pdat",
+                        "mindate": start_year,
+                        "maxdate": date.today().year,
+                    }
+                )
+            try:
+                search_response = requests.get(
+                    PUBMED_SEARCH_URL,
+                    params=params,
+                    headers=REQUEST_HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                search_response.raise_for_status()
+                ids = search_response.json().get("esearchresult", {}).get("idlist", [])
+            except requests.RequestException:
+                continue
+            if ids:
+                break
+        if ids:
+            break
 
     if not ids:
         return []
@@ -606,26 +672,40 @@ def search_pubmed(query, limit, start_year, template_name="通用學術搜尋", 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_europe_pmc(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     current_year = date.today().year
-    try:
-        response = requests.get(
-            EUROPE_PMC_SEARCH_URL,
-            params={
-                "query": (
-                    f"({query} {query_expansion(query, template_name, custom_terms)}) "
-                    f"AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]"
-                ),
-                "format": "json",
-                "pageSize": limit,
-                "sort": "FIRST_PDATE_D desc",
-            },
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code == 400:
+    results = []
+    for search_query in search_query_variants(query, template_name, custom_terms):
+        queries = [
+            f"({search_query}) AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]",
+            search_query,
+        ]
+        for europe_query in queries:
+            try:
+                response = requests.get(
+                    EUROPE_PMC_SEARCH_URL,
+                    params={
+                        "query": europe_query,
+                        "format": "json",
+                        "pageSize": limit,
+                        "sort": "FIRST_PDATE_D desc",
+                    },
+                    headers=REQUEST_HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                results = response.json().get("resultList", {}).get("result", [])
+            except requests.RequestException:
+                continue
+            if results:
+                break
+        if results:
+            break
+
+    if not results:
+        try:
             response = requests.get(
                 EUROPE_PMC_SEARCH_URL,
                 params={
-                    "query": f"{query} {query_expansion(query, template_name, custom_terms)}",
+                    "query": normalize_query(query),
                     "format": "json",
                     "pageSize": limit,
                     "sort": "FIRST_PDATE_D desc",
@@ -633,10 +713,10 @@ def search_europe_pmc(query, limit, start_year, template_name="通用學術搜�
                 headers=REQUEST_HEADERS,
                 timeout=REQUEST_TIMEOUT,
             )
-        response.raise_for_status()
-        results = response.json().get("resultList", {}).get("result", [])
-    except requests.RequestException:
-        return []
+            response.raise_for_status()
+            results = response.json().get("resultList", {}).get("result", [])
+        except requests.RequestException:
+            return []
 
     papers = []
     for item in results:
@@ -669,21 +749,33 @@ def search_europe_pmc(query, limit, start_year, template_name="通用學術搜�
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_openalex(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
-    try:
-        response = requests.get(
-            OPENALEX_WORKS_URL,
-            params={
-                "search": f"{query} {query_expansion(query, template_name, custom_terms)}",
+    results = []
+    for search_query in search_query_variants(query, template_name, custom_terms):
+        for use_date_filter in [True, False]:
+            params = {
+                "search": search_query,
                 "per-page": limit,
-                "filter": f"from_publication_date:{start_year}-01-01",
                 "sort": "publication_date:desc",
-            },
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        results = response.json().get("results", [])
-    except requests.RequestException:
+            }
+            if use_date_filter:
+                params["filter"] = f"from_publication_date:{start_year}-01-01"
+            try:
+                response = requests.get(
+                    OPENALEX_WORKS_URL,
+                    params=params,
+                    headers=REQUEST_HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                results = response.json().get("results", [])
+            except requests.RequestException:
+                continue
+            if results:
+                break
+        if results:
+            break
+
+    if not results:
         return []
 
     papers = []
@@ -718,22 +810,34 @@ def search_openalex(query, limit, start_year, template_name="通用學術搜尋"
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_crossref(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
-    try:
-        response = requests.get(
-            CROSSREF_WORKS_URL,
-            params={
-                "query.bibliographic": f"{query} {query_expansion(query, template_name, custom_terms)}",
+    results = []
+    for search_query in search_query_variants(query, template_name, custom_terms):
+        for use_date_filter in [True, False]:
+            params = {
+                "query.bibliographic": search_query,
                 "rows": limit,
-                "filter": f"from-pub-date:{start_year}-01-01",
                 "sort": "published",
                 "order": "desc",
-            },
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        results = response.json().get("message", {}).get("items", [])
-    except requests.RequestException:
+            }
+            if use_date_filter:
+                params["filter"] = f"from-pub-date:{start_year}-01-01"
+            try:
+                response = requests.get(
+                    CROSSREF_WORKS_URL,
+                    params=params,
+                    headers=REQUEST_HEADERS,
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                results = response.json().get("message", {}).get("items", [])
+            except requests.RequestException:
+                continue
+            if results:
+                break
+        if results:
+            break
+
+    if not results:
         return []
 
     papers = []
