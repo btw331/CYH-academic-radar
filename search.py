@@ -28,17 +28,15 @@ LINEAGE_FIELDS = (
 )
 
 GEMINI_MODELS = [
-    "gemini-3.1-flash-preview",
-    "gemini-3.1-pro",
-    "gemini-3.0-flash-preview",
-    "gemini-3.0-pro",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
 ]
 
 GEMINI_FALLBACK_MODELS = [
-    "gemini-3.1-flash-preview",
-    "gemini-3.1-pro",
-    "gemini-3.0-flash-preview",
-    "gemini-3.0-pro",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite-preview",
 ]
 
 ACADEMIC_DOMAINS = [
@@ -801,7 +799,7 @@ def sidebar():
             "Gemini 模型",
             GEMINI_MODELS,
             index=0,
-            help="僅使用 Gemini 3.1/3.0 系列；若 API 尚未開放這些模型，報告會直接提示失敗。",
+            help="僅使用 Gemini 3 preview 系列；若 API 尚未開放這些模型，報告會直接提示失敗。",
         )
         start_year = st.number_input(
             "搜尋年份（起始）",
@@ -815,7 +813,7 @@ def sidebar():
         biomedical_limit = st.slider("PubMed / Europe PMC 論文數", 5, 30, 12)
         web_limit = st.slider("Tavily 最新來源數", 0, 15, 5)
 
-        st.caption("預設僅使用 Gemini 3.1/3.0 與近年正式論文；學術報告會要求段落內 citation，並附來源清單。")
+        st.caption("預設僅使用 Gemini 3 preview 與近年正式論文；學術報告會要求段落內 citation，並附來源清單。")
 
     return gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year
 
@@ -954,7 +952,7 @@ def main():
     gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year = sidebar()
 
     st.title("🔎 Gemini x 學術搜尋")
-    st.caption("整合 Semantic Scholar 論文資料、Tavily 最新網頁線索與 Gemini 3.0/3.1 報告生成。")
+    st.caption("整合 Semantic Scholar 論文資料、Tavily 最新網頁線索與 Gemini 3 preview 報告生成。")
 
     tab_topic, tab_lineage = st.tabs(["主題搜尋", "單篇論文脈絡"])
     with tab_topic:
