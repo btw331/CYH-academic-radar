@@ -912,6 +912,30 @@ def generate_with_gemini(prompt, api_key, preferred_model):
     )
 
 
+def generate_keyword_suggestions(query, template_name, api_key, model_name):
+    template = get_template(template_name)
+    prompt = f"""
+你是一位跨領域學術搜尋策略專家。請根據研究問題與領域模板，產生適合資料庫搜尋的英文關鍵字。
+
+【研究問題】
+{query}
+
+【研究領域模板】
+{template_name}
+
+【此模板既有關鍵字】
+{" ".join(template.get("expansion", []))}
+
+【輸出要求】
+1. 只輸出英文搜尋關鍵字與常見同義詞，不要寫解釋。
+2. 使用空白分隔，必要時保留常用縮寫，例如 TEM、EELS、RCT、VO2max。
+3. 包含方法、技術、研究設計、結果指標、應用場景等搜尋詞。
+4. 控制在 25-45 個關鍵詞以內。
+5. 不要輸出 citation、Markdown 標題或項目符號。
+"""
+    return generate_with_gemini(prompt, api_key, model_name).strip()
+
+
 def build_citation_section(papers, web_sources):
     lines = ["\n\n## Citation Sources"]
     for index, paper in enumerate(papers, start=1):
@@ -1095,11 +1119,27 @@ def sidebar():
             index=0,
             help="依領域自動補英文關鍵字、Tavily 學術網域與報告結構。",
         )
+        topic_query = st.session_state.get("topic_query", "").strip()
+        if st.button("用 Gemini 建議關鍵字", use_container_width=True):
+            if not gemini_key:
+                st.warning("請先輸入 Gemini API Key。")
+            elif not topic_query:
+                st.warning("請先在主畫面輸入研究問題。")
+            else:
+                with st.spinner("Gemini 正在產生搜尋關鍵字..."):
+                    st.session_state.custom_terms = generate_keyword_suggestions(
+                        topic_query,
+                        template_name,
+                        gemini_key,
+                        model_name,
+                    )
+                st.rerun()
         custom_terms = st.text_area(
-            "自訂補充關鍵字（可選）",
+            "Gemini 建議 / 自訂補充關鍵字（可編輯）",
+            key="custom_terms",
             placeholder="例如：STEM-EELS phonon EELS battery materials",
             height=80,
-            help="會附加到所有資料庫查詢，適合補專有名詞、技術名、材料名或族群。",
+            help="可由 Gemini 依研究問題產生，也可手動修改；會附加到所有資料庫查詢。",
         )
         start_year = st.number_input(
             "搜尋年份（起始）",
@@ -1145,6 +1185,7 @@ def topic_search_tab(
     query = st.text_input(
         "研究問題",
         placeholder="例如：有氧運動與肌力訓練不相容，或 TEM-EELS 技術近年發展",
+        key="topic_query",
     )
     col_search, col_report = st.columns([1, 1])
 
