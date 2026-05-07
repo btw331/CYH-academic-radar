@@ -28,16 +28,16 @@ LINEAGE_FIELDS = (
 )
 
 GEMINI_MODELS = [
-    "gemini-3.1-flash",
+    "gemini-3.1-flash-preview",
     "gemini-3.1-pro",
-    "gemini-3.0-flash",
+    "gemini-3.0-flash-preview",
     "gemini-3.0-pro",
 ]
 
 GEMINI_FALLBACK_MODELS = [
-    "gemini-3.1-flash",
+    "gemini-3.1-flash-preview",
     "gemini-3.1-pro",
-    "gemini-3.0-flash",
+    "gemini-3.0-flash-preview",
     "gemini-3.0-pro",
 ]
 
