@@ -1161,7 +1161,7 @@ def build_citation_section(papers, web_sources):
         year = clean_display_text(paper.get("year", "N/A"), max_chars=20)
         venue = clean_display_text(paper.get("venue", "N/A"), max_chars=120)
         url = citation_url_for_paper(paper)
-        heading = f"### [論文{index}] [{title}]({url})" if url else f"### [論文{index}] {title}"
+        heading = f"### **[論文{index}] [{title}]({url})**" if url else f"### **[論文{index}] {title}**"
         lines.extend(
             [
                 heading,
@@ -1176,7 +1176,7 @@ def build_citation_section(papers, web_sources):
     for index, source in enumerate(web_sources, start=1):
         title = clean_display_text(source.get("title", "Untitled"), max_chars=180)
         url = clean_display_text(source.get("url", ""), max_chars=180)
-        heading = f"### [網頁{index}] [{title}]({url})" if url else f"### [網頁{index}] {title}"
+        heading = f"### **[網頁{index}] [{title}]({url})**" if url else f"### **[網頁{index}] {title}**"
         lines.extend(
             [
                 heading,
