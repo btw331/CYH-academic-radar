@@ -398,9 +398,29 @@ def paper_authors(paper):
     return f"{names[0]} et al."
 
 
+def safe_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        return " ".join(safe_text(item) for item in value.values())
+    if isinstance(value, list):
+        return " ".join(safe_text(item) for item in value)
+    return str(value)
+
+
+def paper_tldr_text(paper):
+    tldr = paper.get("tldr")
+    if isinstance(tldr, dict):
+        return safe_text(tldr.get("text", ""))
+    return safe_text(tldr)
+
+
 def paper_summary(paper, limit=280):
-    tldr = paper.get("tldr") or {}
-    text = tldr.get("text") or paper.get("abstract") or ""
+    text = paper_tldr_text(paper) or safe_text(paper.get("abstract"))
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
@@ -468,10 +488,10 @@ def classify_source_type(paper):
 def classify_evidence_level(paper):
     text = " ".join(
         [
-            paper.get("title", ""),
-            paper.get("abstract", ""),
-            (paper.get("tldr") or {}).get("text", ""),
-            " ".join(paper.get("publication_types") or []),
+            safe_text(paper.get("title")),
+            safe_text(paper.get("abstract")),
+            paper_tldr_text(paper),
+            safe_text(paper.get("publication_types")),
         ]
     ).lower()
     for label, score, patterns in EVIDENCE_PATTERNS:
