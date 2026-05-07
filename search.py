@@ -268,6 +268,8 @@ def keyword_trigger_expansion(query):
         "肌力": "resistance training strength training",
         "重訓": "resistance training strength training",
         "肌肥大": "hypertrophy muscle growth",
+        "干擾": "interference effect concurrent training",
+        "干擾性": "interference effect concurrent training",
         "不相容": "interference effect concurrent training",
         "併行訓練": "concurrent training interference effect",
         "穿透式電子顯微鏡": "transmission electron microscopy TEM STEM",
@@ -321,6 +323,43 @@ def search_query_variants(query, template_name="通用學術搜尋", custom_term
         seen.add(compacted.lower())
         variants.append(compacted)
     return variants
+
+
+def semantic_scholar_query_variants(query, template_name="通用學術搜尋", custom_terms=""):
+    variants = search_query_variants(query, template_name, custom_terms)
+    trigger_terms = keyword_trigger_expansion(query)
+    template_name_lower = template_name.lower()
+    focused = []
+
+    if "運動" in template_name or "有氧" in query or "肌力" in query or "干擾" in query:
+        focused.extend(
+            [
+                "concurrent training interference",
+                "concurrent training resistance endurance",
+                "endurance resistance training strength hypertrophy",
+            ]
+        )
+    if "材料" in template_name or "EELS" in query or "顯微" in query:
+        focused.extend(
+            [
+                "electron energy loss spectroscopy EELS",
+                "STEM EELS transmission electron microscopy",
+                "monochromated EELS spectrum imaging",
+            ]
+        )
+    if "ai" in template_name_lower or "computer" in template_name_lower:
+        focused.extend(["machine learning benchmark", "deep learning arxiv"])
+
+    broad = [compact_search_query(item, max_terms=14) for item in variants + focused + [trigger_terms, custom_terms]]
+    result = []
+    seen = set()
+    for item in broad:
+        key = item.lower()
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def limited_query_variants(query, template_name="通用學術搜尋", custom_terms="", limit=MAX_INDEX_QUERY_VARIANTS):
@@ -551,10 +590,27 @@ def crossref_year(item):
     return None
 
 
+def clean_display_text(value, max_chars=220):
+    text = re.sub(r"<[^>]+>", "", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    text = text.replace("|", "\\|")
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
+def has_noisy_title(paper):
+    title = clean_display_text(paper.get("title", ""), max_chars=1000)
+    if len(title) > 420:
+        return True
+    noisy_markers = [" PDF:", "Articles ", "Table of Contents", "Issue Information"]
+    return any(marker.lower() in title.lower() for marker in noisy_markers)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_semantic_scholar(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     papers = []
-    for search_query in search_query_variants(query, template_name, custom_terms):
+    for search_query in semantic_scholar_query_variants(query, template_name, custom_terms):
         for use_date_filter in [True, False]:
             params = {
                 "query": search_query,
@@ -844,16 +900,19 @@ def search_crossref(query, limit, start_year, template_name="通用學術搜尋"
 
     papers = []
     for item in results:
+        titles = item.get("title") or []
+        raw_title = titles[0] if titles else "Untitled"
+        if len(clean_display_text(raw_title, max_chars=1000)) > 420:
+            continue
         authors = [
             {"name": " ".join(part for part in [author.get("given"), author.get("family")] if part)}
             for author in item.get("author", [])
         ]
-        titles = item.get("title") or []
         venues = item.get("container-title") or []
         papers.append(
             {
                 "paperId": f"DOI:{item.get('DOI')}" if item.get("DOI") else item.get("URL"),
-                "title": titles[0] if titles else "Untitled",
+                "title": raw_title,
                 "year": crossref_year(item),
                 "venue": venues[0] if venues else "Crossref",
                 "abstract": re.sub(r"<[^>]+>", "", item.get("abstract", "")),
@@ -1046,19 +1105,30 @@ def build_citation_section(papers, web_sources):
     lines = ["\n\n## Citation Sources"]
     for index, paper in enumerate(papers, start=1):
         identifier = paper_identifier(paper) or "No DOI/PMID"
-        source = paper.get("source", "Semantic Scholar")
-        year = paper.get("year", "N/A")
-        venue = paper.get("venue", "N/A")
-        url = paper.get("url", "")
-        lines.append(
-            f"- [論文{index}] {paper.get('title', 'Untitled')} ({year}). "
-            f"{venue}. {identifier}. Source: {source}. {url}"
+        title = clean_display_text(paper.get("title", "Untitled"), max_chars=180)
+        source = clean_display_text(paper.get("source", "Semantic Scholar"), max_chars=80)
+        year = clean_display_text(paper.get("year", "N/A"), max_chars=20)
+        venue = clean_display_text(paper.get("venue", "N/A"), max_chars=120)
+        url = clean_display_text(paper.get("url", ""), max_chars=180)
+        lines.extend(
+            [
+                f"### [論文{index}] {title}",
+                f"- 年份：{year}",
+                f"- 期刊/來源：{venue}",
+                f"- 識別碼：{identifier}",
+                f"- 資料庫：{source}",
+                f"- URL：{url or 'N/A'}",
+            ]
         )
 
     for index, source in enumerate(web_sources, start=1):
-        lines.append(
-            f"- [網頁{index}] {source.get('title', 'Untitled')}. "
-            f"{source.get('url', '')}"
+        title = clean_display_text(source.get("title", "Untitled"), max_chars=180)
+        url = clean_display_text(source.get("url", ""), max_chars=180)
+        lines.extend(
+            [
+                f"### [網頁{index}] {title}",
+                f"- URL：{url or 'N/A'}",
+            ]
         )
 
     return "\n".join(lines)
@@ -1142,8 +1212,8 @@ def render_paper_table(papers):
             "類型": paper.get("source_type", "未判定"),
             "證據等級": paper.get("evidence_level", "未判定"),
             "年份": paper.get("year"),
-            "標題": paper.get("title"),
-            "期刊/會議": paper.get("venue"),
+            "標題": clean_display_text(paper.get("title"), max_chars=180),
+            "期刊/會議": clean_display_text(paper.get("venue"), max_chars=100),
             "引用數": paper.get("citationCount", 0),
             "作者": paper_authors(paper),
             "識別碼": paper_identifier(paper),
@@ -1173,7 +1243,7 @@ def render_sources(papers, web_sources):
     with st.expander("查看論文來源", expanded=False):
         for index, paper in enumerate(papers, start=1):
             url = paper.get("url")
-            title = paper.get("title", "Untitled")
+            title = clean_display_text(paper.get("title", "Untitled"), max_chars=220)
             st.markdown(f"**[論文{index}] {title}**")
             st.caption(
                 f"{paper.get('source', 'Semantic Scholar')} | {paper.get('year', 'N/A')} | "
@@ -1335,6 +1405,7 @@ def topic_search_tab(
                 + openalex_papers
                 + crossref_papers
             )
+            papers = [paper for paper in papers if not has_noisy_title(paper)]
             papers = sorted(papers, key=paper_sort_key, reverse=True)
             st.session_state.papers = papers
             st.session_state.web_sources = annotate_web_sources(web_sources)
