@@ -1,4 +1,5 @@
 import re
+from datetime import date
 from urllib.parse import unquote
 
 import google.generativeai as genai
@@ -10,6 +11,9 @@ from tavily import TavilyClient
 
 SEMANTIC_SCHOLAR_SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 SEMANTIC_SCHOLAR_PAPER_URL = "https://api.semanticscholar.org/graph/v1/paper"
+PUBMED_SEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+PUBMED_SUMMARY_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+EUROPE_PMC_SEARCH_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 REQUEST_HEADERS = {"User-Agent": "AcademicSearch/1.0"}
 REQUEST_TIMEOUT = 15
 
@@ -28,6 +32,22 @@ GEMINI_MODELS = [
     "gemini-3.1-pro",
     "gemini-3.0-flash",
     "gemini-3.0-pro",
+]
+
+ACADEMIC_DOMAINS = [
+    "pubmed.ncbi.nlm.nih.gov",
+    "pmc.ncbi.nlm.nih.gov",
+    "europepmc.org",
+    "semanticscholar.org",
+    "crossref.org",
+    "biorxiv.org",
+    "medrxiv.org",
+    "nature.com",
+    "springer.com",
+    "sciencedirect.com",
+    "frontiersin.org",
+    "tandfonline.com",
+    "mdpi.com",
 ]
 
 
@@ -60,9 +80,10 @@ def normalize_query(query):
     return re.sub(r"\s+", " ", query.strip())
 
 
-def build_academic_query(query):
+def build_academic_query(query, start_year):
     terms = [
         query,
+        query_expansion(query),
         "recent",
         "systematic review",
         "meta-analysis",
@@ -71,11 +92,23 @@ def build_academic_query(query):
         "DOI",
         "PMID",
         "PubMed",
-        "2024",
-        "2025",
-        "2026",
+        str(start_year),
+        str(date.today().year),
     ]
     return " ".join(terms)
+
+
+def query_expansion(query):
+    expansions = {
+        "有氧": "aerobic exercise endurance training",
+        "肌力": "resistance training strength training",
+        "重訓": "resistance training strength training",
+        "肌肥大": "hypertrophy muscle growth",
+        "不相容": "interference effect concurrent training",
+        "併行訓練": "concurrent training interference effect",
+    }
+    extra_terms = [value for key, value in expansions.items() if key in query]
+    return " ".join(extra_terms)
 
 
 def paper_authors(paper):
@@ -105,31 +138,186 @@ def paper_identifier(paper):
     return paper.get("paperId", "")
 
 
+def paper_sort_key(paper):
+    return (
+        paper.get("year") or 0,
+        paper.get("citationCount") or 0,
+    )
+
+
+def dedupe_papers(papers):
+    seen = set()
+    deduped = []
+    for paper in papers:
+        external_ids = paper.get("externalIds") or {}
+        key = (
+            external_ids.get("DOI")
+            or external_ids.get("PubMed")
+            or paper.get("paperId")
+            or normalize_query(paper.get("title", "").lower())
+        )
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(paper)
+    return deduped
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
-def search_semantic_scholar(query, limit):
+def search_semantic_scholar(query, limit, start_year):
+    params = {
+        "query": f"{query} {query_expansion(query)}",
+        "limit": min(limit * 3, 100),
+        "fields": PAPER_FIELDS,
+        "year": f"{start_year}-",
+    }
     response = requests.get(
         SEMANTIC_SCHOLAR_SEARCH_URL,
-        params={"query": query, "limit": limit, "fields": PAPER_FIELDS},
+        params=params,
         headers=REQUEST_HEADERS,
         timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
-    return response.json().get("data", [])
+    papers = response.json().get("data", [])
+    recent = sorted(papers, key=paper_sort_key, reverse=True)[:limit]
+    cited = sorted(papers, key=lambda paper: paper.get("citationCount") or 0, reverse=True)[:limit]
+    return dedupe_papers(recent + cited)[: limit * 2]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_pubmed(query, limit, start_year):
+    search_response = requests.get(
+        PUBMED_SEARCH_URL,
+        params={
+            "db": "pubmed",
+            "term": f"{query} {query_expansion(query)}",
+            "retmode": "json",
+            "retmax": limit,
+            "sort": "pub date",
+            "datetype": "pdat",
+            "mindate": start_year,
+            "maxdate": date.today().year,
+        },
+        headers=REQUEST_HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    search_response.raise_for_status()
+    ids = search_response.json().get("esearchresult", {}).get("idlist", [])
+    if not ids:
+        return []
+
+    summary_response = requests.get(
+        PUBMED_SUMMARY_URL,
+        params={
+            "db": "pubmed",
+            "id": ",".join(ids),
+            "retmode": "json",
+        },
+        headers=REQUEST_HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    summary_response.raise_for_status()
+    result = summary_response.json().get("result", {})
+
+    papers = []
+    for pubmed_id in result.get("uids", []):
+        item = result.get(pubmed_id, {})
+        pubdate = item.get("pubdate", "")
+        year_match = re.search(r"\d{4}", pubdate)
+        article_ids = item.get("articleids", [])
+        doi = next((entry.get("value") for entry in article_ids if entry.get("idtype") == "doi"), None)
+        authors = [{"name": author.get("name")} for author in item.get("authors", [])]
+        papers.append(
+            {
+                "paperId": f"PMID:{pubmed_id}",
+                "title": item.get("title", "Untitled"),
+                "year": int(year_match.group(0)) if year_match else None,
+                "venue": item.get("source", "PubMed"),
+                "abstract": "",
+                "tldr": None,
+                "citationCount": 0,
+                "authors": authors,
+                "externalIds": {"DOI": doi, "PubMed": pubmed_id},
+                "url": f"https://pubmed.ncbi.nlm.nih.gov/{pubmed_id}/",
+                "source": "PubMed",
+            }
+        )
+    return papers
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def search_europe_pmc(query, limit, start_year):
+    current_year = date.today().year
+    response = requests.get(
+        EUROPE_PMC_SEARCH_URL,
+        params={
+            "query": (
+                f"({query} {query_expansion(query)}) "
+                f"AND FIRST_PDATE:[{start_year}-01-01 TO {current_year}-12-31]"
+            ),
+            "format": "json",
+            "pageSize": limit,
+            "sort": "FIRST_PDATE_D desc",
+        },
+        headers=REQUEST_HEADERS,
+        timeout=REQUEST_TIMEOUT,
+    )
+    response.raise_for_status()
+    results = response.json().get("resultList", {}).get("result", [])
+
+    papers = []
+    for item in results:
+        year = item.get("pubYear")
+        pmid = item.get("pmid")
+        doi = item.get("doi")
+        author_string = item.get("authorString", "")
+        authors = [{"name": name.strip()} for name in author_string.split(",") if name.strip()]
+        full_text_urls = (item.get("fullTextUrlList") or {}).get("fullTextUrl") or []
+        full_text_url = full_text_urls[0].get("url") if full_text_urls else ""
+        papers.append(
+            {
+                "paperId": item.get("id") or f"EPMC:{item.get('source', '')}:{item.get('title', '')}",
+                "title": item.get("title", "Untitled"),
+                "year": int(year) if year and year.isdigit() else None,
+                "venue": item.get("journalTitle", "Europe PMC"),
+                "abstract": item.get("abstractText", ""),
+                "tldr": None,
+                "citationCount": int(item.get("citedByCount", 0) or 0),
+                "authors": authors,
+                "externalIds": {"DOI": doi, "PubMed": pmid},
+                "url": full_text_url
+                or f"https://europepmc.org/article/{item.get('source', 'MED')}/{item.get('id', '')}",
+                "source": "Europe PMC",
+            }
+        )
+    return papers
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def search_tavily(query, api_key, max_results):
+def search_tavily(query, api_key, max_results, start_year):
     if not api_key:
         return []
 
     tavily = TavilyClient(api_key=api_key)
-    response = tavily.search(
-        query=build_academic_query(query),
-        search_depth="advanced",
-        max_results=max_results,
-        include_answer=True,
-        include_raw_content=True,
-    )
+    search_query = build_academic_query(query, start_year)
+    try:
+        response = tavily.search(
+            query=search_query,
+            search_depth="advanced",
+            max_results=max_results,
+            include_answer=True,
+            include_raw_content=True,
+            include_domains=ACADEMIC_DOMAINS,
+        )
+    except TypeError:
+        domain_query = " OR ".join([f"site:{domain}" for domain in ACADEMIC_DOMAINS[:6]])
+        response = tavily.search(
+            query=f"{search_query} {domain_query}",
+            search_depth="advanced",
+            max_results=max_results,
+            include_answer=True,
+            include_raw_content=True,
+        )
     return response.get("results", [])
 
 
@@ -151,7 +339,7 @@ def fetch_paper_lineage(user_input):
         lookup_id = clean_input
 
     if not lookup_id:
-        search_result = search_semantic_scholar(clean_input, 1)
+        search_result = search_semantic_scholar(clean_input, 1, 1900)
         if not search_result:
             return None
         lookup_id = search_result[0]["paperId"]
@@ -187,6 +375,7 @@ def format_paper_context(papers):
                 [
                     f"[論文{index}] {paper.get('title', 'Untitled')}",
                     f"年份: {paper.get('year', 'N/A')}",
+                    f"來源資料庫: {paper.get('source', 'Semantic Scholar')}",
                     f"期刊/會議: {paper.get('venue', 'N/A')}",
                     f"作者: {paper_authors(paper)}",
                     f"引用數: {paper.get('citationCount', 0)}",
@@ -224,7 +413,7 @@ def generate_report(query, papers, web_sources, api_key, model_name):
 【研究問題】
 {query}
 
-【Semantic Scholar 論文資料】
+【整合學術資料庫論文資料】
 {format_paper_context(papers)}
 
 【Tavily 最新網頁資料】
@@ -233,7 +422,7 @@ def generate_report(query, papers, web_sources, api_key, model_name):
 【輸出格式】
 1. 先用 5-8 句話回答核心結論。
 2. 整理最重要研究，包含年份、研究設計、族群/樣本、主要發現、限制。
-3. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章。
+3. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章，並指出來源資料庫。
 4. 引用時使用 [論文1]、[網頁1] 這種標記。
 5. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
 6. 最後給實務建議，分成「較有把握」與「仍需保留」。
@@ -283,6 +472,7 @@ def render_paper_table(papers):
 
     rows = [
         {
+            "來源": paper.get("source", "Semantic Scholar"),
             "年份": paper.get("year"),
             "標題": paper.get("title"),
             "期刊/會議": paper.get("venue"),
@@ -302,7 +492,8 @@ def render_sources(papers, web_sources):
             title = paper.get("title", "Untitled")
             st.markdown(f"**[論文{index}] {title}**")
             st.caption(
-                f"{paper.get('year', 'N/A')} | {paper.get('venue', 'N/A')} | "
+                f"{paper.get('source', 'Semantic Scholar')} | {paper.get('year', 'N/A')} | "
+                f"{paper.get('venue', 'N/A')} | "
                 f"Cited: {paper.get('citationCount', 0)} | {paper_identifier(paper)}"
             )
             if url:
@@ -338,15 +529,24 @@ def sidebar():
         )
 
         model_name = st.selectbox("Gemini 模型", GEMINI_MODELS, index=0)
+        start_year = st.number_input(
+            "搜尋年份（起始）",
+            min_value=1900,
+            max_value=date.today().year,
+            value=max(date.today().year - 3, 1900),
+            step=1,
+            help="只搜尋此年份之後的文獻，適合追最新研究。",
+        )
         paper_limit = st.slider("Semantic Scholar 論文數", 5, 30, 12)
+        biomedical_limit = st.slider("PubMed / Europe PMC 論文數", 5, 30, 12)
         web_limit = st.slider("Tavily 最新來源數", 0, 15, 5)
 
-        st.caption("預設以 Gemini 3.1 系列與學術資料庫為主，Tavily 用來補最新網頁線索。")
+        st.caption("預設優先搜尋近年正式論文，Tavily 用來補最新網頁與 preprint 線索。")
 
-    return gemini_key, tavily_key, model_name, paper_limit, web_limit
+    return gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year
 
 
-def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, web_limit):
+def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year):
     query = st.text_input(
         "研究問題",
         placeholder="例如：有氧運動與肌力訓練不相容的最新研究有哪些？",
@@ -364,13 +564,20 @@ def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, web_limit)
             st.warning("請先輸入研究問題。")
             return
 
-        with st.status("正在搜尋 Semantic Scholar 與最新網頁來源...", expanded=True) as status:
-            papers = search_semantic_scholar(clean_query, paper_limit)
-            web_sources = search_tavily(clean_query, tavily_key, web_limit) if web_limit else []
+        with st.status("正在搜尋多個學術資料庫與最新網頁來源...", expanded=True) as status:
+            st.write("搜尋 Semantic Scholar：近年優先，並補高引用結果。")
+            semantic_papers = search_semantic_scholar(clean_query, paper_limit, start_year)
+            st.write("搜尋 PubMed 與 Europe PMC。")
+            pubmed_papers = search_pubmed(clean_query, biomedical_limit, start_year)
+            europe_pmc_papers = search_europe_pmc(clean_query, biomedical_limit, start_year)
+            st.write("搜尋 Tavily 學術站點。")
+            web_sources = search_tavily(clean_query, tavily_key, web_limit, start_year) if web_limit else []
+            papers = dedupe_papers(semantic_papers + pubmed_papers + europe_pmc_papers)
+            papers = sorted(papers, key=paper_sort_key, reverse=True)
             st.session_state.papers = papers
             st.session_state.web_sources = web_sources
             st.session_state.report = ""
-            status.update(label="搜尋完成", state="complete", expanded=False)
+            status.update(label=f"搜尋完成：找到 {len(papers)} 筆去重後論文", state="complete", expanded=False)
 
     if st.session_state.papers or st.session_state.web_sources:
         st.subheader("搜尋結果")
@@ -462,14 +669,22 @@ def lineage_tab(gemini_key, model_name):
 
 def main():
     init_session_state()
-    gemini_key, tavily_key, model_name, paper_limit, web_limit = sidebar()
+    gemini_key, tavily_key, model_name, paper_limit, biomedical_limit, web_limit, start_year = sidebar()
 
     st.title("🔎 Gemini x 學術搜尋")
     st.caption("整合 Semantic Scholar 論文資料、Tavily 最新網頁線索與 Gemini 3.0/3.1 報告生成。")
 
     tab_topic, tab_lineage = st.tabs(["主題搜尋", "單篇論文脈絡"])
     with tab_topic:
-        topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, web_limit)
+        topic_search_tab(
+            gemini_key,
+            tavily_key,
+            model_name,
+            paper_limit,
+            biomedical_limit,
+            web_limit,
+            start_year,
+        )
     with tab_lineage:
         lineage_tab(gemini_key, model_name)
 
