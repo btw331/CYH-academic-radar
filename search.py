@@ -50,6 +50,21 @@ ACADEMIC_DOMAINS = [
     "mdpi.com",
 ]
 
+PREPRINT_MARKERS = ["arxiv", "biorxiv", "medrxiv", "preprint"]
+SOURCE_TYPE_SCORE = {
+    "正式論文": 3,
+    "預印本": 2,
+    "學術網頁": 1,
+    "一般網頁": 0,
+}
+EVIDENCE_PATTERNS = [
+    ("系統性回顧/統合分析", 5, ["systematic review", "meta-analysis", "meta analysis"]),
+    ("隨機對照試驗", 4, ["randomized", "randomised", "randomized controlled trial", "rct"]),
+    ("世代/縱向研究", 3, ["cohort", "longitudinal", "prospective"]),
+    ("病例對照/橫斷研究", 2, ["case-control", "cross-sectional", "observational"]),
+    ("敘述性回顧/評論", 1, ["review", "narrative review", "commentary", "editorial"]),
+]
+
 
 st.set_page_config(
     page_title="Gemini x 學術搜尋",
@@ -138,29 +153,161 @@ def paper_identifier(paper):
     return paper.get("paperId", "")
 
 
+def normalize_identifier(value):
+    if not value:
+        return ""
+    return re.sub(r"\s+", "", str(value).strip().lower())
+
+
+def normalize_title(title):
+    title = re.sub(r"<[^>]+>", "", title or "")
+    title = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", " ", title.lower())
+    return normalize_query(title)
+
+
+def paper_dedupe_keys(paper):
+    external_ids = paper.get("externalIds") or {}
+    keys = []
+    doi = normalize_identifier(external_ids.get("DOI"))
+    pmid = normalize_identifier(external_ids.get("PubMed"))
+    paper_id = normalize_identifier(paper.get("paperId"))
+    title = normalize_title(paper.get("title", ""))
+
+    if doi:
+        keys.append(f"doi:{doi}")
+    if pmid:
+        keys.append(f"pmid:{pmid}")
+    if paper_id:
+        keys.append(f"id:{paper_id}")
+    if title:
+        keys.append(f"title:{title}")
+    return keys
+
+
+def classify_source_type(paper):
+    source_blob = " ".join(
+        [
+            str(paper.get("source", "")),
+            str(paper.get("venue", "")),
+            str(paper.get("url", "")),
+            str(paper_identifier(paper)),
+        ]
+    ).lower()
+    if any(marker in source_blob for marker in PREPRINT_MARKERS):
+        return "預印本"
+    external_ids = paper.get("externalIds") or {}
+    if external_ids.get("DOI") or external_ids.get("PubMed"):
+        return "正式論文"
+    if paper.get("source") in {"PubMed", "Europe PMC", "Semantic Scholar"}:
+        return "正式論文"
+    return "學術網頁"
+
+
+def classify_evidence_level(paper):
+    text = " ".join(
+        [
+            paper.get("title", ""),
+            paper.get("abstract", ""),
+            (paper.get("tldr") or {}).get("text", ""),
+            " ".join(paper.get("publication_types") or []),
+        ]
+    ).lower()
+    for label, score, patterns in EVIDENCE_PATTERNS:
+        if any(pattern in text for pattern in patterns):
+            return label, score
+    return "原始研究/未判定", 0
+
+
+def annotate_paper(paper):
+    annotated = paper.copy()
+    source_type = classify_source_type(annotated)
+    evidence_level, evidence_score = classify_evidence_level(annotated)
+    annotated["source_type"] = source_type
+    annotated["evidence_level"] = evidence_level
+    annotated["evidence_score"] = evidence_score
+    return annotated
+
+
 def paper_sort_key(paper):
     return (
+        SOURCE_TYPE_SCORE.get(paper.get("source_type", ""), 0),
+        paper.get("evidence_score") or 0,
         paper.get("year") or 0,
         paper.get("citationCount") or 0,
     )
 
 
+def merge_paper_records(existing, incoming):
+    merged = existing.copy()
+    incoming = incoming.copy()
+
+    for key in ["title", "year", "venue", "url", "abstract", "tldr"]:
+        if not merged.get(key) and incoming.get(key):
+            merged[key] = incoming[key]
+
+    existing_ids = merged.get("externalIds") or {}
+    incoming_ids = incoming.get("externalIds") or {}
+    merged["externalIds"] = {**incoming_ids, **existing_ids}
+
+    if not merged.get("authors") and incoming.get("authors"):
+        merged["authors"] = incoming["authors"]
+
+    merged["citationCount"] = max(merged.get("citationCount") or 0, incoming.get("citationCount") or 0)
+
+    sources = {
+        source
+        for source in [merged.get("source"), incoming.get("source")]
+        if source
+    }
+    if sources:
+        merged["source"] = " + ".join(sorted(sources))
+
+    return annotate_paper(merged)
+
+
 def dedupe_papers(papers):
-    seen = set()
+    key_to_index = {}
     deduped = []
     for paper in papers:
-        external_ids = paper.get("externalIds") or {}
-        key = (
-            external_ids.get("DOI")
-            or external_ids.get("PubMed")
-            or paper.get("paperId")
-            or normalize_query(paper.get("title", "").lower())
-        )
-        if not key or key in seen:
+        annotated = annotate_paper(paper)
+        keys = paper_dedupe_keys(annotated)
+        matched_index = next((key_to_index[key] for key in keys if key in key_to_index), None)
+
+        if matched_index is not None:
+            deduped[matched_index] = merge_paper_records(deduped[matched_index], annotated)
+            key_to_index.update({key: matched_index for key in paper_dedupe_keys(deduped[matched_index])})
             continue
-        seen.add(key)
-        deduped.append(paper)
+
+        if not keys:
+            continue
+
+        key_to_index.update({key: len(deduped) for key in keys})
+        deduped.append(annotated)
     return deduped
+
+
+def classify_web_source(source):
+    url = (source.get("url") or "").lower()
+    if any(marker in url for marker in ["biorxiv.org", "medrxiv.org", "arxiv.org"]):
+        return "預印本"
+    if any(domain in url for domain in ["pubmed.ncbi.nlm.nih.gov", "pmc.ncbi.nlm.nih.gov", "europepmc.org"]):
+        return "正式論文"
+    if any(domain in url for domain in ACADEMIC_DOMAINS):
+        return "學術網頁"
+    return "一般網頁"
+
+
+def annotate_web_sources(sources):
+    annotated = []
+    for source in sources:
+        item = source.copy()
+        item["source_type"] = classify_web_source(item)
+        annotated.append(item)
+    return sorted(
+        annotated,
+        key=lambda item: SOURCE_TYPE_SCORE.get(item.get("source_type", ""), 0),
+        reverse=True,
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -179,6 +326,8 @@ def search_semantic_scholar(query, limit, start_year):
     )
     response.raise_for_status()
     papers = response.json().get("data", [])
+    for paper in papers:
+        paper["source"] = "Semantic Scholar"
     recent = sorted(papers, key=paper_sort_key, reverse=True)[:limit]
     cited = sorted(papers, key=lambda paper: paper.get("citationCount") or 0, reverse=True)[:limit]
     return dedupe_papers(recent + cited)[: limit * 2]
@@ -240,6 +389,7 @@ def search_pubmed(query, limit, start_year):
                 "externalIds": {"DOI": doi, "PubMed": pubmed_id},
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pubmed_id}/",
                 "source": "PubMed",
+                "publication_types": item.get("pubtype", []),
             }
         )
     return papers
@@ -278,7 +428,7 @@ def search_europe_pmc(query, limit, start_year):
             {
                 "paperId": item.get("id") or f"EPMC:{item.get('source', '')}:{item.get('title', '')}",
                 "title": item.get("title", "Untitled"),
-                "year": int(year) if year and year.isdigit() else None,
+                "year": int(year) if year and str(year).isdigit() else None,
                 "venue": item.get("journalTitle", "Europe PMC"),
                 "abstract": item.get("abstractText", ""),
                 "tldr": None,
@@ -288,6 +438,7 @@ def search_europe_pmc(query, limit, start_year):
                 "url": full_text_url
                 or f"https://europepmc.org/article/{item.get('source', 'MED')}/{item.get('id', '')}",
                 "source": "Europe PMC",
+                "publication_types": [item.get("pubType")] if item.get("pubType") else [],
             }
         )
     return papers
@@ -376,6 +527,8 @@ def format_paper_context(papers):
                     f"[論文{index}] {paper.get('title', 'Untitled')}",
                     f"年份: {paper.get('year', 'N/A')}",
                     f"來源資料庫: {paper.get('source', 'Semantic Scholar')}",
+                    f"來源類型: {paper.get('source_type', '未判定')}",
+                    f"證據等級: {paper.get('evidence_level', '未判定')}",
                     f"期刊/會議: {paper.get('venue', 'N/A')}",
                     f"作者: {paper_authors(paper)}",
                     f"引用數: {paper.get('citationCount', 0)}",
@@ -395,6 +548,7 @@ def format_web_context(sources):
             "\n".join(
                 [
                     f"[網頁{index}] {source.get('title', 'Untitled')}",
+                    f"來源類型: {source.get('source_type', '未判定')}",
                     f"網址: {source.get('url', '')}",
                     f"內容: {content[:1200]}",
                 ]
@@ -422,10 +576,11 @@ def generate_report(query, papers, web_sources, api_key, model_name):
 【輸出格式】
 1. 先用 5-8 句話回答核心結論。
 2. 整理最重要研究，包含年份、研究設計、族群/樣本、主要發現、限制。
-3. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章，並指出來源資料庫。
-4. 引用時使用 [論文1]、[網頁1] 這種標記。
-5. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
-6. 最後給實務建議，分成「較有把握」與「仍需保留」。
+3. 優先引用「正式論文」與較高「證據等級」的資料；預印本與一般網頁只能作為最新線索。
+4. 清楚區分系統性回顧/統合分析、RCT、觀察研究、評論文章，並指出來源資料庫。
+5. 引用時使用 [論文1]、[網頁1] 這種標記。
+6. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
+7. 最後給實務建議，分成「較有把握」與「仍需保留」。
 """
     return model.generate_content(prompt).text
 
@@ -473,6 +628,8 @@ def render_paper_table(papers):
     rows = [
         {
             "來源": paper.get("source", "Semantic Scholar"),
+            "類型": paper.get("source_type", "未判定"),
+            "證據等級": paper.get("evidence_level", "未判定"),
             "年份": paper.get("year"),
             "標題": paper.get("title"),
             "期刊/會議": paper.get("venue"),
@@ -485,6 +642,22 @@ def render_paper_table(papers):
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
+def render_result_summary(papers, web_sources):
+    formal_count = sum(1 for paper in papers if paper.get("source_type") == "正式論文")
+    preprint_count = sum(1 for paper in papers if paper.get("source_type") == "預印本")
+    high_evidence_count = sum(1 for paper in papers if (paper.get("evidence_score") or 0) >= 4)
+    latest_year = max([paper.get("year") or 0 for paper in papers], default=0)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("去重後論文", len(papers))
+    col2.metric("正式論文", formal_count)
+    col3.metric("高證據等級", high_evidence_count)
+    col4.metric("最新年份", latest_year or "N/A")
+
+    if preprint_count or web_sources:
+        st.caption(f"另含 {preprint_count} 筆預印本標記，以及 {len(web_sources)} 筆最新網頁線索。")
+
+
 def render_sources(papers, web_sources):
     with st.expander("查看論文來源", expanded=False):
         for index, paper in enumerate(papers, start=1):
@@ -493,6 +666,7 @@ def render_sources(papers, web_sources):
             st.markdown(f"**[論文{index}] {title}**")
             st.caption(
                 f"{paper.get('source', 'Semantic Scholar')} | {paper.get('year', 'N/A')} | "
+                f"{paper.get('source_type', '未判定')} | {paper.get('evidence_level', '未判定')} | "
                 f"{paper.get('venue', 'N/A')} | "
                 f"Cited: {paper.get('citationCount', 0)} | {paper_identifier(paper)}"
             )
@@ -506,7 +680,7 @@ def render_sources(papers, web_sources):
         with st.expander("查看最新網頁來源", expanded=False):
             for index, source in enumerate(web_sources, start=1):
                 st.markdown(f"**[網頁{index}] [{source.get('title', 'Untitled')}]({source.get('url', '')})**")
-                st.caption((source.get("content") or "")[:300])
+                st.caption(f"{source.get('source_type', '未判定')} | {(source.get('content') or '')[:300]}")
                 st.divider()
 
 
@@ -575,12 +749,13 @@ def topic_search_tab(gemini_key, tavily_key, model_name, paper_limit, biomedical
             papers = dedupe_papers(semantic_papers + pubmed_papers + europe_pmc_papers)
             papers = sorted(papers, key=paper_sort_key, reverse=True)
             st.session_state.papers = papers
-            st.session_state.web_sources = web_sources
+            st.session_state.web_sources = annotate_web_sources(web_sources)
             st.session_state.report = ""
             status.update(label=f"搜尋完成：找到 {len(papers)} 筆去重後論文", state="complete", expanded=False)
 
     if st.session_state.papers or st.session_state.web_sources:
         st.subheader("搜尋結果")
+        render_result_summary(st.session_state.papers, st.session_state.web_sources)
         render_paper_table(st.session_state.papers)
         render_sources(st.session_state.papers, st.session_state.web_sources)
 
