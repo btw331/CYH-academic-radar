@@ -1218,14 +1218,50 @@ def citation_link_map(papers, web_sources):
 def style_citations_markdown(markdown_text, papers, web_sources):
     links = citation_link_map(papers, web_sources)
 
-    def replace_match(match):
-        label = match.group(1)
+    def citation_token(label):
         url = links.get(label)
         if not url:
             return f"**[{label}]**"
         return f"[**[{label}]**]({url})"
 
-    return re.sub(r"\[(論文\d+|網頁\d+)\]", replace_match, markdown_text)
+    def replace_group(match):
+        content = match.group(1)
+        labels = re.findall(r"(論文\d+|網頁\d+)", content)
+        if not labels:
+            return match.group(0)
+        return " ".join(citation_token(label) for label in labels)
+
+    return re.sub(r"\[([^\[\]]*(?:論文|網頁)\d+[^\[\]]*)\]", replace_group, markdown_text)
+
+
+def report_markdown_for_display(markdown_text):
+    def linked_badge(match):
+        label = match.group(1)
+        url = match.group(2)
+        return (
+            f'<a href="{url}" target="_blank" style="'
+            "display:inline-block;padding:1px 6px;margin:0 2px;"
+            "border-radius:6px;background:#E8F0FE;color:#174EA6;"
+            "font-weight:700;text-decoration:none;border:1px solid #C6DAFC;"
+            f'">[{label}]</a>'
+        )
+
+    def plain_badge(match):
+        label = match.group(1)
+        return (
+            '<span style="display:inline-block;padding:1px 6px;margin:0 2px;'
+            'border-radius:6px;background:#F1F3F4;color:#3C4043;'
+            'font-weight:700;border:1px solid #DADCE0;">'
+            f"[{label}]</span>"
+        )
+
+    html_text = re.sub(
+        r"\[\*\*\[(論文\d+|網頁\d+)\]\*\*\]\(([^)]+)\)",
+        linked_badge,
+        markdown_text,
+    )
+    html_text = re.sub(r"\*\*\[(論文\d+|網頁\d+)\]\*\*", plain_badge, html_text)
+    return html_text
 
 
 def get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont):
@@ -1787,7 +1823,7 @@ def topic_search_tab(
 
     if st.session_state.report:
         st.subheader("學術報告")
-        st.markdown(st.session_state.report)
+        st.markdown(report_markdown_for_display(st.session_state.report), unsafe_allow_html=True)
         col_md, col_pdf = st.columns(2)
         with col_md:
             st.download_button(
