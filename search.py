@@ -1228,18 +1228,44 @@ def clean_pdf_markdown_line(line):
     return cleaned
 
 
+def is_markdown_table_line(line):
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+
+
+def is_markdown_table_separator(line):
+    stripped = line.strip().strip("|")
+    if not stripped:
+        return False
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+
+def parse_markdown_table_row(line):
+    return [clean_pdf_markdown_line(cell.strip()) for cell in line.strip().strip("|").split("|")]
+
+
+def split_long_cell_text(text, max_chars=55):
+    text = clean_pdf_markdown_line(text)
+    if len(text) <= max_chars:
+        return text
+    chunks = [text[index:index + max_chars] for index in range(0, len(text), max_chars)]
+    return "<br/>".join(chunks)
+
+
 def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     try:
         from html import escape
         from io import BytesIO
 
-        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import cm
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.cidfonts import UnicodeCIDFont
         from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
         return None
 
@@ -1248,7 +1274,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
 
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
+        pagesize=landscape(A4),
         rightMargin=1.5 * cm,
         leftMargin=1.5 * cm,
         topMargin=1.5 * cm,
@@ -1260,24 +1286,74 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         "TraditionalChinese",
         parent=styles["BodyText"],
         fontName=font_name,
-        fontSize=10.5,
-        leading=16,
-        spaceAfter=8,
+        fontSize=9.5,
+        leading=14,
+        spaceAfter=6,
     )
     heading_style = ParagraphStyle(
         "TraditionalChineseHeading",
         parent=base_style,
-        fontSize=15,
-        leading=20,
+        fontSize=14,
+        leading=18,
         spaceBefore=12,
         spaceAfter=10,
     )
+    table_cell_style = ParagraphStyle(
+        "TraditionalChineseTableCell",
+        parent=base_style,
+        fontSize=7.2,
+        leading=9.2,
+        spaceAfter=0,
+    )
 
     story = []
-    for raw_line in markdown_text.splitlines():
+    lines = markdown_text.splitlines()
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
         line = raw_line.strip()
         if not line:
             story.append(Spacer(1, 6))
+            index += 1
+            continue
+
+        if is_markdown_table_line(line):
+            table_rows = []
+            while index < len(lines) and is_markdown_table_line(lines[index].strip()):
+                current_line = lines[index].strip()
+                if not is_markdown_table_separator(current_line):
+                    table_rows.append(parse_markdown_table_row(current_line))
+                index += 1
+
+            if table_rows:
+                max_columns = max(len(row) for row in table_rows)
+                normalized_rows = [row + [""] * (max_columns - len(row)) for row in table_rows]
+                table_data = [
+                    [
+                        Paragraph(escape(split_long_cell_text(cell)), table_cell_style)
+                        for cell in row
+                    ]
+                    for row in normalized_rows
+                ]
+                available_width = landscape(A4)[0] - 3 * cm
+                col_widths = [available_width / max_columns] * max_columns
+                table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+                table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#bbbbbb")),
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ]
+                    )
+                )
+                story.append(table)
+                story.append(Spacer(1, 8))
             continue
 
         if line.startswith("### "):
@@ -1291,6 +1367,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         else:
             cleaned = clean_pdf_markdown_line(line)
             story.append(Paragraph(escape(cleaned), base_style))
+        index += 1
 
     doc.build(story)
     return buffer.getvalue()
