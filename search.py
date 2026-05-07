@@ -28,10 +28,21 @@ LINEAGE_FIELDS = (
 )
 
 GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
     "gemini-3.1-flash",
     "gemini-3.1-pro",
     "gemini-3.0-flash",
     "gemini-3.0-pro",
+]
+
+GEMINI_FALLBACK_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
 ACADEMIC_DOMAINS = [
@@ -599,9 +610,34 @@ def format_web_context(sources):
     return "\n\n".join(lines)
 
 
-def generate_report(query, papers, web_sources, api_key, model_name):
+def generate_with_gemini(prompt, api_key, preferred_model):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    candidate_models = [preferred_model] + [
+        model for model in GEMINI_FALLBACK_MODELS if model != preferred_model
+    ]
+    last_error = None
+
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt)
+            text = getattr(response, "text", "")
+            if not text:
+                text = "⚠️ Gemini 已回應，但沒有產生可顯示文字。"
+            if model_name != preferred_model:
+                text = f"⚠️ 原選模型 `{preferred_model}` 不可用，已自動改用 `{model_name}`。\n\n{text}"
+            return text
+        except Exception as error:
+            last_error = error
+            continue
+
+    return (
+        "❌ Gemini 生成失敗：目前選擇的模型與備援模型都無法使用。\n\n"
+        f"最後錯誤：{type(last_error).__name__}: {last_error}"
+    )
+
+
+def generate_report(query, papers, web_sources, api_key, model_name):
 
     prompt = f"""
 你是一位嚴謹的學術研究助理。請用台灣繁體中文回答，並以證據品質為優先。
@@ -624,13 +660,10 @@ def generate_report(query, papers, web_sources, api_key, model_name):
 6. 如果資料不足或來源不像正式論文，請直接指出，不要假裝確定。
 7. 最後給實務建議，分成「較有把握」與「仍需保留」。
 """
-    return model.generate_content(prompt).text
+    return generate_with_gemini(prompt, api_key, model_name)
 
 
 def generate_lineage_report(lineage, question, api_key, model_name):
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
-
     paper = lineage["paper"]
     references = lineage["references"]
     citations = lineage["citations"]
@@ -659,7 +692,7 @@ def generate_lineage_report(lineage, question, api_key, model_name):
 3. 後續研究如何延伸或修正它。
 4. 對閱讀這個領域的建議路徑。
 """
-    return model.generate_content(prompt).text
+    return generate_with_gemini(prompt, api_key, model_name)
 
 
 def render_paper_table(papers):
@@ -744,7 +777,12 @@ def sidebar():
             type="password",
         )
 
-        model_name = st.selectbox("Gemini 模型", GEMINI_MODELS, index=0)
+        model_name = st.selectbox(
+            "Gemini 模型",
+            GEMINI_MODELS,
+            index=0,
+            help="Gemini 3.x 若帳號或 API 尚未開放，系統會自動 fallback 到 2.5/1.5 穩定模型。",
+        )
         start_year = st.number_input(
             "搜尋年份（起始）",
             min_value=1900,
