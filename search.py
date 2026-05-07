@@ -1154,6 +1154,74 @@ def build_citation_section(papers, web_sources):
     return "\n".join(lines)
 
 
+def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
+    try:
+        from html import escape
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    except ImportError:
+        return None
+
+    buffer = BytesIO()
+    pdfmetrics.registerFont(UnicodeCIDFont("MSung-Light"))
+
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5 * cm,
+        leftMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+        title=title,
+    )
+    styles = getSampleStyleSheet()
+    base_style = ParagraphStyle(
+        "TraditionalChinese",
+        parent=styles["BodyText"],
+        fontName="MSung-Light",
+        fontSize=10.5,
+        leading=16,
+        spaceAfter=8,
+    )
+    heading_style = ParagraphStyle(
+        "TraditionalChineseHeading",
+        parent=base_style,
+        fontSize=15,
+        leading=20,
+        spaceBefore=12,
+        spaceAfter=10,
+    )
+
+    story = []
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            story.append(Spacer(1, 6))
+            continue
+
+        if line.startswith("### "):
+            story.append(Paragraph(escape(line[4:]), heading_style))
+        elif line.startswith("## "):
+            story.append(Paragraph(escape(line[3:]), heading_style))
+        elif line.startswith("# "):
+            story.append(Paragraph(escape(line[2:]), heading_style))
+        elif line.startswith("- "):
+            story.append(Paragraph("• " + escape(line[2:]), base_style))
+        else:
+            cleaned = re.sub(r"\*\*(.*?)\*\*", r"\1", line)
+            cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+            story.append(Paragraph(escape(cleaned), base_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def generate_report(query, papers, web_sources, api_key, model_name, template_name):
     template = get_template(template_name)
 
@@ -1463,12 +1531,27 @@ def topic_search_tab(
     if st.session_state.report:
         st.subheader("學術報告")
         st.markdown(st.session_state.report)
-        st.download_button(
-            "下載報告 Markdown",
-            st.session_state.report,
-            file_name="academic_report.md",
-            mime="text/markdown",
-        )
+        col_md, col_pdf = st.columns(2)
+        with col_md:
+            st.download_button(
+                "下載報告 Markdown",
+                st.session_state.report,
+                file_name="academic_report.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+        with col_pdf:
+            pdf_bytes = markdown_to_pdf_bytes(st.session_state.report)
+            if pdf_bytes:
+                st.download_button(
+                    "下載報告 PDF",
+                    pdf_bytes,
+                    file_name="academic_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+            else:
+                st.warning("PDF 匯出需要安裝 reportlab。")
 
 
 def lineage_tab(gemini_key, model_name):
