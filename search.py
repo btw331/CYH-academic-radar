@@ -18,6 +18,8 @@ OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 REQUEST_HEADERS = {"User-Agent": "AcademicSearch/1.0"}
 REQUEST_TIMEOUT = 15
+FAST_REQUEST_TIMEOUT = 8
+MAX_INDEX_QUERY_VARIANTS = 4
 
 PAPER_FIELDS = (
     "paperId,title,year,venue,abstract,tldr,citationCount,authors.name,"
@@ -321,6 +323,10 @@ def search_query_variants(query, template_name="通用學術搜尋", custom_term
     return variants
 
 
+def limited_query_variants(query, template_name="通用學術搜尋", custom_terms="", limit=MAX_INDEX_QUERY_VARIANTS):
+    return search_query_variants(query, template_name, custom_terms)[:limit]
+
+
 def build_academic_query(query, start_year, template_name="通用學術搜尋", custom_terms=""):
     terms = [
         query,
@@ -549,31 +555,27 @@ def crossref_year(item):
 def search_semantic_scholar(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     papers = []
     for search_query in search_query_variants(query, template_name, custom_terms):
-        params = {
-            "query": search_query,
-            "limit": min(limit * 3, 100),
-            "fields": PAPER_FIELDS,
-            "year": f"{start_year}-",
-        }
-        try:
-            response = requests.get(
-                SEMANTIC_SCHOLAR_SEARCH_URL,
-                params=params,
-                headers=REQUEST_HEADERS,
-                timeout=REQUEST_TIMEOUT,
-            )
-            if response.status_code == 400:
-                fallback_params = {key: value for key, value in params.items() if key != "year"}
+        for use_date_filter in [True, False]:
+            params = {
+                "query": search_query,
+                "limit": min(limit * 3, 100),
+                "fields": PAPER_FIELDS,
+            }
+            if use_date_filter:
+                params["year"] = f"{start_year}-"
+            try:
                 response = requests.get(
                     SEMANTIC_SCHOLAR_SEARCH_URL,
-                    params=fallback_params,
+                    params=params,
                     headers=REQUEST_HEADERS,
                     timeout=REQUEST_TIMEOUT,
                 )
-            response.raise_for_status()
-            papers = response.json().get("data", [])
-        except requests.RequestException:
-            continue
+                response.raise_for_status()
+                papers = response.json().get("data", [])
+            except requests.RequestException:
+                continue
+            if papers:
+                break
         if papers:
             break
 
@@ -750,7 +752,7 @@ def search_europe_pmc(query, limit, start_year, template_name="通用學術搜�
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_openalex(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     results = []
-    for search_query in search_query_variants(query, template_name, custom_terms):
+    for search_query in limited_query_variants(query, template_name, custom_terms):
         for use_date_filter in [True, False]:
             params = {
                 "search": search_query,
@@ -764,7 +766,7 @@ def search_openalex(query, limit, start_year, template_name="通用學術搜尋"
                     OPENALEX_WORKS_URL,
                     params=params,
                     headers=REQUEST_HEADERS,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=FAST_REQUEST_TIMEOUT,
                 )
                 response.raise_for_status()
                 results = response.json().get("results", [])
@@ -811,7 +813,7 @@ def search_openalex(query, limit, start_year, template_name="通用學術搜尋"
 @st.cache_data(ttl=3600, show_spinner=False)
 def search_crossref(query, limit, start_year, template_name="通用學術搜尋", custom_terms=""):
     results = []
-    for search_query in search_query_variants(query, template_name, custom_terms):
+    for search_query in limited_query_variants(query, template_name, custom_terms):
         for use_date_filter in [True, False]:
             params = {
                 "query.bibliographic": search_query,
@@ -826,7 +828,7 @@ def search_crossref(query, limit, start_year, template_name="通用學術搜尋"
                     CROSSREF_WORKS_URL,
                     params=params,
                     headers=REQUEST_HEADERS,
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=FAST_REQUEST_TIMEOUT,
                 )
                 response.raise_for_status()
                 results = response.json().get("message", {}).get("items", [])
@@ -1313,10 +1315,12 @@ def topic_search_tab(
             pubmed_papers = search_pubmed(clean_query, biomedical_limit, start_year, template_name, custom_terms)
             europe_pmc_papers = search_europe_pmc(clean_query, biomedical_limit, start_year, template_name, custom_terms)
             st.write(f"PubMed：{len(pubmed_papers)} 筆；Europe PMC：{len(europe_pmc_papers)} 筆")
-            st.write("搜尋 OpenAlex 與 Crossref。")
+            st.write("搜尋 OpenAlex。")
             openalex_papers = search_openalex(clean_query, index_limit, start_year, template_name, custom_terms)
+            st.write(f"OpenAlex：{len(openalex_papers)} 筆")
+            st.write("搜尋 Crossref。")
             crossref_papers = search_crossref(clean_query, index_limit, start_year, template_name, custom_terms)
-            st.write(f"OpenAlex：{len(openalex_papers)} 筆；Crossref：{len(crossref_papers)} 筆")
+            st.write(f"Crossref：{len(crossref_papers)} 筆")
             st.write("搜尋 Tavily 學術站點。")
             web_sources = (
                 search_tavily(clean_query, tavily_key, web_limit, start_year, template_name, custom_terms)
