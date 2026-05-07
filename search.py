@@ -25,6 +25,9 @@ MAX_INDEX_QUERY_VARIANTS = 4
 PDF_FONT_NAME = "NotoSansTC"
 PDF_FONT_FILE = "NotoSansTC-Regular.ttf"
 PDF_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf"
+PDF_BOLD_FONT_NAME = "NotoSansTC-Bold"
+PDF_BOLD_FONT_FILE = "NotoSansTC-Bold.ttf"
+PDF_BOLD_FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosanstc/static/NotoSansTC-Bold.ttf"
 
 PAPER_FIELDS = (
     "paperId,title,year,venue,abstract,tldr,citationCount,authors.name,"
@@ -1270,39 +1273,53 @@ def report_markdown_for_display(markdown_text, papers=None, web_sources=None):
     return html_text
 
 
-def get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont):
-    candidate_paths = [
-        Path(__file__).with_name(PDF_FONT_FILE),
-        Path(tempfile.gettempdir()) / PDF_FONT_FILE,
-    ]
+def register_pdf_ttf_font(pdfmetrics, TTFont, font_name, file_name, url):
+    candidate_paths = [Path(__file__).with_name(file_name), Path(tempfile.gettempdir()) / file_name]
 
     for font_path in candidate_paths:
         if font_path.exists():
             try:
-                pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, str(font_path)))
-                return PDF_FONT_NAME
+                pdfmetrics.registerFont(TTFont(font_name, str(font_path)))
+                return font_name
             except Exception:
                 continue
 
-    download_path = Path(tempfile.gettempdir()) / PDF_FONT_FILE
+    download_path = Path(tempfile.gettempdir()) / file_name
     try:
-        response = requests.get(PDF_FONT_URL, timeout=REQUEST_TIMEOUT)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT)
         response.raise_for_status()
         if len(response.content) > 10000:
             download_path.write_bytes(response.content)
-            pdfmetrics.registerFont(TTFont(PDF_FONT_NAME, str(download_path)))
-            return PDF_FONT_NAME
+            pdfmetrics.registerFont(TTFont(font_name, str(download_path)))
+            return font_name
     except Exception:
-        pass
+        return None
+
+    return None
+
+
+def get_pdf_font_names(pdfmetrics, TTFont, UnicodeCIDFont):
+    regular_font = register_pdf_ttf_font(pdfmetrics, TTFont, PDF_FONT_NAME, PDF_FONT_FILE, PDF_FONT_URL)
+    bold_font = register_pdf_ttf_font(pdfmetrics, TTFont, PDF_BOLD_FONT_NAME, PDF_BOLD_FONT_FILE, PDF_BOLD_FONT_URL)
+
+    if regular_font:
+        pdfmetrics.registerFontFamily(
+            regular_font,
+            normal=regular_font,
+            bold=bold_font or regular_font,
+            italic=regular_font,
+            boldItalic=bold_font or regular_font,
+        )
+        return regular_font, bold_font or regular_font
 
     for fallback_font in ["STSong-Light", "MSung-Light"]:
         try:
             pdfmetrics.registerFont(UnicodeCIDFont(fallback_font))
-            return fallback_font
+            return fallback_font, fallback_font
         except Exception:
             continue
 
-    return "Helvetica"
+    return "Helvetica", "Helvetica-Bold"
 
 
 def clean_pdf_markdown_line(line):
@@ -1468,7 +1485,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         return None
 
     buffer = BytesIO()
-    font_name = get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont)
+    font_name, bold_font_name = get_pdf_font_names(pdfmetrics, TTFont, UnicodeCIDFont)
 
     doc = SimpleDocTemplate(
         buffer,
@@ -1492,6 +1509,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     heading_style = ParagraphStyle(
         "TraditionalChineseHeading",
         parent=base_style,
+        fontName=bold_font_name,
         fontSize=16,
         leading=22,
         spaceBefore=16,
@@ -1502,6 +1520,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     subheading_style = ParagraphStyle(
         "TraditionalChineseSubHeading",
         parent=heading_style,
+        fontName=bold_font_name,
         fontSize=13,
         leading=18,
         spaceBefore=12,
@@ -1534,6 +1553,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     card_label_style = ParagraphStyle(
         "TraditionalChineseCardLabel",
         parent=card_style,
+        fontName=bold_font_name,
         fontSize=8.8,
         leading=13,
         textColor="#3C4043",
@@ -1541,6 +1561,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     card_title_style = ParagraphStyle(
         "TraditionalChineseCardTitle",
         parent=base_style,
+        fontName=bold_font_name,
         fontSize=10,
         leading=14,
         spaceBefore=6,
