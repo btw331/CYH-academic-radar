@@ -1327,20 +1327,30 @@ def pdf_markup_text(text):
     text = clean_pdf_symbols(text)
     citation_link_pattern = re.compile(r"\[\*\*\[(論文\d+|網頁\d+)\]\*\*\]\(([^)]+)\)")
     general_link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    bold_pattern = re.compile(r"\*\*(.*?)\*\*")
     parts = []
     last_end = 0
 
+    def bold_markup(chunk):
+        bold_parts = []
+        bold_last_end = 0
+        for bold_match in bold_pattern.finditer(chunk):
+            bold_parts.append(escape(chunk[bold_last_end:bold_match.start()]))
+            bold_parts.append(f"<b>{escape(bold_match.group(1))}</b>")
+            bold_last_end = bold_match.end()
+        bold_parts.append(escape(chunk[bold_last_end:]))
+        return "".join(bold_parts)
+
     def plain_markup(chunk):
-        chunk = re.sub(r"\*\*(.*?)\*\*", r"\1", chunk)
         general_parts = []
         general_last_end = 0
         for general_match in general_link_pattern.finditer(chunk):
-            general_parts.append(escape(chunk[general_last_end:general_match.start()]))
-            label = escape(general_match.group(1))
+            general_parts.append(bold_markup(chunk[general_last_end:general_match.start()]))
+            label = bold_markup(general_match.group(1))
             url = escape(general_match.group(2), quote=True)
             general_parts.append(f'<a href="{url}"><font color="#0B57D0"><b>{label}</b></font></a>')
             general_last_end = general_match.end()
-        general_parts.append(escape(chunk[general_last_end:]))
+        general_parts.append(bold_markup(chunk[general_last_end:]))
         escaped = "".join(general_parts)
         return re.sub(
             r"\[(論文\d+|網頁\d+)\]",
@@ -1610,13 +1620,13 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
             continue
 
         if line.startswith("#### "):
-            story.append(Paragraph(pdf_markup_text(line[5:]), subheading_style))
+            story.append(Paragraph(f"<b>{pdf_markup_text(line[5:])}</b>", subheading_style))
         elif line.startswith("### "):
-            story.append(Paragraph(pdf_markup_text(line[4:]), subheading_style))
+            story.append(Paragraph(f"<b>{pdf_markup_text(line[4:])}</b>", subheading_style))
         elif line.startswith("## "):
-            story.append(Paragraph(pdf_markup_text(line[3:]), heading_style))
+            story.append(Paragraph(f"<b>{pdf_markup_text(line[3:])}</b>", heading_style))
         elif line.startswith("# "):
-            story.append(Paragraph(pdf_markup_text(line[2:]), heading_style))
+            story.append(Paragraph(f"<b>{pdf_markup_text(line[2:])}</b>", heading_style))
         elif line.startswith("- ") or line.startswith("* "):
             story.append(Paragraph("• " + pdf_markup_text(line[2:]), bullet_style))
         else:
