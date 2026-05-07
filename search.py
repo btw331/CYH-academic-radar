@@ -1234,24 +1234,30 @@ def style_citations_markdown(markdown_text, papers, web_sources):
     return re.sub(r"\[([^\[\]]*(?:論文|網頁)\d+[^\[\]]*)\]", replace_group, markdown_text)
 
 
-def report_markdown_for_display(markdown_text):
+def report_markdown_for_display(markdown_text, papers=None, web_sources=None):
+    if papers is not None and web_sources is not None:
+        markdown_text = style_citations_markdown(markdown_text, papers, web_sources)
+
     def linked_badge(match):
         label = match.group(1)
         url = match.group(2)
         return (
             f'<a href="{url}" target="_blank" style="'
-            "display:inline-block;padding:1px 6px;margin:0 2px;"
-            "border-radius:6px;background:#E8F0FE;color:#174EA6;"
-            "font-weight:700;text-decoration:none;border:1px solid #C6DAFC;"
+            "display:inline-block;padding:0 4px;margin:0 1px;"
+            "border-radius:5px;background:#E8F0FE;color:#174EA6;"
+            "font-size:0.78em;line-height:1.45;font-weight:700;"
+            "text-decoration:none;border:1px solid #C6DAFC;"
+            "vertical-align:0.08em;white-space:nowrap;"
             f'">[{label}]</a>'
         )
 
     def plain_badge(match):
         label = match.group(1)
         return (
-            '<span style="display:inline-block;padding:1px 6px;margin:0 2px;'
+            '<span style="display:inline-block;padding:0 4px;margin:0 1px;'
             'border-radius:6px;background:#F1F3F4;color:#3C4043;'
-            'font-weight:700;border:1px solid #DADCE0;">'
+            'font-size:0.78em;line-height:1.45;font-weight:700;'
+            'border:1px solid #DADCE0;vertical-align:0.08em;white-space:nowrap;">'
             f"[{label}]</span>"
         )
 
@@ -1823,7 +1829,14 @@ def topic_search_tab(
 
     if st.session_state.report:
         st.subheader("學術報告")
-        st.markdown(report_markdown_for_display(st.session_state.report), unsafe_allow_html=True)
+        st.markdown(
+            report_markdown_for_display(
+                st.session_state.report,
+                st.session_state.papers,
+                st.session_state.web_sources,
+            ),
+            unsafe_allow_html=True,
+        )
         col_md, col_pdf = st.columns(2)
         with col_md:
             st.download_button(
