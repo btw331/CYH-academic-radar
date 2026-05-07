@@ -1160,10 +1160,11 @@ def build_citation_section(papers, web_sources):
         source = clean_display_text(paper.get("source", "Semantic Scholar"), max_chars=80)
         year = clean_display_text(paper.get("year", "N/A"), max_chars=20)
         venue = clean_display_text(paper.get("venue", "N/A"), max_chars=120)
-        url = clean_display_text(paper.get("url", ""), max_chars=180)
+        url = citation_url_for_paper(paper)
+        heading = f"### [論文{index}] [{title}]({url})" if url else f"### [論文{index}] {title}"
         lines.extend(
             [
-                f"### [論文{index}] {title}",
+                heading,
                 f"- 年份：{year}",
                 f"- 期刊/來源：{venue}",
                 f"- 識別碼：{identifier}",
@@ -1175,14 +1176,56 @@ def build_citation_section(papers, web_sources):
     for index, source in enumerate(web_sources, start=1):
         title = clean_display_text(source.get("title", "Untitled"), max_chars=180)
         url = clean_display_text(source.get("url", ""), max_chars=180)
+        heading = f"### [網頁{index}] [{title}]({url})" if url else f"### [網頁{index}] {title}"
         lines.extend(
             [
-                f"### [網頁{index}] {title}",
+                heading,
                 f"- URL：{url or 'N/A'}",
             ]
         )
 
     return "\n".join(lines)
+
+
+def citation_url_for_paper(paper):
+    url = paper.get("url") or ""
+    if url:
+        return url
+
+    external_ids = paper.get("externalIds") or {}
+    doi = external_ids.get("DOI")
+    pmid = external_ids.get("PubMed")
+    if doi:
+        return f"https://doi.org/{doi}"
+    if pmid:
+        return f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+    return ""
+
+
+def citation_link_map(papers, web_sources):
+    links = {}
+    for index, paper in enumerate(papers, start=1):
+        url = citation_url_for_paper(paper)
+        if url:
+            links[f"論文{index}"] = url
+    for index, source in enumerate(web_sources, start=1):
+        url = source.get("url") or ""
+        if url:
+            links[f"網頁{index}"] = url
+    return links
+
+
+def style_citations_markdown(markdown_text, papers, web_sources):
+    links = citation_link_map(papers, web_sources)
+
+    def replace_match(match):
+        label = match.group(1)
+        url = links.get(label)
+        if not url:
+            return f"**[{label}]**"
+        return f"[**[{label}]**]({url})"
+
+    return re.sub(r"\[(論文\d+|網頁\d+)\]", replace_match, markdown_text)
 
 
 def get_pdf_font_name(pdfmetrics, TTFont, UnicodeCIDFont):
@@ -1228,6 +1271,52 @@ def clean_pdf_markdown_line(line):
     return cleaned
 
 
+def clean_pdf_symbols(line):
+    cleaned = str(line or "")
+    cleaned = cleaned.replace("⚠️", "[注意]").replace("❌", "[錯誤]").replace("✅", "[完成]")
+    cleaned = cleaned.replace("▌", "")
+    cleaned = re.sub(r"`([^`]+)`", r"\1", cleaned)
+    return cleaned
+
+
+def pdf_markup_text(text):
+    from html import escape
+
+    text = clean_pdf_symbols(text)
+    citation_link_pattern = re.compile(r"\[\*\*\[(論文\d+|網頁\d+)\]\*\*\]\(([^)]+)\)")
+    general_link_pattern = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+    parts = []
+    last_end = 0
+
+    def plain_markup(chunk):
+        chunk = re.sub(r"\*\*(.*?)\*\*", r"\1", chunk)
+        general_parts = []
+        general_last_end = 0
+        for general_match in general_link_pattern.finditer(chunk):
+            general_parts.append(escape(chunk[general_last_end:general_match.start()]))
+            label = escape(general_match.group(1))
+            url = escape(general_match.group(2), quote=True)
+            general_parts.append(f'<a href="{url}"><font color="#0B57D0"><b>{label}</b></font></a>')
+            general_last_end = general_match.end()
+        general_parts.append(escape(chunk[general_last_end:]))
+        escaped = "".join(general_parts)
+        return re.sub(
+            r"\[(論文\d+|網頁\d+)\]",
+            r'<font color="#0B57D0"><b>[\1]</b></font>',
+            escaped,
+        )
+
+    for match in citation_link_pattern.finditer(text):
+        parts.append(plain_markup(text[last_end:match.start()]))
+        label = escape(match.group(1))
+        url = escape(match.group(2), quote=True)
+        parts.append(f'<a href="{url}"><font color="#0B57D0"><b>[{label}]</b></font></a>')
+        last_end = match.end()
+
+    parts.append(plain_markup(text[last_end:]))
+    return "".join(parts)
+
+
 def is_markdown_table_line(line):
     stripped = line.strip()
     return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
@@ -1242,7 +1331,7 @@ def is_markdown_table_separator(line):
 
 
 def parse_markdown_table_row(line):
-    return [clean_pdf_markdown_line(cell.strip()) for cell in line.strip().strip("|").split("|")]
+    return [clean_pdf_symbols(cell.strip()) for cell in line.strip().strip("|").split("|")]
 
 
 def split_long_cell_text(text, max_chars=55):
@@ -1275,10 +1364,10 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(A4),
-        rightMargin=1.5 * cm,
-        leftMargin=1.5 * cm,
-        topMargin=1.5 * cm,
-        bottomMargin=1.5 * cm,
+        rightMargin=1.6 * cm,
+        leftMargin=1.6 * cm,
+        topMargin=1.6 * cm,
+        bottomMargin=1.6 * cm,
         title=title,
     )
     styles = getSampleStyleSheet()
@@ -1330,12 +1419,12 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
                 normalized_rows = [row + [""] * (max_columns - len(row)) for row in table_rows]
                 table_data = [
                     [
-                        Paragraph(escape(split_long_cell_text(cell)), table_cell_style)
+                        Paragraph(pdf_markup_text(cell), table_cell_style)
                         for cell in row
                     ]
                     for row in normalized_rows
                 ]
-                available_width = landscape(A4)[0] - 3 * cm
+                available_width = landscape(A4)[0] - 3.2 * cm
                 col_widths = [available_width / max_columns] * max_columns
                 table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
                 table.setStyle(
@@ -1357,16 +1446,15 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
             continue
 
         if line.startswith("### "):
-            story.append(Paragraph(escape(line[4:]), heading_style))
+            story.append(Paragraph(pdf_markup_text(line[4:]), heading_style))
         elif line.startswith("## "):
-            story.append(Paragraph(escape(line[3:]), heading_style))
+            story.append(Paragraph(pdf_markup_text(line[3:]), heading_style))
         elif line.startswith("# "):
-            story.append(Paragraph(escape(line[2:]), heading_style))
+            story.append(Paragraph(pdf_markup_text(line[2:]), heading_style))
         elif line.startswith("- "):
-            story.append(Paragraph("- " + escape(clean_pdf_markdown_line(line[2:])), base_style))
+            story.append(Paragraph("- " + pdf_markup_text(line[2:]), base_style))
         else:
-            cleaned = clean_pdf_markdown_line(line)
-            story.append(Paragraph(escape(cleaned), base_style))
+            story.append(Paragraph(pdf_markup_text(line), base_style))
         index += 1
 
     doc.build(story)
@@ -1413,7 +1501,8 @@ def generate_report(query, papers, web_sources, api_key, model_name, template_na
 9. 不要只列點堆砌。需要在段落中解釋研究之間如何互相支持、矛盾或補充。
 """
     report = generate_with_gemini(prompt, api_key, model_name)
-    return report + build_citation_section(papers, web_sources)
+    linked_report = style_citations_markdown(report, papers, web_sources)
+    return linked_report + build_citation_section(papers, web_sources)
 
 
 def generate_lineage_report(lineage, question, api_key, model_name):
