@@ -1382,7 +1382,7 @@ def parse_markdown_table_row(line):
     return [clean_pdf_symbols(cell.strip()) for cell in line.strip().strip("|").split("|")]
 
 
-def markdown_table_to_cards(table_rows, Paragraph, Spacer, Table, TableStyle, colors, styles, available_width):
+def markdown_table_to_cards(table_rows, Paragraph, Spacer, styles):
     if len(table_rows) < 2:
         return []
 
@@ -1392,40 +1392,17 @@ def markdown_table_to_cards(table_rows, Paragraph, Spacer, Table, TableStyle, co
 
     for row_index, row in enumerate(rows, start=1):
         normalized_row = row + [""] * (len(headers) - len(row))
-        card_lines = []
+        story_items.append(Paragraph(f"證據項目 {row_index}", styles["card_title"]))
         for header, value in zip(headers, normalized_row):
             if not value:
                 continue
-            card_lines.append(
+            story_items.append(
                 Paragraph(
                     f'<b>{pdf_markup_text(header)}：</b>{pdf_markup_text(value)}',
                     styles["card"],
                 )
             )
-
-        if not card_lines:
-            continue
-
-        card = Table(
-            [[card_lines]],
-            colWidths=[available_width],
-            hAlign="LEFT",
-        )
-        card.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFD")),
-                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#DADCE0")),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 9),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 9),
-                    ("TOPPADDING", (0, 0), (-1, -1), 7),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ]
-            )
-        )
-        story_items.append(card)
-        story_items.append(Spacer(1, 7))
+        story_items.append(Spacer(1, 8))
 
     return story_items
 
@@ -1516,9 +1493,20 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
         fontSize=9.4,
         leading=14,
         spaceAfter=4,
+        leftIndent=10,
         alignment=0,
     )
-    pdf_styles = {"card": card_style}
+    card_title_style = ParagraphStyle(
+        "TraditionalChineseCardTitle",
+        parent=base_style,
+        fontSize=10,
+        leading=14,
+        spaceBefore=6,
+        spaceAfter=4,
+        textColor="#174EA6",
+        alignment=0,
+    )
+    pdf_styles = {"card": card_style, "card_title": card_title_style}
 
     story = []
     available_width = A4[0] - 3.8 * cm
@@ -1554,11 +1542,7 @@ def markdown_to_pdf_bytes(markdown_text, title="academic_report"):
                             normalized_rows,
                             Paragraph,
                             Spacer,
-                            Table,
-                            TableStyle,
-                            colors,
                             pdf_styles,
-                            available_width,
                         )
                     )
                 else:
