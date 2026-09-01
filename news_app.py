@@ -72,16 +72,52 @@ CACHE_DIR = Path(".cache")
 CACHE_DB_PATH = CACHE_DIR / "search_cache.db"
 LAST_PDF_EXPORT_ERROR = ""
 GEMINI_MODEL_OPTIONS = [
-    "gemini-3.1-flash-preview",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
     "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-pro",
 ]
 DEFAULT_GEMINI_MODEL = GEMINI_MODEL_OPTIONS[0]
 GEMINI_FALLBACK_MODELS = [
-    "gemini-3-flash-preview",
-    "gemini-3-pro-preview",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-pro",
 ]
+
+
+def get_gemini_model_candidates(model_name: Optional[str] = None) -> List[str]:
+    """Return a supported preferred model followed by stable fallbacks."""
+    preferred = (model_name or "").strip()
+    if preferred not in GEMINI_MODEL_OPTIONS:
+        preferred = DEFAULT_GEMINI_MODEL
+    return list(dict.fromkeys([preferred, *GEMINI_FALLBACK_MODELS]))
+
+
+def create_gemini_llm(
+    model_name: Optional[str],
+    api_key: str,
+    temperature: Optional[float] = None,
+) -> ChatGoogleGenerativeAI:
+    """Create a Gemini Developer API client backed by the current google-genai SDK."""
+    clean_key = (api_key or "").strip()
+    if not clean_key:
+        raise ValueError("未提供 Gemini API Key")
+
+    resolved_model = get_gemini_model_candidates(model_name)[0]
+    kwargs: Dict[str, Any] = {
+        "model": resolved_model,
+        "api_key": clean_key,
+        "vertexai": False,
+    }
+    # Gemini 3.7/3.6 reject the legacy sampling parameters. Let the API use
+    # its model-specific defaults; older fallback models can still use them.
+    if temperature is not None and not resolved_model.startswith(("gemini-3.7-", "gemini-3.6-")):
+        kwargs["temperature"] = temperature
+    return ChatGoogleGenerativeAI(**kwargs)
 
 # ==========================================
 # 語言風格分析閾值常數（優化：抽取魔法數字）
@@ -1179,7 +1215,7 @@ def generate_expanded_queries(query: str, api_key: str, max_expansions: int = 12
     focus_display = (focus_instruction or "").strip() or "無（請依照標準情報程序分析）"
     
     try:
-        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.4)
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.4)
         
         combined_prompt = f"""
         你是極度專業的情報檢索專家。請針對議題「{query}」生成「實體優先」的搜尋關鍵字，**必須產出專有名詞與具體術語**，不可只輸出「議題+泛用詞」。
@@ -1342,7 +1378,7 @@ def generate_balanced_queries(query: str, api_key: str, use_cache: bool = True) 
                 logger.warning(f"快取中的 balanced_queries 不是字典類型: {type(balanced_queries).__name__}，重新生成")
     
     try:
-        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.4)
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.4)
         
         prompt = f"""
 針對爭議議題「{query}」，請生成三組「對抗性」搜尋查詢，使用情感導向詞彙以確保捕捉不同立場：
@@ -1489,9 +1525,7 @@ def translate_queries_to_english(
         return []
 
     try:
-        llm = ChatGoogleGenerativeAI(
-            model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2
-        )
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.2)
         prompt = f"""You are a search query translator for news and current affairs.
 
 Given the following user query and/or related search phrases (in Chinese or mixed), output 2 to {max_english_queries} concise English search queries suitable for finding the same topic in English-language news (e.g. Reuters, BBC, NYT). Keep proper nouns and names in their standard English form (e.g. Taiwan, China, NATO). Output ONLY one query per line, no numbering, no explanation.
@@ -1559,9 +1593,7 @@ def translate_queries_to_japanese_korean(
         return out
 
     try:
-        llm = ChatGoogleGenerativeAI(
-            model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2
-        )
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.2)
         prompt = f"""You are a search query translator for news. Output search queries in Japanese and Korean for the same topic.
 
 User query (Chinese or mixed): {query[:200]}
@@ -1689,7 +1721,7 @@ def analyze_consensus(all_sources: Dict[str, List[Dict]], api_key: Optional[str]
             sources_text = "\n\n".join(sources_summary)
             
             # 使用 LLM 分析共同事實和分歧點
-            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.3)
+            llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.3)
             
             analysis_prompt = f"""
 針對議題「{query or '相關議題'}」，以下是一系列不同立場的來源報導：
@@ -2487,7 +2519,7 @@ def extract_claims_from_sources(sources: List[Dict], api_key: str) -> List[Dict[
     claims = []
     
     try:
-        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.3)
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.3)
         
         # 優化：增加批次大小，減少 API 調用次數（從 5 增加到 8）
         # 注意：如果來源很多，可以進一步優化為只提取前 N 個高品質來源的聲明
@@ -3212,7 +3244,7 @@ Title: {title_b}
 Excerpt: {content_b}"""
 
     try:
-        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.2)
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.2)
         raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
         if not raw:
             return None
@@ -4041,7 +4073,7 @@ def determine_issue_category(query: str, api_key: Optional[str] = None) -> Dict[
         try:
             system_prompt = "Classify the query into one of three issue_types: 'TAIWAN_DOMESTIC', 'CROSS_STRAIT', or 'INTERNATIONAL'. Also extract key_actors. Output ONLY valid JSON: {\"issue_type\": \"...\", \"key_actors\": [\"...\"]}."
             prompt = f"{system_prompt}\n\nQuery: {q[:300]}"
-            llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=api_key, temperature=0.0)
+            llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, api_key, temperature=0.0)
             raw = _extract_text_from_llm_content(llm.invoke(prompt).content)
             if raw:
                 obj: Dict[str, Any] = {}
@@ -4738,7 +4770,7 @@ def validate_google_api_key(google_key: str) -> Tuple[bool, str]:
         return False, "未提供 Gemini API Key"
     try:
         os.environ["GOOGLE_API_KEY"] = (google_key or "").strip()
-        llm = ChatGoogleGenerativeAI(model=DEFAULT_GEMINI_MODEL, google_api_key=(google_key or "").strip(), temperature=0.0)
+        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, google_key, temperature=0.0)
         test_response = llm.invoke("test")
         if not test_response or not test_response.content:
             return False, "Gemini API Key 無效：無法取得回應"
@@ -4797,7 +4829,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
     os.environ["GOOGLE_API_KEY"] = api_key
 
     try:
-        llm = ChatGoogleGenerativeAI(model=model_name, temperature=0.0)
+        llm = create_gemini_llm(model_name, api_key, temperature=0.0)
         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
         chain = prompt | llm
         response = chain.invoke({"input": user_text})
@@ -4808,10 +4840,10 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
 
         if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
             logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用 Gemini 型號")
-            fallback_models = [m for m in GEMINI_FALLBACK_MODELS if m != model_name]
+            fallback_models = get_gemini_model_candidates(model_name)[1:]
             for fallback_model in fallback_models:
                 try:
-                    llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                    llm = create_gemini_llm(fallback_model, api_key, temperature=0.0)
                     prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                     chain = prompt | llm
                     response = chain.invoke({"input": user_text})
@@ -4827,11 +4859,11 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
             raise ChatGoogleGenerativeAIError(err) from e
 
         if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-            fallback_models = [m for m in GEMINI_MODEL_OPTIONS if m != model_name]
+            fallback_models = get_gemini_model_candidates(model_name)[1:]
             if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
                 for fallback_model in fallback_models:
                     try:
-                        llm = ChatGoogleGenerativeAI(model=fallback_model, temperature=0.0)
+                        llm = create_gemini_llm(fallback_model, api_key, temperature=0.0)
                         prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
                         chain = prompt | llm
                         response = chain.invoke({"input": user_text})
@@ -4843,7 +4875,7 @@ def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: st
                 f"❌ Gemini API 配額已耗盡或暫時受限\n\n"
                 f"- 嘗試模型：{model_name}\n"
                 f"- 已嘗試其他 Gemini 備援：{', '.join(fallback_models) if fallback_models else '（無）'}\n\n"
-                f"請見 https://ai.dev/rate-limit ；或改用 gemini-3.1-flash-preview / gemini-3-flash-preview。\n"
+                f"請見 https://ai.dev/rate-limit ；或改用 gemini-3.6-flash / gemini-3.5-flash-lite。\n"
                 f"**原始錯誤**：{error_msg[:200]}"
             )
             raise ChatGoogleGenerativeAIError(detail) from e
@@ -8532,20 +8564,24 @@ with st.sidebar:
             "Gemini 模型",
             GEMINI_MODEL_OPTIONS,
             index=0,
-            help="Gemini 3.1 / 3.0 preview 系列；預設 3.1 Flash Preview。",
+            help="Gemini 3.7 / 3.6 穩定版與 3.1 Pro Preview；預設 3.7 Flash。",
         )
         st.session_state["gemini_model"] = model_name
         st.session_state["llm_provider"] = "Gemini"
         if (google_key or "").strip():
             st.session_state["google_api_key"] = (google_key or "").strip()
-        if "3.1-pro" in model_name:
+        if "3.7-flash" in model_name:
+            st.caption("⚡ **3.7 Flash**：最新 GA 正式版，預設推薦")
+        elif "3.6-flash" in model_name:
+            st.caption("⚡ **3.6 Flash**：穩定備援")
+        elif "3.5-flash-lite" in model_name:
+            st.caption("💡 **3.5 Flash-Lite**：低延遲、低成本備援")
+        elif "3.5-flash" in model_name:
+            st.caption("⚡ **3.5 Flash**：高吞吐量穩定備援")
+        elif "3.1-pro" in model_name:
             st.caption("🚀 **3.1 Pro**：適合複雜深度分析")
-        elif "3.1-flash" in model_name:
-            st.caption("⚡ **3.1 Flash**：預設推薦，一般分析與搜尋策略")
-        elif "3-pro" in model_name:
-            st.caption("🚀 **3.0 Pro**：深度備援")
-        elif "3-flash" in model_name:
-            st.caption("⚡ **3.0 Flash**：快速備援")
+        elif "2.5-pro" in model_name:
+            st.caption("🚀 **2.5 Pro**：穩定深度分析備援")
 
         needs_tavily_for_validate = is_deep_analysis_page
         if st.button("🔐 驗證 API Key", help="多元議題分析需一併驗證 Tavily；全球情報載入 AllSides 不需 Key，只有 Gemini 摘要／比較需驗證 Gemini。"):
@@ -9235,7 +9271,7 @@ else:
                     **解決方案：**
                     1. 檢查配額：https://ai.dev/rate-limit
                     2. 等待配額重置（通常每分鐘/每天重置）
-                    3. 切換到 gemini-3.1-flash-preview 或 gemini-3-flash-preview
+                    3. 切換到 gemini-3.6-flash 或 gemini-3.5-flash-lite
                     """)
                 else:
                     st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
