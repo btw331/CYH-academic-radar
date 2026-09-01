@@ -7781,7 +7781,103 @@ def _find_pdf_cjk_font() -> Optional[str]:
                     return str(matches[0])
     return _download_pdf_cjk_font()
 
-def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]] = None) -> Optional[bytes]:
+
+def _timeline_to_pdf_markdown(timeline: Optional[List[Dict]]) -> str:
+    """將時間軸轉成欄位固定、可安全換行的 Markdown 表格。"""
+    if not isinstance(timeline, list) or not timeline:
+        return "無時間軸資料"
+
+    def clean_cell(value: Any, fallback: str = "—") -> str:
+        text = str(value).strip() if value is not None else ""
+        return (text or fallback).replace("|", "／").replace("\r", " ").replace("\n", " ")
+
+    rows = [
+        "| 日期 | 來源 | 事件 |",
+        "| --- | --- | --- |",
+    ]
+    for item in timeline:
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_id")
+        try:
+            source_number = int(source_id)
+        except (TypeError, ValueError):
+            source_number = 0
+        source_label = f"Source {source_number}" if source_number > 0 else "未標註"
+        rows.append(
+            "| {date} | {source} | {title} |".format(
+                date=clean_cell(item.get("date"), "日期未明"),
+                source=source_label,
+                title=clean_cell(item.get("title"), "未命名事件"),
+            )
+        )
+    return "\n".join(rows) if len(rows) > 2 else "無時間軸資料"
+
+
+def build_combined_pdf_report_text(
+    result: Optional[Dict],
+    scenario_result: Optional[Dict],
+) -> str:
+    """組合主分析、時間軸與未來推演，引用來源由 PDF 產生器統一附加。"""
+    result = result if isinstance(result, dict) else {}
+    scenario_result = scenario_result if isinstance(scenario_result, dict) else {}
+
+    main_report = result.get("report_text", "")
+    if not isinstance(main_report, str):
+        main_report = str(main_report) if main_report else ""
+    main_report = main_report.strip() or "尚未產生多元觀點分析。"
+
+    scenario_report = scenario_result.get("report_text", "")
+    if not isinstance(scenario_report, str):
+        scenario_report = str(scenario_report) if scenario_report else ""
+    scenario_report = scenario_report.strip() or "尚未產生未來發展推演。"
+
+    timeline_markdown = _timeline_to_pdf_markdown(result.get("timeline", []))
+    return (
+        "## 1. 多元觀點分析\n\n"
+        f"{main_report}\n\n"
+        "## 2. 事件時間軸\n\n"
+        f"{timeline_markdown}\n\n"
+        "## 3. 未來發展推演\n\n"
+        f"{scenario_report}"
+    )
+
+
+def _format_pdf_source_reference(source: Dict, index: int, blind_mode: bool = False) -> str:
+    """產生 PDF 引用文字；盲測模式只保留 Source ID 與證據等級。"""
+    source = source if isinstance(source, dict) else {}
+    evidence_level = str(source.get("evidence_level") or "未標註").strip()
+    if blind_mode:
+        return f"Source {index}｜證據等級：{evidence_level}"
+
+    source_title = str(source.get("title") or "未命名來源").strip()
+    url = str(source.get("url") or "無連結").strip()
+    return f"Source {index}｜{source_title}｜證據等級：{evidence_level}｜{url}"
+
+
+def create_combined_pdf_report(
+    result: Optional[Dict],
+    scenario_result: Optional[Dict],
+    sources: Optional[List[Dict]],
+    blind_mode: bool = False,
+) -> Optional[bytes]:
+    """建立包含主分析、時間軸、未來推演與引用來源的完整 PDF。"""
+    return create_pdf_report(
+        "多元觀點完整綜合報告",
+        build_combined_pdf_report_text(result, scenario_result),
+        sources,
+        blind_mode=blind_mode,
+        include_cover=True,
+    )
+
+
+def create_pdf_report(
+    title: str,
+    report_text: str,
+    sources: Optional[List[Dict]] = None,
+    blind_mode: bool = False,
+    include_cover: bool = False,
+) -> Optional[bytes]:
     """將目前分析結果轉成 PDF bytes；若 ReportLab 或中文字型不可用則回傳 None。"""
     global LAST_PDF_EXPORT_ERROR
     LAST_PDF_EXPORT_ERROR = ""
@@ -7793,7 +7889,7 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         from reportlab.lib.units import mm
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
         from xml.sax.saxutils import escape
     except Exception as e:
         LAST_PDF_EXPORT_ERROR = (
@@ -7821,14 +7917,16 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         return None
 
     buffer = BytesIO()
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=16 * mm,
         leftMargin=16 * mm,
-        topMargin=16 * mm,
-        bottomMargin=16 * mm,
+        topMargin=20 * mm,
+        bottomMargin=18 * mm,
         title=title or "analysis_report",
+        author="多元觀點分析工具",
     )
     styles = getSampleStyleSheet()
     base = ParagraphStyle(
@@ -7839,20 +7937,35 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
         leading=16,
         alignment=TA_LEFT,
         spaceAfter=6,
+        wordWrap="CJK",
+        splitLongWords=True,
     )
-    heading1 = ParagraphStyle("ReportH1", parent=base, fontSize=18, leading=24, spaceAfter=12, textColor=colors.HexColor("#1f2937"))
-    heading2 = ParagraphStyle("ReportH2", parent=base, fontSize=14, leading=20, spaceBefore=10, spaceAfter=8, textColor=colors.HexColor("#24304f"))
-    heading3 = ParagraphStyle("ReportH3", parent=base, fontSize=12, leading=18, spaceBefore=8, spaceAfter=6, textColor=colors.HexColor("#374151"))
+    heading1 = ParagraphStyle("ReportH1", parent=base, fontSize=18, leading=24, spaceAfter=12, keepWithNext=True, textColor=colors.HexColor("#1f2937"))
+    heading2 = ParagraphStyle("ReportH2", parent=base, fontSize=14, leading=20, spaceBefore=10, spaceAfter=8, keepWithNext=True, textColor=colors.HexColor("#24304f"))
+    heading3 = ParagraphStyle("ReportH3", parent=base, fontSize=12, leading=18, spaceBefore=8, spaceAfter=6, keepWithNext=True, textColor=colors.HexColor("#374151"))
     small = ParagraphStyle("ReportSmall", parent=base, fontSize=8.5, leading=12, textColor=colors.HexColor("#4b5563"))
+    compact = ParagraphStyle("ReportCompact", parent=small, fontSize=7.2, leading=9.5, spaceAfter=2)
+    cover_title = ParagraphStyle("ReportCoverTitle", parent=heading1, fontSize=24, leading=32, spaceAfter=18, keepWithNext=False, textColor=colors.HexColor("#172554"))
+    cover_meta = ParagraphStyle("ReportCoverMeta", parent=base, fontSize=10, leading=16, textColor=colors.HexColor("#64748b"), keepWithNext=False)
 
     def paragraph(raw: str, style=base):
         return Paragraph(escape(_plain_markdown_text(raw)).replace("\n", "<br/>"), style)
 
-    story = [
-        Paragraph(escape(title or "分析報告"), heading1),
-        Paragraph(escape(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"), small),
-        Spacer(1, 6),
-    ]
+    if include_cover:
+        story = [
+            Spacer(1, 42 * mm),
+            Paragraph(escape(title or "分析報告"), cover_title),
+            Paragraph(escape("主分析、事件時間軸、未來發展推演與引用來源"), cover_meta),
+            Spacer(1, 8 * mm),
+            Paragraph(escape(f"產生時間：{generated_at}"), cover_meta),
+            PageBreak(),
+        ]
+    else:
+        story = [
+            Paragraph(escape(title or "分析報告"), heading1),
+            Paragraph(escape(f"產生時間：{generated_at}"), small),
+            Spacer(1, 6),
+        ]
 
     md_text = normalize_markdown_tables((report_text or "").replace("\\n", "\n"))
     lines = md_text.splitlines()
@@ -7865,25 +7978,42 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
             continue
 
         if _is_markdown_table_row(line):
-            table_rows = []
+            raw_table_rows = []
             while i < len(lines) and (_is_markdown_table_row(lines[i].strip()) or not lines[i].strip()):
                 current = lines[i].strip()
                 if current and not _is_markdown_table_separator(current):
-                    cells = [paragraph(cell, small) for cell in current.strip("|").split("|")]
-                    table_rows.append(cells)
+                    raw_table_rows.append(current.strip("|").split("|"))
                 i += 1
-            if table_rows:
-                table = Table(table_rows, repeatRows=1, hAlign="LEFT")
+            if raw_table_rows:
+                column_count = max(len(row) for row in raw_table_rows)
+                cell_style = compact if column_count > 5 else small
+                table_rows = [
+                    [paragraph(cell, cell_style) for cell in row + [""] * (column_count - len(row))]
+                    for row in raw_table_rows
+                ]
+                available_width = A4[0] - doc.leftMargin - doc.rightMargin
+                if column_count == 3:
+                    col_widths = [available_width * 0.20, available_width * 0.18, available_width * 0.62]
+                else:
+                    col_widths = [available_width / column_count] * column_count
+                table = Table(
+                    table_rows,
+                    colWidths=col_widths,
+                    repeatRows=1,
+                    hAlign="LEFT",
+                    splitByRow=1,
+                    splitInRow=1,
+                )
                 table.setStyle(TableStyle([
                     ("FONTNAME", (0, 0), (-1, -1), pdf_font_name),
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
                     ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                    ("TOPPADDING", (0, 0), (-1, -1), 5),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3 if column_count > 5 else 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3 if column_count > 5 else 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ]))
                 story.append(table)
                 story.append(Spacer(1, 8))
@@ -7903,16 +8033,25 @@ def create_pdf_report(title: str, report_text: str, sources: Optional[List[Dict]
 
     if sources:
         story.append(Spacer(1, 10))
-        story.append(Paragraph("引用來源", heading2))
+        story.append(Paragraph("4. 引用來源" if include_cover else "引用來源", heading2))
         for idx, source in enumerate(sources, 1):
-            domain = get_domain_name(source.get("url", ""))
-            source_title = source.get("title", "No Title")
-            evidence_level = source.get("evidence_level", "")
-            url = source.get("url", "")
-            story.append(paragraph(f"{idx}. {domain}｜{source_title}｜{evidence_level}｜{url}", small))
+            story.append(paragraph(_format_pdf_source_reference(source, idx, blind_mode), small))
+
+    def draw_page_header_footer(canvas, current_doc):
+        canvas.saveState()
+        canvas.setFont(pdf_font_name, 8)
+        canvas.setFillColor(colors.HexColor("#64748b"))
+        if current_doc.page > 1:
+            canvas.drawString(doc.leftMargin, A4[1] - 11 * mm, title or "分析報告")
+            canvas.setStrokeColor(colors.HexColor("#e2e8f0"))
+            canvas.line(doc.leftMargin, A4[1] - 13 * mm, A4[0] - doc.rightMargin, A4[1] - 13 * mm)
+        footer_text = f"產生時間：{generated_at}"
+        canvas.drawString(doc.leftMargin, 9 * mm, footer_text)
+        canvas.drawRightString(A4[0] - doc.rightMargin, 9 * mm, f"第 {current_doc.page} 頁")
+        canvas.restoreState()
 
     try:
-        doc.build(story)
+        doc.build(story, onFirstPage=draw_page_header_footer, onLaterPages=draw_page_header_footer)
         return buffer.getvalue()
     except Exception as e:
         LAST_PDF_EXPORT_ERROR = f"PDF 建置失敗：{str(e)[:500]}"
@@ -8833,6 +8972,22 @@ with st.sidebar:
         st.caption("🧠 方法論細節已整理到「📚 方法論」頁，側欄保留操作設定即可。")
     st.markdown("### 報告匯出")
     if st.session_state.get('result') or st.session_state.get('scenario_result'):
+        combined_pdf = create_combined_pdf_report(
+            st.session_state.get('result'),
+            st.session_state.get('scenario_result'),
+            st.session_state.get('sources') or [],
+            blind_mode=blind_mode,
+        )
+        if combined_pdf:
+            st.download_button(
+                "📄 匯出完整綜合報告 PDF",
+                combined_pdf,
+                f"complete_analysis_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                "application/pdf",
+                use_container_width=True,
+            )
+        else:
+            st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取中文字型。'}")
         html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
         st.download_button("📥 列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
         full_state_json = export_full_state()
@@ -9597,7 +9752,12 @@ else:
             display_report_text = append_reference_links_to_report(report_text, st.session_state.get("sources"), blind_mode)
             render_report_paper(display_report_text)
             st.markdown("### 📥 下載目前分析結果")
-            current_pdf = create_pdf_report("多元觀點分析報告", report_text, st.session_state.get("sources"))
+            current_pdf = create_pdf_report(
+                "多元觀點分析報告",
+                report_text,
+                st.session_state.get("sources"),
+                blind_mode=blind_mode,
+            )
             if current_pdf:
                 st.download_button(
                     "📄 下載分析結果 (PDF)",
@@ -9648,7 +9808,12 @@ else:
         html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
         render_report_navigation(scenario_data.get("report_text", ""), "scenario")
         st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
-        scenario_pdf = create_pdf_report("未來發展推演報告", scenario_data.get("report_text", ""), st.session_state.get("sources"))
+        scenario_pdf = create_pdf_report(
+            "未來發展推演報告",
+            scenario_data.get("report_text", ""),
+            st.session_state.get("sources"),
+            blind_mode=blind_mode,
+        )
         if scenario_pdf:
             st.download_button(
                 "📄 下載未來推演報告 (PDF)",
