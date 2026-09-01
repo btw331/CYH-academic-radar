@@ -19,7 +19,7 @@ import asyncio
 import aiohttp
 import sys
 from io import BytesIO
-from html import unescape
+from html import escape, unescape
 from pathlib import Path
 from urllib.parse import urlparse, quote, unquote, urljoin
 from typing import List, Dict, Any, Tuple, Optional, Set
@@ -289,25 +289,47 @@ st.set_page_config(page_title="多元觀點解析", page_icon="⚖️", layout="
 
 CSS_STYLE = """
 <style>
-    body { font-family: "Microsoft JhengHei", "Georgia", sans-serif; line-height: 1.6; color: #333; }
+    html { font-size: 16px; }
+    body { font-family: "Microsoft JhengHei", "Segoe UI", sans-serif; line-height: 1.65; color: #263548; }
+    .block-container { max-width: 1180px; padding-top: 2rem; }
+    .stApp h1 { font-size: 1.75rem; line-height: 1.3; }
+    .stApp h2 { font-size: 1.45rem; line-height: 1.35; }
+    .stApp h3 { font-size: 1.2rem; line-height: 1.4; }
+    section[data-testid="stSidebar"] h1 { font-size: 1.42rem; }
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] p { font-size: 0.92rem; }
+    .stCaptionContainer p { font-size: 0.84rem; }
     .stButton button[kind="secondary"] { border: 2px solid #673ab7; color: #673ab7; font-weight: bold; }
+
+    div[data-testid="stMetric"] {
+        min-height: 104px;
+        padding: 14px 16px;
+        border: 1px solid #dbe7f3;
+        border-radius: 12px;
+        background: linear-gradient(145deg, #ffffff 0%, #f4f8fc 100%);
+        box-shadow: 0 4px 14px rgba(30, 64, 175, 0.06);
+    }
+    div[data-testid="stMetricLabel"] p { font-size: 0.88rem; }
+    div[data-testid="stMetricValue"] { font-size: 2rem; }
     
     .report-paper {
         background-color: #fdfbf7; 
-        color: #2c3e50; 
+        color: #243347; 
         padding: 32px 40px; 
         border-radius: 8px; 
         margin-bottom: 15px; 
         border: 1px solid #e5e7eb;
         box-shadow: 0 2px 8px rgba(0,0,0,0.06);
         font-family: "Microsoft JhengHei", "Segoe UI", "Georgia", sans-serif;
-        line-height: 1.75;
-        font-size: 1.02rem;
+        line-height: 1.72;
+        font-size: 1rem;
     }
-    .report-paper h1 { margin-top: 2em; margin-bottom: 0.6em; font-size: 1.5em; color: #1a1a2e; padding-bottom: 0.3em; border-bottom: 2px solid #e5e7eb; }
-    .report-paper h2 { margin-top: 1.8em; margin-bottom: 0.5em; font-size: 1.28em; color: #252550; }
-    .report-paper h3 { margin-top: 1.5em; margin-bottom: 0.4em; font-size: 1.15em; color: #2d3748; }
-    .report-paper h4 { margin-top: 1.2em; margin-bottom: 0.35em; font-size: 1.05em; }
+    .report-paper > :first-child { margin-top: 0; }
+    .report-paper h1[id], .report-paper h2[id], .report-paper h3[id] { scroll-margin-top: 1.25rem; }
+    .report-paper h1 { margin-top: 1.8em; margin-bottom: 0.55em; font-size: 1.55rem; color: #1a1a2e; padding-bottom: 0.3em; border-bottom: 1px solid #dfe5ec; }
+    .report-paper h2 { margin-top: 1.55em; margin-bottom: 0.45em; font-size: 1.25rem; color: #252550; }
+    .report-paper h3 { margin-top: 1.35em; margin-bottom: 0.4em; font-size: 1.08rem; color: #2d3748; }
+    .report-paper h4 { margin-top: 1.15em; margin-bottom: 0.35em; font-size: 1rem; }
     .report-paper p { margin-bottom: 1em; }
     
     /* 報告內表格：卡片式區塊、提升可讀性 */
@@ -338,7 +360,7 @@ CSS_STYLE = """
         line-height: 1.65;
         word-wrap: break-word;
         overflow-wrap: break-word;
-        color: #475569;
+        color: #334155;
     }
     .report-paper table tbody td ul,
     .report-paper table tbody td ol {
@@ -375,8 +397,44 @@ CSS_STYLE = """
         display: inline-block;
     }
 
+    .report-navigation {
+        margin: 0.55rem 0 1rem;
+        padding: 12px 16px;
+        border: 1px solid #d9e5f2;
+        border-radius: 10px;
+        background: #f7fafc;
+    }
+    .report-navigation { font-size: 0.92rem; }
+    .report-navigation strong { color: #1e3a5f; }
+    .report-navigation ol {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 7px 22px;
+        margin: 10px 0 0 1.2rem;
+        padding: 0;
+    }
+    .report-navigation a { color: #1d4ed8; text-decoration: none; font-weight: 600; }
+    .report-navigation a:hover { text-decoration: underline; }
+
+    .insight-block {
+        margin: 1.1rem 0;
+        padding: 16px 19px;
+        border: 1px solid transparent;
+        border-left-width: 5px;
+        border-radius: 10px;
+    }
+    .insight-block > :first-child { margin-top: 0; }
+    .insight-block > :last-child { margin-bottom: 0; }
+    .insight-block--summary { background: #eff6ff; border-color: #93c5fd; color: #1e3a5f; }
+    .insight-block--baseline { background: #f1f5f9; border-color: #64748b; }
+    .insight-block--positive { background: #f0fdf4; border-color: #4ade80; }
+    .insight-block--risk { background: #fff1f2; border-color: #fb7185; }
+    .insight-block--watch,
+    .insight-block--caution { background: #fffbeb; border-color: #fbbf24; }
+
     .scrollable-table-container {
-        height: 600px; 
+        height: auto;
+        max-height: 600px;
         overflow-y: auto; 
         border: 1px solid #e0e0e0;
         border-radius: 8px;
@@ -394,6 +452,51 @@ CSS_STYLE = """
     .custom-table tr:hover { background-color: #f8f9fa; }
     .custom-table a { color: #1a73e8; text-decoration: none; font-weight: 500; font-size: 1.05em; }
     .custom-table a:hover { text-decoration: underline; color: #1557b0; }
+    .report-paper--references table { table-layout: auto; }
+    .report-paper--references th:nth-child(1) { width: 8%; }
+    .report-paper--references th:nth-child(2) { width: 24%; }
+    .report-paper--references th:nth-child(3) { width: 38%; }
+    .report-paper--references th:nth-child(4) { width: 14%; }
+    .report-paper--references th:nth-child(5) { width: 16%; }
+    .report-paper--references code { white-space: nowrap; font-size: 0.88em; }
+
+    @media (max-width: 800px) {
+        html { font-size: 15.5px; }
+        .block-container { padding-left: 1rem; padding-right: 1rem; padding-top: 1rem; }
+        .report-paper { padding: 20px 17px; font-size: 1rem; }
+        .report-navigation ol { grid-template-columns: 1fr; }
+        .insight-block { padding: 15px 16px; }
+
+        .report-paper--references table,
+        .report-paper--references tbody,
+        .report-paper--references tr,
+        .report-paper--references td { display: block; width: 100%; }
+        .report-paper--references thead { display: none; }
+        .report-paper--references table { background: transparent; box-shadow: none; }
+        .report-paper--references tbody tr {
+            margin-bottom: 14px;
+            padding: 12px 14px;
+            border: 1px solid #dbe5ef;
+            border-radius: 10px;
+            background: #fff;
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+        }
+        .report-paper--references tbody td {
+            display: grid;
+            grid-template-columns: 6.5rem minmax(0, 1fr);
+            gap: 8px;
+            padding: 7px 0;
+            border: none;
+            overflow-wrap: anywhere;
+        }
+        .report-paper--references code { white-space: normal; overflow-wrap: anywhere; }
+        .report-paper--references tbody td::before { color: #64748b; font-weight: 700; }
+        .report-paper--references tbody td:nth-child(1)::before { content: "編號"; }
+        .report-paper--references tbody td:nth-child(2)::before { content: "媒體／網域"; }
+        .report-paper--references tbody td:nth-child(3)::before { content: "標題摘要"; }
+        .report-paper--references tbody td:nth-child(4)::before { content: "證據強度"; }
+        .report-paper--references tbody td:nth-child(5)::before { content: "連結"; }
+    }
     
     @media print {
         .scrollable-table-container { height: auto; overflow: visible; }
@@ -5799,7 +5902,7 @@ ALLSIDES_ASIA_TAIWAN_SEED_ROUNDUPS = [
 def _clean_allsides_text(text: str) -> str:
     """清理 AllSides HTML 文字中的多餘空白與常見編碼雜訊。"""
     t = unescape(text or "")
-    t = t.replace(" X", "—").replace("  ", "'")
+    t = t.replace("�X", "—").replace("��", "'")
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -8247,7 +8350,103 @@ def normalize_markdown_tables(text: str) -> str:
 
     return "\n".join(normalized)
 
-def render_report_paper(report_text: str) -> None:
+def _semantic_section_class(title: str, variant: str) -> str:
+    """依章節語意配置一致色塊；顏色只表達意義，不依章節位置猜測。"""
+    normalized = re.sub(r"\s+", "", unescape(re.sub(r"<[^>]+>", "", title or "")))
+    if variant == "scenario":
+        if any(keyword in normalized for keyword in ("風險情境", "悲觀情境", "下行情境")):
+            return "risk"
+        if any(keyword in normalized for keyword in ("樂觀情境", "正向情境", "上行情境")):
+            return "positive"
+        if any(keyword in normalized for keyword in ("基準情境", "基線情境", "最可能情境")):
+            return "baseline"
+        if any(keyword in normalized for keyword in ("領先指標", "觀察指標", "預警指標", "待觀察")):
+            return "watch"
+    if any(keyword in normalized for keyword in ("證據缺口", "尚待確認", "待查證", "限制與不確定")):
+        return "caution"
+    if any(keyword in normalized for keyword in ("執行摘要", "核心結論", "關鍵結論", "建議行動")):
+        return "summary"
+    return ""
+
+
+NAVIGATION_PAGES = (
+    "📰 全球情報 (News Feed)",
+    "🚀 多元議題分析 (Deep Analysis)",
+    "🧾 新聞文本分析 (Text Analysis)",
+    "📚 方法論 (Methodology)",
+    "📋 本次修改 (Updates)",
+)
+
+NAVIGATION_LABELS = {
+    "📰 全球情報 (News Feed)": "全球情報",
+    "🚀 多元議題分析 (Deep Analysis)": "多元分析",
+    "🧾 新聞文本分析 (Text Analysis)": "新聞文本",
+    "📚 方法論 (Methodology)": "方法論",
+    "📋 本次修改 (Updates)": "更新說明",
+}
+
+
+def sidebar_navigation_label(page: str) -> str:
+    """回傳側欄使用的短標籤，避免技術名稱干擾選擇。"""
+    return NAVIGATION_LABELS.get(page, page)
+
+
+def resolve_sidebar_navigation(selected_page: str, current_page: str) -> str:
+    """只接受已知頁面；無效選項保留目前頁面。"""
+    if selected_page in NAVIGATION_PAGES:
+        return selected_page
+    if current_page in NAVIGATION_PAGES:
+        return current_page
+    return NAVIGATION_PAGES[0]
+
+
+def enhance_report_html(html_content: str, key_prefix: str, variant: str = "analysis") -> str:
+    """替報告標題加入穩定錨點，並將關鍵章節包成語意色塊。"""
+    if not html_content:
+        return ""
+    prefix = re.sub(r"[^a-zA-Z0-9_-]+", "-", key_prefix or "report").strip("-") or "report"
+    heading_pattern = re.compile(r"<h([1-3])([^>]*)>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+    matches = list(heading_pattern.finditer(html_content))
+    if not matches:
+        return html_content
+
+    enhanced_parts = [html_content[:matches[0].start()]]
+    for index, match in enumerate(matches, 1):
+        section_end = matches[index].start() if index < len(matches) else len(html_content)
+        level, attributes, title_html = match.group(1), match.group(2), match.group(3)
+        attributes = re.sub(r'\s+id=("[^"]*"|\'[^\']*\')', "", attributes, flags=re.IGNORECASE)
+        heading = f'<h{level}{attributes} id="{prefix}-section-{index}">{title_html}</h{level}>'
+        section_html = heading + html_content[match.end():section_end]
+        semantic_class = _semantic_section_class(title_html, variant)
+        if semantic_class:
+            section_html = f'<section class="insight-block insight-block--{semantic_class}">{section_html}</section>'
+        enhanced_parts.append(section_html)
+    return "".join(enhanced_parts)
+
+
+def strip_generated_reference_section(report_text: str) -> str:
+    """移除舊報告內由系統附加的來源表，讓畫面只在頁尾顯示一次。"""
+    report = str(report_text or "").replace("\\n", "\n")
+    marker = "## 📚 引用文獻列表（系統補齊來源連結）"
+    marker_index = report.find(marker)
+    if marker_index < 0:
+        return report.strip()
+    cleaned = report[:marker_index].rstrip()
+    cleaned = re.sub(r"\n\s*---\s*$", "", cleaned).rstrip()
+    return cleaned
+
+
+def parse_uploaded_state_bytes(payload: bytes) -> Dict[str, Any]:
+    """從上傳內容解析狀態；不消耗檔案串流，重跑時仍能取得相同結果。"""
+    if not isinstance(payload, (bytes, bytearray)):
+        raise ValueError("JSON 上傳內容必須是位元組")
+    state_data = json.loads(bytes(payload).decode("utf-8-sig"))
+    if not isinstance(state_data, dict):
+        raise ValueError("JSON 完整存檔的最外層必須是物件")
+    return state_data
+
+
+def render_report_paper(report_text: str, key_prefix: str = "report", variant: str = "analysis") -> None:
     """以一致的報告樣式渲染 Markdown 報告。"""
     if not report_text or not str(report_text).strip():
         st.warning("⚠️ 報告內容為空，請重新執行分析。")
@@ -8267,40 +8466,63 @@ def render_report_paper(report_text: str) -> None:
     cleaned_report = normalize_markdown_tables(cleaned_report)
     formatted_text = format_citation_style(cleaned_report)
     html_content = markdown.markdown(formatted_text, extensions=['tables'])
-    st.markdown(f'<div class="report-paper">{html_content}</div>', unsafe_allow_html=True)
+    html_content = enhance_report_html(html_content, key_prefix, variant)
+    variant_class = re.sub(r"[^a-zA-Z0-9_-]+", "-", variant or "analysis")
+    st.markdown(
+        f'<div class="report-paper report-paper--{variant_class}">{html_content}</div>',
+        unsafe_allow_html=True,
+    )
 
-def extract_report_headings(report_text: str, max_items: int = 12) -> List[str]:
-    """從 Markdown 報告抽取章節標題，作為閱讀導覽。"""
+def extract_report_navigation_items(
+    report_text: str,
+    max_items: int = 6,
+    max_level: int = 2,
+) -> List[Dict[str, Any]]:
+    """抽取主要章節並保留其在完整報告中的真實錨點序號。"""
     if not report_text:
         return []
-    headings = []
+    items: List[Dict[str, Any]] = []
+    seen_titles = set()
+    anchor_index = 0
     for raw_line in report_text.replace("\\n", "\n").splitlines():
         line = raw_line.strip()
         match = re.match(r'^(#{1,3})\s+(.+)$', line)
-        if match:
-            title = _plain_markdown_text(match.group(2))
-            if title and title not in headings:
-                headings.append(title)
-        elif re.match(r'^\d+\.\s+\*\*.+\*\*', line):
-            title = _plain_markdown_text(re.sub(r'^\d+\.\s+', '', line))
-            if title and title not in headings:
-                headings.append(title)
-        if len(headings) >= max_items:
+        if not match:
+            continue
+        anchor_index += 1
+        level = len(match.group(1))
+        title = _plain_markdown_text(match.group(2))
+        if level <= max_level and title and title not in seen_titles:
+            items.append({"title": title, "anchor_index": anchor_index, "level": level})
+            seen_titles.add(title)
+        if len(items) >= max_items:
             break
-    return headings
+    return items
+
+
+def extract_report_headings(report_text: str, max_items: int = 6) -> List[str]:
+    """從 Markdown 報告抽取精簡的主要章節標題。"""
+    return [item["title"] for item in extract_report_navigation_items(report_text, max_items=max_items)]
+
+def build_report_navigation_html(report_text: str, key_prefix: str) -> str:
+    """建立與報告錨點一一對應的可點擊章節導覽。"""
+    items = extract_report_navigation_items(report_text)
+    if not items:
+        return ""
+    prefix = re.sub(r"[^a-zA-Z0-9_-]+", "-", key_prefix or "report").strip("-") or "report"
+    items = "".join(
+        f'<li><a href="#{prefix}-section-{item["anchor_index"]}">{escape(item["title"])}</a></li>'
+        for item in items
+    )
+    return f'<nav class="report-navigation" aria-label="報告章節導覽"><strong>🧭 報告章節導覽</strong><ol>{items}</ol></nav>'
+
 
 def render_report_navigation(report_text: str, key_prefix: str) -> None:
-    """顯示報告章節目錄與重新渲染控制。"""
-    headings = extract_report_headings(report_text)
-    if not headings:
+    """顯示可直接跳往報告內文的章節目錄。"""
+    navigation_html = build_report_navigation_html(report_text, key_prefix)
+    if not navigation_html:
         return
-    with st.expander("🧭 報告章節導覽", expanded=False):
-        for idx, heading in enumerate(headings, 1):
-            st.write(f"{idx}. {heading}")
-        st.caption("提示：章節導覽用於快速掌握報告結構；目前 Streamlit 不支援直接跳轉到報告內錨點。")
-    if st.button("🔁 重新渲染目前報告", key=f"{key_prefix}_rerender_report"):
-        st.toast("已重新套用報告清理與排版")
-        st.rerun()
+    st.markdown(navigation_html, unsafe_allow_html=True)
 
 
 def summarize_source_mix_for_quick_view(sources: List[Dict]) -> Dict[str, Any]:
@@ -8746,70 +8968,38 @@ if "current_page" not in st.session_state:
 
 with st.sidebar:
     st.title("多元觀點解析")
-    st.caption("✨ 多源搜尋 + 新聞文本分析 + 學術方法論")
-    _nav_pages = [
-        "📰 全球情報 (News Feed)",
-        "🚀 多元議題分析 (Deep Analysis)",
-        "🧾 新聞文本分析 (Text Analysis)",
-        "📚 方法論 (Methodology)",
-        "📋 本次修改 (Updates)",
-    ]
-    _cur_nav = st.session_state.get("current_page", _nav_pages[0])
-    if _cur_nav not in _nav_pages:
-        _cur_nav = _nav_pages[0]
-        st.session_state["current_page"] = _cur_nav
-
-    def _sidebar_nav_to(page: str) -> None:
-        if st.session_state.get("current_page") != page:
-            st.session_state["current_page"] = page
-            st.rerun()
-
-    st.markdown("##### 全球情報")
-    st.caption("AllSides 亞洲／台灣平衡報導與重點整理")
-    if st.button(
-        "📰 全球情報 (News Feed)",
-        key="sidebar_nav_feed",
-        use_container_width=True,
-        type="primary" if _cur_nav == "📰 全球情報 (News Feed)" else "secondary",
+    st.caption("多源查證與閱讀報告")
+    _nav_pages = list(NAVIGATION_PAGES)
+    _cur_nav = resolve_sidebar_navigation(
+        st.session_state.get("current_page", _nav_pages[0]),
+        _nav_pages[0],
+    )
+    st.session_state["current_page"] = _cur_nav
+    if (
+        "sidebar_page_selector" not in st.session_state
+        or st.session_state.get("_rendered_sidebar_page") != _cur_nav
     ):
-        _sidebar_nav_to("📰 全球情報 (News Feed)")
+        st.session_state["sidebar_page_selector"] = _cur_nav
 
-    st.markdown("##### 議題與文本分析")
-    st.caption("多源查證、深度報告與單篇新聞結構化分析")
-    if st.button(
-        "🚀 多元議題分析 (Deep Analysis)",
-        key="sidebar_nav_deep",
-        use_container_width=True,
-        type="primary" if _cur_nav == "🚀 多元議題分析 (Deep Analysis)" else "secondary",
-    ):
-        _sidebar_nav_to("🚀 多元議題分析 (Deep Analysis)")
-    if st.button(
-        "🧾 新聞文本分析 (Text Analysis)",
-        key="sidebar_nav_text",
-        use_container_width=True,
-        type="primary" if _cur_nav == "🧾 新聞文本分析 (Text Analysis)" else "secondary",
-    ):
-        _sidebar_nav_to("🧾 新聞文本分析 (Text Analysis)")
+    def _on_sidebar_page_change():
+        st.session_state["current_page"] = resolve_sidebar_navigation(
+            st.session_state.get("sidebar_page_selector"),
+            st.session_state.get("current_page", _nav_pages[0]),
+        )
 
-    st.markdown("##### 方法論")
-    st.caption("實裝方法與限制說明")
-    if st.button(
-        "📚 方法論 (Methodology)",
-        key="sidebar_nav_meth",
-        use_container_width=True,
-        type="primary" if _cur_nav == "📚 方法論 (Methodology)" else "secondary",
-    ):
-        _sidebar_nav_to("📚 方法論 (Methodology)")
-
-    st.markdown("##### 關於本應用")
-    st.caption("改版紀錄與更新說明")
-    if st.button(
-        "📋 本次修改 (Updates)",
-        key="sidebar_nav_updates",
-        use_container_width=True,
-        type="primary" if _cur_nav == "📋 本次修改 (Updates)" else "secondary",
-    ):
-        _sidebar_nav_to("📋 本次修改 (Updates)")
+    selected_page = st.selectbox(
+        "功能",
+        options=_nav_pages,
+        format_func=sidebar_navigation_label,
+        key="sidebar_page_selector",
+        on_change=_on_sidebar_page_change,
+    )
+    resolved_page = resolve_sidebar_navigation(selected_page, _cur_nav)
+    st.session_state["current_page"] = resolve_sidebar_navigation(
+        st.session_state.get("current_page"),
+        resolved_page,
+    )
+    st.session_state["_rendered_sidebar_page"] = st.session_state["current_page"]
 
     current_page = st.session_state.get("current_page", _nav_pages[0])
     is_deep_analysis_page = current_page == "🚀 多元議題分析 (Deep Analysis)"
@@ -8821,23 +9011,6 @@ with st.sidebar:
     analysis_depth = st.session_state.get("analysis_depth", "標準")
     blind_mode = False
 
-    if is_deep_analysis_page:
-        st.markdown("---")
-        analysis_mode = st.radio(
-            "選擇分析引擎：",
-            options=["多元深度解析 (Fusion)", "未來發展推演 (Scenario)"],
-            captions=["學術框架：框架 + 邏輯偵錯", "學術框架：CLA + 預警指標"],
-            index=0
-        )
-        analysis_depth = st.selectbox(
-            "分析詳盡度",
-            options=["標準", "快速", "深度"],
-            index=["標準", "快速", "深度"].index(analysis_depth) if analysis_depth in ["標準", "快速", "深度"] else 0,
-            help="快速：較短、便於瀏覽；標準：平衡完整性與可讀性；深度：較完整但輸出較長。",
-            key="analysis_depth",
-        )
-        blind_mode = st.toggle("🙈 盲測模式", value=False)
-        st.markdown("---")
     tavily_key = st.session_state.get("tavily_key", "")
     search_days = 30
     max_results = 30
@@ -8847,16 +9020,27 @@ with st.sidebar:
     enable_english_for_regions = st.session_state.get("enable_english_for_regions", True)
     past_report_input = ""
 
-    st.markdown("#### 狀態")
-    st.caption(f"目前頁面：{current_page}")
-    if is_deep_analysis_page:
-        st.caption(f"模型：Gemini｜詳盡度：{st.session_state.get('analysis_depth', '標準')}")
-        st.caption(f"Tavily：{'已啟用' if tavily_key else '未啟用'}｜Fact Check：{'開' if enable_google_fact_check else '關'}")
-    elif is_feed_page:
-        st.caption("全球情報：載入 AllSides 不耗 Gemini token；摘要／單則比較才會呼叫 Gemini。")
-    
-    with st.expander("🔑 模型與金鑰", expanded=not (is_methodology_page or is_changelog_page)):
-        st.info("⚠️ API Key 不會永久儲存，重新整理後需再次輸入")
+    st.caption(f"目前：{sidebar_navigation_label(current_page)}")
+
+    with st.expander("⚙️ 分析設定", expanded=False):
+        if is_deep_analysis_page:
+            analysis_mode = st.radio(
+                "分析模式",
+                options=["多元深度解析 (Fusion)", "未來發展推演 (Scenario)"],
+                captions=["框架與邏輯偵錯", "情境推演與預警指標"],
+                index=0,
+            )
+            analysis_depth = st.selectbox(
+                "分析詳盡度",
+                options=["標準", "快速", "深度"],
+                index=["標準", "快速", "深度"].index(analysis_depth) if analysis_depth in ["標準", "快速", "深度"] else 0,
+                help="快速：較短；標準：兼顧完整與閱讀；深度：資訊較完整。",
+                key="analysis_depth",
+            )
+            blind_mode = st.toggle("盲測模式", value=False)
+
+        st.markdown("**模型與金鑰**")
+        st.caption("API Key 僅用於本次工作階段，重新整理後需再次輸入。")
         google_key = st.text_input("Gemini Key", value="", type="password", placeholder="輸入 Google AI Studio API Key", help="全站分析僅使用 Google Gemini")
         model_name = st.selectbox(
             "Gemini 模型",
@@ -8869,17 +9053,17 @@ with st.sidebar:
         if (google_key or "").strip():
             st.session_state["google_api_key"] = (google_key or "").strip()
         if "3.7-flash" in model_name:
-            st.caption("⚡ **3.7 Flash**：最新 GA 正式版，預設推薦")
+            st.caption("3.7 Flash：最新 GA 正式版，預設推薦")
         elif "3.6-flash" in model_name:
-            st.caption("⚡ **3.6 Flash**：穩定備援")
+            st.caption("3.6 Flash：穩定備援")
         elif "3.5-flash-lite" in model_name:
-            st.caption("💡 **3.5 Flash-Lite**：低延遲、低成本備援")
+            st.caption("3.5 Flash-Lite：低延遲、低成本備援")
         elif "3.5-flash" in model_name:
-            st.caption("⚡ **3.5 Flash**：高吞吐量穩定備援")
+            st.caption("3.5 Flash：高吞吐量穩定備援")
         elif "3.1-pro" in model_name:
-            st.caption("🚀 **3.1 Pro**：適合複雜深度分析")
+            st.caption("3.1 Pro：適合複雜深度分析")
         elif "2.5-pro" in model_name:
-            st.caption("🚀 **2.5 Pro**：穩定深度分析備援")
+            st.caption("2.5 Pro：穩定深度分析備援")
 
         needs_tavily_for_validate = is_deep_analysis_page
         if st.button("🔐 驗證 API Key", help="多元議題分析需一併驗證 Tavily；全球情報載入 AllSides 不需 Key，只有 Gemini 摘要／比較需驗證 Gemini。"):
@@ -8887,7 +9071,7 @@ with st.sidebar:
             if not (google_key or "").strip():
                 st.warning("⚠️ 請先輸入 Gemini Key")
             elif needs_tavily_for_validate and not (tavily_key_for_check or "").strip():
-                st.warning("⚠️ 「多元議題分析」需一併驗證 Tavily：請至下方「🔍 搜尋設定」輸入 Tavily Key。若只需驗證 Gemini，請切換到「全球情報」「新聞文本分析」「方法論」或「本次修改」頁再按驗證。")
+                st.warning("⚠️ 多元議題分析需一併驗證 Tavily，請先在下方輸入 Tavily Key。")
             else:
                 with st.spinner("正在驗證 API Key..."):
                     is_valid, message = validate_api_keys(
@@ -8900,28 +9084,26 @@ with st.sidebar:
                     else:
                         st.error(message)
 
-    if is_deep_analysis_page:
-        with st.expander("🔍 搜尋設定", expanded=is_deep_analysis_page):
+        if is_deep_analysis_page:
+            st.markdown("**搜尋**")
             tavily_key = st.text_input("Tavily Key", value="", type="password", placeholder="輸入 Tavily API Key", help="僅用於「多元議題分析」新聞搜尋；全球情報目前走 AllSides，不使用 Tavily。", key="tavily_key")
             if tavily_key:
-                st.success("✅ Tavily 搜尋已啟用")
+                st.success("Tavily 搜尋已啟用")
             else:
-                st.warning("⚠️ 請輸入 Tavily Key 以啟用新聞搜尋功能")
-
-            st.info("ℹ️ 多元議題分析會使用 Tavily 搜尋、公信力評分、平衡檢索；Google Fact Check 可由下方開關啟用")
+                st.caption("輸入 Tavily Key 後可啟用新聞搜尋。")
             search_days = st.number_input("搜尋時間範圍 (天數)", min_value=1, max_value=1825, value=30, step=1, help="設定要搜尋多少天內的新聞")
             max_results = st.slider("搜尋篇數上限", 10, 100, 30, help="設定最多搜尋多少篇新聞")
             use_cache = st.toggle("💾 啟用搜尋快取", value=True, help="啟用後會快取搜尋結果24小時，節省API配額")
             st.session_state.use_cache = use_cache
             enable_google_fact_check = st.toggle(
-                "🧪 啟用 Google Fact Check 查核",
+                "啟用 Google Fact Check 查核",
                 value=st.session_state.get("enable_google_fact_check", False),
                 help="開啟後會抽取來源聲明並呼叫 Google Fact Check Tools API，可能增加配額消耗與等待時間。",
                 key="enable_google_fact_check",
             )
-            if use_cache and st.button("🗑️ 清除快取", help="清除所有過期的快取資料"):
+            if use_cache and st.button("清除快取", help="清除所有過期的快取資料"):
                 deleted = clear_cache()
-                st.success(f"✅ 已清除 {deleted} 條過期快取")
+                st.success(f"已清除 {deleted} 條過期快取")
             selected_regions = st.multiselect(
                 "搜尋視角",
                 ["🇹🇼 台灣 (Taiwan)", "🌏 亞洲 (Asia)", "🌍 歐洲 (Europe)", "🌎 美洲 (Americas)", "🕵️ 獨立/自媒體 (Indie)"],
@@ -8935,8 +9117,9 @@ with st.sidebar:
                 help="可關閉以僅使用中文查詢對歐美網域保底。",
             )
 
-    if is_deep_analysis_page or is_text_page:
-        with st.expander("📂 匯入舊情報 (JSON還原 / 文字貼上)", expanded=False):
+    with st.expander("📦 資料與匯出", expanded=False):
+        if is_deep_analysis_page or is_text_page:
+            st.markdown("**匯入舊情報**")
             uploaded_file = st.file_uploader("上傳檔案", type=["json", "md", "txt"])
             default_text = ""
             is_json_upload = False
@@ -8944,72 +9127,72 @@ with st.sidebar:
                 try:
                     if uploaded_file.name.endswith(".json"):
                         is_json_upload = True
-                        st.success(f"✅ 完整存檔: {uploaded_file.name}")
+                        st.success(f"完整存檔：{uploaded_file.name}")
                     else:
                         default_text = uploaded_file.getvalue().decode("utf-8")
-                        st.success(f"✅ 文字檔: {uploaded_file.name}")
+                        st.success(f"文字檔：{uploaded_file.name}")
                 except Exception as e:
                     logger.warning(f"檔案讀取失敗: {str(e)}")
                     st.warning("⚠️ 檔案讀取失敗，請檢查檔案格式")
 
-            past_report_input = st.text_area("或貼上內容：", value=default_text, height=150)
+            past_report_input = st.text_area("或貼上內容", value=default_text, height=120)
             
             if uploaded_file and st.button("🔄 確認載入/還原"):
                 if is_json_upload:
                     try:
-                        state_data = json.load(uploaded_file)
+                        state_data = parse_uploaded_state_bytes(uploaded_file.getvalue())
+                    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                        logger.warning(f"JSON 解析失敗: {exc}")
+                        st.error("JSON 解析失敗，請確認檔案是由本工具匯出的完整存檔。")
+                    else:
                         st.session_state.result = state_data.get("result")
                         st.session_state.scenario_result = state_data.get("scenario_result")
                         st.session_state.sources = state_data.get("sources")
                         st.rerun()
-                    except: st.error("JSON 解析失敗")
                 else:
-                    st.toast("✅ 文字已匯入")
+                    st.toast("文字已匯入")
 
-    # ==================== 學術方法論詳解（已移至專頁） ====================
-    if is_deep_analysis_page:
-        st.markdown("---")
-        st.caption("🧠 方法論細節已整理到「📚 方法論」頁，側欄保留操作設定即可。")
-    st.markdown("### 報告匯出")
-    if st.session_state.get('result') or st.session_state.get('scenario_result'):
-        combined_pdf = create_combined_pdf_report(
-            st.session_state.get('result'),
-            st.session_state.get('scenario_result'),
-            st.session_state.get('sources') or [],
-            blind_mode=blind_mode,
-        )
-        if combined_pdf:
-            st.download_button(
-                "📄 匯出完整綜合報告 PDF",
-                combined_pdf,
-                f"complete_analysis_report_{datetime.now().strftime('%Y%m%d')}.pdf",
-                "application/pdf",
-                use_container_width=True,
+        st.markdown("**報告匯出**")
+        if st.session_state.get('result') or st.session_state.get('scenario_result'):
+            combined_pdf = create_combined_pdf_report(
+                st.session_state.get('result'),
+                st.session_state.get('scenario_result'),
+                st.session_state.get('sources') or [],
+                blind_mode=blind_mode,
             )
+            if combined_pdf:
+                st.download_button(
+                    "匯出完整報告 PDF",
+                    combined_pdf,
+                    f"complete_analysis_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    "application/pdf",
+                    use_container_width=True,
+                )
+            else:
+                st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取中文字型。'}")
+            html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
+            st.download_button("列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
+            full_state_json = export_full_state()
+            st.download_button("完整狀態 (JSON)", full_state_json, "Full_State.json", "application/json")
+
+            result = st.session_state.get('result')
+            export_data = None
+            if result and isinstance(result, dict):
+                export_data = result.copy()
+                export_data["sources"] = st.session_state.get("sources", [])
+                scenario_result = st.session_state.get('scenario_result')
+                if scenario_result and isinstance(scenario_result, dict):
+                    report_text = export_data.get('report_text', '')
+                    scenario_text = scenario_result.get('report_text', '')
+                    if scenario_text:
+                        export_data['report_text'] = report_text + "\n\n# 未來發展推演報告\n" + scenario_text
+            else:
+                st.error("無法匯出：結果資料格式錯誤")
+
+            if export_data is not None:
+                st.download_button("純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
         else:
-            st.warning(f"PDF 匯出不可用：{LAST_PDF_EXPORT_ERROR or '請確認已安裝 reportlab 並可讀取中文字型。'}")
-        html_report = create_full_html_report(st.session_state.result, st.session_state.scenario_result, st.session_state.sources, blind_mode)
-        st.download_button("📥 列印用檔案 (HTML)", html_report, "Printable_Report.html", "text/html")
-        full_state_json = export_full_state()
-        st.download_button("📥 完整狀態 (JSON)", full_state_json, "Full_State.json", "application/json")
-        
-        result = st.session_state.get('result')
-        export_data = None
-        if result and isinstance(result, dict):
-            export_data = result.copy()
-            export_data["sources"] = st.session_state.get("sources", [])
-            scenario_result = st.session_state.get('scenario_result')
-            if scenario_result and isinstance(scenario_result, dict):
-                report_text = export_data.get('report_text', '')
-                scenario_text = scenario_result.get('report_text', '')
-                if scenario_text:
-                    export_data['report_text'] = report_text + "\n\n# 未來發展推演報告\n" + scenario_text
-        else:
-            st.error("❌ 無法匯出：結果資料格式錯誤")
-        
-        # 只有在 export_data 有效時才顯示下載按鈕
-        if export_data is not None:
-            st.download_button("📥 純文字 (Markdown)", convert_data_to_md(export_data), "report.md", "text/markdown")
+            st.caption("完成分析後即可下載 PDF、HTML、JSON 或 Markdown。")
 
 if st.session_state["current_page"] == "📋 本次修改 (Updates)":
     render_changelog_page()
@@ -9144,12 +9327,12 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
             if validation.get("missing_sections"):
                 st.caption("缺少章節：" + "、".join(validation.get("missing_sections", [])))
         render_analysis_summary_cards(text_result, st.session_state.get("text_analysis_sources"), validation)
-        render_report_navigation(text_result.get("report_text", ""), "text_analysis")
-        text_display_report = append_reference_links_to_report(
-            text_result.get("report_text", ""),
-            st.session_state.get("text_analysis_sources"),
-        )
-        render_report_paper(text_display_report)
+        text_display_report = strip_generated_reference_section(text_result.get("report_text", ""))
+        render_report_navigation(text_display_report, "text_analysis")
+        render_report_paper(text_display_report, "text_analysis", "analysis")
+        text_references = build_reference_links_markdown(st.session_state.get("text_analysis_sources"))
+        if text_references:
+            render_report_paper(text_references, "text-references", "references")
         text_pdf = create_pdf_report(
             "新聞文本分析報告",
             text_result.get("report_text", ""),
@@ -9181,492 +9364,494 @@ elif st.session_state["current_page"] == "🧾 新聞文本分析 (Text Analysis
                 st.session_state["current_page"] = "🚀 多元議題分析 (Deep Analysis)"
                 st.rerun()
 else:
-    st.title(f"{analysis_mode.split(' ')[0]}")
-    query = st.text_input(
-        "輸入議題關鍵字",
-        value=st.session_state.get("query", ""),
-        placeholder="例如：台積電美國設廠爭議",
-        key="query_input",
-    )
-    focus_instruction = st.text_input(
-        "意圖導向 (選填)",
-        placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
-        help="引導關鍵字生成方向，留空則由系統自動生成。可填「請產出英文關鍵字」或「請同時給出英文搜尋詞」以加強非中文檢索。"
-    )
-
-    if 'result' not in st.session_state: st.session_state.result = None
-    if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
-    if 'sources' not in st.session_state: st.session_state.sources = None
-    if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
-    if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
-    if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
-    if 'keyword_plan' not in st.session_state: st.session_state.keyword_plan = None
-
-    # ---------- Step 1: Generate Search Strategy ----------
-    gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
-    if gen_btn and query:
-        use_cache_enabled = st.session_state.get('use_cache', True)
-        google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-        if google_key_for_keywords:
-            with st.spinner("正在生成搜尋關鍵字..."):
-                expanded = generate_expanded_queries(
-                    query, google_key_for_keywords, max_expansions=15, use_cache=use_cache_enabled,
-                    focus_instruction=focus_instruction.strip() or None
-                )
-            kw_list = [q["query"] for q in expanded]
-        else:
-            kw_list = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析", f"{query} 最新發展", f"{query} 分析"]
-        st.session_state.keyword_plan = pd.DataFrame({"Keyword": kw_list, "Active": [True] * len(kw_list)})
-        st.success(f"已生成 {len(kw_list)} 個關鍵字，請在下方檢視並編輯後再執行搜尋。")
-        st.rerun()
-
-    # ---------- Step 2: Review Strategy (editable table) ----------
-    final_keywords = []
-    if st.session_state.keyword_plan is not None:
-        st.markdown("**🕵️ 檢視與編輯搜尋策略**（勾選保留、取消勾選排除；可新增/刪除列）")
-        edited_df = st.data_editor(
-            st.session_state.keyword_plan,
-            num_rows="dynamic",
-            column_config={"Keyword": st.column_config.TextColumn("關鍵字", width="large"), "Active": st.column_config.CheckboxColumn("使用", default=True)},
-            use_container_width=True,
-            key="keyword_plan_editor"
+    controls_expanded = not bool(st.session_state.get("result") or st.session_state.get("scenario_result"))
+    with st.expander("🔎 建立新分析／調整查詢", expanded=controls_expanded):
+        st.title(f"{analysis_mode.split(' ')[0]}")
+        query = st.text_input(
+            "輸入議題關鍵字",
+            value=st.session_state.get("query", ""),
+            placeholder="例如：台積電美國設廠爭議",
+            key="query_input",
         )
-        st.session_state.keyword_plan = edited_df
-        final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
-        final_keywords = [k for k in final_keywords if k and k.strip()]
-        # 建議三：顯示上次執行時使用的英文/日文/韓文檢索關鍵字（僅供參考，不可編輯）
-        last_en = st.session_state.get("last_english_queries", [])
-        last_ja = st.session_state.get("last_japanese_queries", [])
-        last_ko = st.session_state.get("last_korean_queries", [])
-        if last_en and isinstance(last_en, list) and len(last_en) > 0:
-            with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
-                st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
-                for i, q in enumerate(last_en, 1):
-                    st.text(f"{i}. {q}")
-        if (last_ja and isinstance(last_ja, list) and len(last_ja) > 0) or (last_ko and isinstance(last_ko, list) and len(last_ko) > 0):
-            with st.expander("🌏 日文／韓文檢索關鍵字（上次執行）", expanded=False):
-                st.caption("勾選亞洲並執行分析後，系統會自動產出日文與韓文查詢用於日本/韓國媒體檢索；僅供參考。")
-                if last_ja and len(last_ja) > 0:
-                    st.markdown("**日文**")
-                    for i, q in enumerate(last_ja, 1):
-                        st.text(f"{i}. {q}")
-                if last_ko and len(last_ko) > 0:
-                    st.markdown("**韓文**")
-                    for i, q in enumerate(last_ko, 1):
-                        st.text(f"{i}. {q}")
-
-    # ---------- Step 3: Execute Analysis ----------
-    search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
-
-    if search_btn and query and tavily_key:
-        st.session_state.result = None
-        st.session_state.scenario_result = None
-
-        # 決定使用的關鍵字：若有檢視過的策略則用編輯後列表，否則即時生成
-        if final_keywords:
-            dynamic_keywords = final_keywords
-        else:
-            dynamic_keywords = None  # 將在 status 內生成
-
-        with st.status("🚀 啟動多元觀點分析引擎...", expanded=True) as status:
-
-            if dynamic_keywords is None:
-                st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
-                use_cache_enabled = st.session_state.get('use_cache', True)
-                google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-                if google_key_for_keywords:
-                    dynamic_keywords = generate_dynamic_keywords(query, google_key_for_keywords, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
-                else:
-                    dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
-            else:
-                st.write("🧠 1. 使用您檢視/編輯後的搜尋策略...")
-            st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords[:10])}{' ...' if len(dynamic_keywords) > 10 else ''}")
-
-            regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
-            st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
-            _has_japan = any(kw in query for kw in ["日本", "自民黨", "岸田", "東京", "nhk", "日經"])
-            _has_asia = "亞洲" in str(selected_regions)
-            guard_desc = "分眾保底 (藍/綠/官方)"
-            if _has_japan or _has_asia:
-                guard_desc += " + 亞洲/日本國際媒體保底"
-            st.write(f"   ↳ 啟動機制：{guard_desc} + 熱度補完 (動態三軌)")
-
-            # 驗證 Tavily Key
-            if not tavily_key:
-                st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
-                status.update(label="❌ 搜尋失敗", state="error", expanded=False)
-                st.stop()
-
-            # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
+        focus_instruction = st.text_input(
+            "意圖導向 (選填)",
+            placeholder="例如：Focus on economic security, ignore gossip；或：著重法律影響、忽略八卦",
+            help="引導關鍵字生成方向，留空則由系統自動生成。可填「請產出英文關鍵字」或「請同時給出英文搜尋詞」以加強非中文檢索。"
+        )
+    
+        if 'result' not in st.session_state: st.session_state.result = None
+        if 'scenario_result' not in st.session_state: st.session_state.scenario_result = None
+        if 'sources' not in st.session_state: st.session_state.sources = None
+        if 'cofacts_rumors' not in st.session_state: st.session_state.cofacts_rumors = []
+        if 'volume_analysis' not in st.session_state: st.session_state.volume_analysis = None
+        if 'stance_analysis' not in st.session_state: st.session_state.stance_analysis = None
+        if 'keyword_plan' not in st.session_state: st.session_state.keyword_plan = None
+    
+        # ---------- Step 1: Generate Search Strategy ----------
+        gen_btn = st.button("🧠 生成搜尋策略 (Generate Search Strategy)")
+        if gen_btn and query:
             use_cache_enabled = st.session_state.get('use_cache', True)
-
-            # === 測試搜尋功能（診斷用）===
-            # 先執行一個簡單的測試搜尋，驗證 API 是否正常
-            st.write("🧪 執行 API 連接測試...")
-            try:
-                test_tavily = TavilyClient(api_key=tavily_key)
-                test_response = test_tavily.search(query="台灣新聞", max_results=3, search_depth="basic")
-                if isinstance(test_response, dict) and 'results' in test_response:
-                    test_count = len(test_response.get('results', []))
-                    if test_count > 0:
-                        st.success(f"✅ API 測試成功：找到 {test_count} 筆測試結果")
-                        logger.info(f"API 測試成功：找到 {test_count} 筆結果")
-                    else:
-                        st.warning(f"⚠️ API 測試：查詢 '台灣新聞' 返回 0 筆結果（API 可能正常，但查詢無結果）")
-                        logger.warning(f"API 測試：查詢 '台灣新聞' 返回 0 筆結果")
-                else:
-                    st.error(f"❌ API 測試失敗：回應格式異常 - {type(test_response).__name__}")
-                    logger.error(f"API 測試失敗：回應格式異常 - {type(test_response).__name__}")
-            except Exception as e:
-                error_str = str(e)
-                st.error(f"❌ API 測試失敗：{error_str[:200]}")
-                logger.error(f"API 測試失敗：{error_str[:300]}")
-                if "401" in error_str or "Unauthorized" in error_str:
-                    st.error("認證失敗：請檢查 API Key 是否正確")
-                elif "429" in error_str:
-                    st.error("配額問題：API 配額可能已用完")
-        
-            # 執行搜尋（整合所有功能）
-            st.write("🔍 開始執行完整搜尋...")
-            google_key_for_analysis = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-            if st.session_state.get("enable_google_fact_check", False) and not google_key_for_analysis:
-                st.warning("⚠️ 已勾選 Google Fact Check，但未提供 Gemini/Google API Key；本輪將略過 Google Fact Check 查核。")
-            search_result = get_search_context(
-                query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
-                use_cache=use_cache_enabled, google_api_key=google_key_for_analysis,
-                enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
-                enable_google_fact_check=st.session_state.get("enable_google_fact_check", False),
+            google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+            if google_key_for_keywords:
+                with st.spinner("正在生成搜尋關鍵字..."):
+                    expanded = generate_expanded_queries(
+                        query, google_key_for_keywords, max_expansions=15, use_cache=use_cache_enabled,
+                        focus_instruction=focus_instruction.strip() or None
+                    )
+                kw_list = [q["query"] for q in expanded]
+            else:
+                kw_list = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析", f"{query} 最新發展", f"{query} 分析"]
+            st.session_state.keyword_plan = pd.DataFrame({"Keyword": kw_list, "Active": [True] * len(kw_list)})
+            st.success(f"已生成 {len(kw_list)} 個關鍵字，請在下方檢視並編輯後再執行搜尋。")
+            st.rerun()
+    
+        # ---------- Step 2: Review Strategy (editable table) ----------
+        final_keywords = []
+        if st.session_state.keyword_plan is not None:
+            st.markdown("**🕵️ 檢視與編輯搜尋策略**（勾選保留、取消勾選排除；可新增/刪除列）")
+            edited_df = st.data_editor(
+                st.session_state.keyword_plan,
+                num_rows="dynamic",
+                column_config={"Keyword": st.column_config.TextColumn("關鍵字", width="large"), "Active": st.column_config.CheckboxColumn("使用", default=True)},
+                use_container_width=True,
+                key="keyword_plan_editor"
             )
-        
-            if len(search_result) >= 8:
-                context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text = search_result[:8]
-            elif len(search_result) == 7:
-                context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
-                manipulation_signals_text = ""
+            st.session_state.keyword_plan = edited_df
+            final_keywords = edited_df[edited_df["Active"]]["Keyword"].astype(str).tolist()
+            final_keywords = [k for k in final_keywords if k and k.strip()]
+            # 建議三：顯示上次執行時使用的英文/日文/韓文檢索關鍵字（僅供參考，不可編輯）
+            last_en = st.session_state.get("last_english_queries", [])
+            last_ja = st.session_state.get("last_japanese_queries", [])
+            last_ko = st.session_state.get("last_korean_queries", [])
+            if last_en and isinstance(last_en, list) and len(last_en) > 0:
+                with st.expander("🌐 英文檢索關鍵字（上次執行）", expanded=False):
+                    st.caption("勾選歐洲/美洲並執行分析後，系統會自動產出以下英文查詢用於非中文檢索；僅供參考。")
+                    for i, q in enumerate(last_en, 1):
+                        st.text(f"{i}. {q}")
+            if (last_ja and isinstance(last_ja, list) and len(last_ja) > 0) or (last_ko and isinstance(last_ko, list) and len(last_ko) > 0):
+                with st.expander("🌏 日文／韓文檢索關鍵字（上次執行）", expanded=False):
+                    st.caption("勾選亞洲並執行分析後，系統會自動產出日文與韓文查詢用於日本/韓國媒體檢索；僅供參考。")
+                    if last_ja and len(last_ja) > 0:
+                        st.markdown("**日文**")
+                        for i, q in enumerate(last_ja, 1):
+                            st.text(f"{i}. {q}")
+                    if last_ko and len(last_ko) > 0:
+                        st.markdown("**韓文**")
+                        for i, q in enumerate(last_ko, 1):
+                            st.text(f"{i}. {q}")
+    
+        # ---------- Step 3: Execute Analysis ----------
+        search_btn = st.button("🚀 執行搜尋與分析 (Execute Analysis)", type="primary")
+    
+        if search_btn and query and tavily_key:
+            st.session_state.result = None
+            st.session_state.scenario_result = None
+    
+            # 決定使用的關鍵字：若有檢視過的策略則用編輯後列表，否則即時生成
+            if final_keywords:
+                dynamic_keywords = final_keywords
             else:
-                # 向後相容
-                context_text, sources, actual_query, is_strict_tw = search_result[:4]
-                stance_analysis = None
-                fact_check_results = None
-                consensus_analysis = None
-                manipulation_signals_text = ""
-        
-            st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
-            if is_strict_tw:
-                st.write(f"🛡️ 網域圍籬已啟動。")
-        
-            st.session_state.sources = sources
-        
-            # 顯示立場平衡分析結果
-            if stance_analysis and isinstance(stance_analysis, dict) and stance_analysis.get('missing_stances'):
-                st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
-                if isinstance(stance_analysis, dict) and stance_analysis.get('recommendations'):
-                    with st.expander("🔍 查看平衡性建議", expanded=False):
-                        for rec in stance_analysis['recommendations']:
-                            st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
-        
-            st.session_state.stance_analysis = stance_analysis
-            st.session_state.fact_check_results = fact_check_results
-            st.session_state.consensus_analysis = consensus_analysis
-        
-            st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
-            cofacts_txt, cofacts_rumors = search_cofacts(query)
-            if cofacts_txt: 
-                context_text += f"\n{cofacts_txt}\n"
-                st.session_state.cofacts_rumors = cofacts_rumors
-            else:
-                st.session_state.cofacts_rumors = []
-        
-            # 事實查核結果顯示（方案 1）
-            if fact_check_results and isinstance(fact_check_results, dict):
-                false_count = len(fact_check_results.get('false_claims', []))
-                misleading_count = len(fact_check_results.get('misleading_claims', []))
-                if false_count > 0 or misleading_count > 0:
-                    st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
-            fact_check_status = "未啟用"
-            if st.session_state.get("enable_google_fact_check", False):
-                if fact_check_results and isinstance(fact_check_results, dict):
-                    if fact_check_results.get("error"):
-                        fact_check_status = "執行失敗"
+                dynamic_keywords = None  # 將在 status 內生成
+    
+            with st.status("🚀 啟動多元觀點分析引擎...", expanded=True) as status:
+    
+                if dynamic_keywords is None:
+                    st.write("🧠 1. 生成動態搜尋策略（未預先檢視，即時生成）...")
+                    use_cache_enabled = st.session_state.get('use_cache', True)
+                    google_key_for_keywords = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                    if google_key_for_keywords:
+                        dynamic_keywords = generate_dynamic_keywords(query, google_key_for_keywords, use_cache=use_cache_enabled, focus_instruction=focus_instruction.strip() or None)
                     else:
-                        checked_count = sum(len(fact_check_results.get(k, [])) for k in ["verified_claims", "false_claims", "misleading_claims", "unverified_claims"])
-                        fact_check_status = f"已執行（{checked_count} 項聲明）"
+                        dynamic_keywords = [f"{query} 新聞 事件", f"{query} 爭議 評論", f"{query} 懶人包 分析"]
                 else:
-                    fact_check_status = "已勾選但未執行（缺少 Google API Key 或來源）"
-        
-            # 聲量權重分析
-            if sources:
-                st.write("📊 4. 執行聲量權重校正分析...")
-                volume_analysis = analyze_volume_weight(sources)
-                st.write(f"   ↳ 發現 {volume_analysis['duplicate_count']} 組重複論述，{volume_analysis['unique_count']} 篇獨特觀點")
-                st.session_state.volume_analysis = volume_analysis
-            else:
-                st.session_state.volume_analysis = None
-        
-            # 共識分析結果顯示（方案 3.3）
-            if consensus_analysis and isinstance(consensus_analysis, dict):
-                consensus_score = consensus_analysis.get('consensus_score', 0)
-                consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
-                st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
-            
-            st.session_state.feature_status = {
-                "Tavily 搜尋": f"已執行（{len(sources)} 篇來源）" if sources else "未取得來源",
-                "Google Fact Check": fact_check_status,
-                "Cofacts 關聯查詢": f"已查詢（{len(st.session_state.cofacts_rumors)} 筆相關）" if st.session_state.get('cofacts_rumors') else "已查詢，無相關結果",
-                "共識分析": consensus_analysis.get("analysis_status", "未執行") if isinstance(consensus_analysis, dict) else "未執行",
-                "資訊操作訊號": "已產生" if manipulation_signals_text else "未產生",
-            }
-        
-            # === 檢查來源數量是否足夠進行分析 ===
-            MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
-            sources_count = len(sources) if sources else 0
-            context_length = len(context_text) if context_text else 0
-        
-            if sources_count < MIN_SOURCES_REQUIRED:
-                # 檢查日誌以獲取更詳細的錯誤資訊
-                debug_info = ""
-                if sources_count == 0:
-                    # 檢查查詢關鍵字是否可能太特定
-                    query_words = query.split()
-                    is_specific_query = len(query_words) >= 3
-                
-                    debug_info = f"""
-                
-                    **🔍 調試資訊：**
-                    - 所有 Tavily API 搜尋任務都未返回結果
-                    - API 測試：✅ 成功（說明 API 本身正常）
-                    - 查詢關鍵字：`{query}` ({len(query_words)} 個關鍵字)
-                    - 這可能表示：
-                      * 查詢關鍵字過於特定（{len(query_words)} 個關鍵字），在指定時間範圍內找不到相關資料
-                      * 網域過濾條件過於嚴格（已選定：{', '.join(selected_regions) if selected_regions else '無'}），排除了所有結果
-                      * 搜尋時間範圍過短（目前：{search_days} 天），相關內容可能不在這個時間範圍內
-                
-                    **🧪 診斷步驟：**
-                    1. 📅 **擴大搜尋時間範圍**：將「搜尋天數」改為 90 或 180 天
-                    2. 🌐 **放寬區域限制**：暫時取消「僅限台灣來源」選項
-                    3. 🔍 **簡化查詢關鍵字**：嘗試只使用主要關鍵字（例如：「周冠男」或「巨人傑」）
-                    4. 📋 **檢查終端機日誌**：查看詳細的搜尋任務執行情況
-                    """
-            
-                st.error(f"""
-                ❌ **搜尋結果不足，無法進行深度分析**
-            
-                **目前狀況：**
-                - 搜尋到 {sources_count} 篇來源（最少需要 {MIN_SOURCES_REQUIRED} 篇）
-                - Context 長度：{context_length} 字元
-                {debug_info}
-            
-                **可能原因：**
-                1. 查詢關鍵字過於特定或冷門，找不到足夠的相關資料
-                2. Tavily API 搜尋結果不足或 API 服務異常
-                3. 搜尋時間範圍設定過短（目前：{search_days} 天）
-                4. 網域圍籬過於嚴格（已選定區域：{', '.join(selected_regions) if selected_regions else '無'}）
-                5. Tavily API Key 無效、配額用完或服務暫時不可用
-            
-                **建議解決方案：**
-                1. 🔍 **調整查詢關鍵字**：使用更廣泛的關鍵字或同義詞
-                2. 📅 **擴大搜尋時間範圍**：增加「搜尋天數」設定（例如：改為 90 天或 180 天）
-                3. 🌐 **放寬區域限制**：取消「僅限台灣來源」選項，或選擇更多區域
-                4. 🔑 **檢查 API Key**：
-                   - 在側邊欄點擊「驗證 API Key」按鈕
-                   - 確認 Tavily API Key 是否有效且有足夠配額
-                   - 檢查 [Tavily Dashboard](https://app.tavily.com/) 查看配額使用情況
-                5. 🔄 **重新搜尋**：點擊「開始分析」按鈕重新執行搜尋
-                6. 🧪 **測試搜尋**：嘗試使用簡單的關鍵字（如「台灣新聞」）測試 API 是否正常
-            
-                **注意：** 即使來源不足，系統仍可嘗試分析，但結果可能不夠完整。
-                """)
-            
-                # 詢問用戶是否仍要繼續分析
-                continue_anyway = st.checkbox("⚠️ 我了解風險，仍要繼續分析（不建議）", value=False)
-                if not continue_anyway:
-                    status.update(label="❌ 分析已取消：來源不足", state="error", expanded=False)
+                    st.write("🧠 1. 使用您檢視/編輯後的搜尋策略...")
+                st.write(f"   ↳ 鎖定戰略關鍵字: {', '.join(dynamic_keywords[:10])}{' ...' if len(dynamic_keywords) > 10 else ''}")
+    
+                regions_label = ", ".join([r.split(" ")[1] for r in selected_regions])
+                st.write(f"📡 2. 執行混和權重搜尋 (視角: {regions_label})...")
+                _has_japan = any(kw in query for kw in ["日本", "自民黨", "岸田", "東京", "nhk", "日經"])
+                _has_asia = "亞洲" in str(selected_regions)
+                guard_desc = "分眾保底 (藍/綠/官方)"
+                if _has_japan or _has_asia:
+                    guard_desc += " + 亞洲/日本國際媒體保底"
+                st.write(f"   ↳ 啟動機制：{guard_desc} + 熱度補完 (動態三軌)")
+    
+                # 驗證 Tavily Key
+                if not tavily_key:
+                    st.error("❌ 錯誤：未提供 Tavily API Key，無法執行搜尋")
+                    status.update(label="❌ 搜尋失敗", state="error", expanded=False)
                     st.stop()
-                else:
-                    st.warning("⚠️ 您選擇繼續分析，但結果可能不夠完整或準確。")
-        
-            elif context_length < 500:
-                st.warning(f"""
-                ⚠️ **Context 內容過短**
-            
-                **目前狀況：**
-                - Context 長度：{context_length} 字元（建議至少 500 字元）
-                - 來源數量：{sources_count} 篇
-            
-                **可能原因：**
-                - 來源內容過短或無法取得完整內容
-                - 搜尋結果品質不佳
-            
-                **建議：** 嘗試調整搜尋參數或使用不同的查詢關鍵字。
-                """)
-        
-            st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
-        
-            mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
-            analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
-
-            effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
-            effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
-
-            try:
-                raw_report = run_strategic_analysis(
-                    query, analysis_context, effective_model, effective_key,
-                    mode=mode_code, fast_mode=False,
-                    manipulation_signals=manipulation_signals_text,
-                    analysis_depth=st.session_state.get("analysis_depth", "標準"),
-                )
-            except ChatGoogleGenerativeAIError as e:
-                # Gemini API 特定錯誤（通常是配額相關）
-                error_msg = str(e)
-                st.error(f"""
-                ❌ **API 錯誤**
-            
-                {error_msg}
-            
-                **建議：**
-                1. 確認 Gemini API Key 與配額：https://ai.dev/rate-limit
-                2. 改選側欄 **Flash** 系列模型以降低用量
-                3. 稍後再試或升級 AI Studio 方案
-                """)
-                status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
-                st.stop()
-            except Exception as e:
-                # 其他錯誤（包括 RetryError）
-                from tenacity import RetryError
-                error_msg = str(e)
-                error_type = type(e).__name__
-
-                # 檢查是否為重試錯誤
-                if isinstance(e, RetryError) or "RetryError" in error_type:
-                    # 提取原始錯誤
-                    last_attempt = None
-                    original_error = None
-                    if hasattr(e, 'last_attempt') and e.last_attempt:
-                        try:
-                            if hasattr(e.last_attempt, 'exception'):
-                                original_error = e.last_attempt.exception()
-                                last_attempt = str(original_error) if original_error else None
-                            elif hasattr(e.last_attempt, 'result'):
-                                original_error = e.last_attempt.result()
-                                last_attempt = str(original_error) if original_error else None
-                        except Exception:
-                            pass
-
-                    original_error_msg = last_attempt if last_attempt else error_msg
-
-                    error_display = f"""
-                    ❌ **API 調用失敗（重試後仍失敗）**
-
-                    **錯誤類型**：{error_type}
-
-                    **可能的原因：**
-                    1. Gemini 配額已耗盡
-                    2. API Key 無效
-                    3. 網路連接問題
-                    4. API 服務暫時不可用
-
-                    **解決方案：**
-                    1. 檢查 Gemini Key 是否正確
-                    2. 檢查配額：https://ai.dev/rate-limit
-                    3. 改選 **Flash** 型號或等待後重試
-                    4. 原始錯誤：{original_error_msg[:500]}
-                    """
-                    st.error(error_display)
-                    status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
-                    logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
-                    st.stop()
-                elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
-                    st.error(f"""
-                    ❌ **API 配額已耗盡**
-
-                    **錯誤詳情**：{error_msg[:300]}
-
-                    **解決方案：**
-                    1. 檢查配額：https://ai.dev/rate-limit
-                    2. 等待配額重置（通常每分鐘/每天重置）
-                    3. 切換到 gemini-3.6-flash 或 gemini-3.5-flash-lite
-                    """)
-                else:
-                    st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
-
-                status.update(label="❌ 分析失敗", state="error", expanded=False)
-                logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
-                with st.expander("🔍 錯誤詳情", expanded=False):
-                    st.code(f"錯誤類型: {error_type}\n錯誤訊息: {error_msg}")
-                st.stop()
-        
-            # 驗證 AI 輸出格式
-            validation = validate_ai_output_format(raw_report, mode_code)
-            if validation['score'] < 70:
-                st.warning(f"⚠️ AI 輸出格式驗證分數: {validation['score']:.1f}/100")
-                if validation['missing_sections']:
-                    st.warning(f"缺少章節: {', '.join(validation['missing_sections'])}")
-                if not validation['has_timeline']:
-                    st.warning("⚠️ 未檢測到時間軸區塊")
-                if not validation['has_report']:
-                    st.warning("⚠️ 未檢測到報告文本區塊")
-        
-            # 解析報告數據（確保 raw_report 不為 None）
-            if raw_report is None:
-                logger.error("raw_report 為 None，無法解析")
-                st.error("❌ AI 分析返回空結果，請重試")
-                status.update(label="❌ 分析失敗：返回空結果", state="error", expanded=False)
-                st.stop()
-        
-            parsed_data = parse_gemini_data(raw_report)
-            parsed_data['validation'] = validation  # 保存驗證結果
-        
-            # 驗證解析結果（安全檢查 report_text 類型）
-            report_text = parsed_data.get("report_text", "")
-            # 確保 report_text 是字符串類型
-            if not isinstance(report_text, str):
-                logger.warning(f"report_text 不是字符串類型: {type(report_text).__name__}，嘗試轉換")
+    
+                # 檢查是否啟用快取（從 session_state 讀取，預設為 True）
+                use_cache_enabled = st.session_state.get('use_cache', True)
+    
+                # === 測試搜尋功能（診斷用）===
+                # 先執行一個簡單的測試搜尋，驗證 API 是否正常
+                st.write("🧪 執行 API 連接測試...")
                 try:
-                    report_text = str(report_text)
-                    parsed_data["report_text"] = report_text
-                except Exception as e:
-                    logger.error(f"無法將 report_text 轉換為字符串: {str(e)}")
-                    report_text = ""
-        
-            if not report_text or (isinstance(report_text, str) and not report_text.strip()):
-                st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
-                # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
-                if raw_report:
-                    # 移除 [DATA_TIMELINE] 區塊
-                    if "### [DATA_TIMELINE]" in raw_report:
-                        parts = raw_report.split("### [DATA_TIMELINE]")
-                        if len(parts) > 1:
-                            remaining = parts[1]
-                            if "### [REPORT_TEXT]" in remaining:
-                                parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
-                            else:
-                                # 移除時間軸行
-                                lines = remaining.split('\n')
-                                report_lines = []
-                                for line in lines:
-                                    if "|" in line and len(line.split("|")) >= 3:
-                                        parts_line = line.split("|")
-                                        if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
-                                            continue
-                                    report_lines.append(line)
-                                parsed_data["report_text"] = '\n'.join(report_lines).strip()
+                    test_tavily = TavilyClient(api_key=tavily_key)
+                    test_response = test_tavily.search(query="台灣新聞", max_results=3, search_depth="basic")
+                    if isinstance(test_response, dict) and 'results' in test_response:
+                        test_count = len(test_response.get('results', []))
+                        if test_count > 0:
+                            st.success(f"✅ API 測試成功：找到 {test_count} 筆測試結果")
+                            logger.info(f"API 測試成功：找到 {test_count} 筆結果")
+                        else:
+                            st.warning(f"⚠️ API 測試：查詢 '台灣新聞' 返回 0 筆結果（API 可能正常，但查詢無結果）")
+                            logger.warning(f"API 測試：查詢 '台灣新聞' 返回 0 筆結果")
                     else:
-                        # 如果完全沒有標記，使用整個文本
-                        parsed_data["report_text"] = raw_report.strip()
-        
-            st.session_state.result = parsed_data
-
-            # 顯示解析統計
-            timeline_count = len(parsed_data.get("timeline", []))
-            report_length = len(parsed_data.get("report_text", ""))
-            st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
+                        st.error(f"❌ API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+                        logger.error(f"API 測試失敗：回應格式異常 - {type(test_response).__name__}")
+                except Exception as e:
+                    error_str = str(e)
+                    st.error(f"❌ API 測試失敗：{error_str[:200]}")
+                    logger.error(f"API 測試失敗：{error_str[:300]}")
+                    if "401" in error_str or "Unauthorized" in error_str:
+                        st.error("認證失敗：請檢查 API Key 是否正確")
+                    elif "429" in error_str:
+                        st.error("配額問題：API 配額可能已用完")
             
-            status.update(label="✅ 分析完成", state="complete", expanded=False)
-
-        st.rerun()
-
-    # Cofacts 謠言警告區塊
+                # 執行搜尋（整合所有功能）
+                st.write("🔍 開始執行完整搜尋...")
+                google_key_for_analysis = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                if st.session_state.get("enable_google_fact_check", False) and not google_key_for_analysis:
+                    st.warning("⚠️ 已勾選 Google Fact Check，但未提供 Gemini/Google API Key；本輪將略過 Google Fact Check 查核。")
+                search_result = get_search_context(
+                    query, tavily_key, search_days, selected_regions, max_results, dynamic_keywords,
+                    use_cache=use_cache_enabled, google_api_key=google_key_for_analysis,
+                    enable_english_for_regions=st.session_state.get("enable_english_for_regions", True),
+                    enable_google_fact_check=st.session_state.get("enable_google_fact_check", False),
+                )
+            
+                if len(search_result) >= 8:
+                    context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis, manipulation_signals_text = search_result[:8]
+                elif len(search_result) == 7:
+                    context_text, sources, actual_query, is_strict_tw, stance_analysis, fact_check_results, consensus_analysis = search_result
+                    manipulation_signals_text = ""
+                else:
+                    # 向後相容
+                    context_text, sources, actual_query, is_strict_tw = search_result[:4]
+                    stance_analysis = None
+                    fact_check_results = None
+                    consensus_analysis = None
+                    manipulation_signals_text = ""
+            
+                st.write(f"   ↳ 搜尋完成：共獲取 {len(sources)} 篇資料 (已去重)。")
+                if is_strict_tw:
+                    st.write(f"🛡️ 網域圍籬已啟動。")
+            
+                st.session_state.sources = sources
+            
+                # 顯示立場平衡分析結果
+                if stance_analysis and isinstance(stance_analysis, dict) and stance_analysis.get('missing_stances'):
+                    st.warning(f"⚠️ 立場平衡警告：檢測到缺失立場 {', '.join(stance_analysis['missing_stances'])}")
+                    if isinstance(stance_analysis, dict) and stance_analysis.get('recommendations'):
+                        with st.expander("🔍 查看平衡性建議", expanded=False):
+                            for rec in stance_analysis['recommendations']:
+                                st.write(f"**{rec['type']}**: {rec['reason']} (優先級: {rec['priority']})")
+            
+                st.session_state.stance_analysis = stance_analysis
+                st.session_state.fact_check_results = fact_check_results
+                st.session_state.consensus_analysis = consensus_analysis
+            
+                st.write("🛡️ 3. 查詢 Cofacts 謠言資料庫...")
+                cofacts_txt, cofacts_rumors = search_cofacts(query)
+                if cofacts_txt: 
+                    context_text += f"\n{cofacts_txt}\n"
+                    st.session_state.cofacts_rumors = cofacts_rumors
+                else:
+                    st.session_state.cofacts_rumors = []
+            
+                # 事實查核結果顯示（方案 1）
+                if fact_check_results and isinstance(fact_check_results, dict):
+                    false_count = len(fact_check_results.get('false_claims', []))
+                    misleading_count = len(fact_check_results.get('misleading_claims', []))
+                    if false_count > 0 or misleading_count > 0:
+                        st.warning(f"⚠️ 事實查核警告：發現 {false_count} 項已證偽聲明，{misleading_count} 項誤導性內容")
+                fact_check_status = "未啟用"
+                if st.session_state.get("enable_google_fact_check", False):
+                    if fact_check_results and isinstance(fact_check_results, dict):
+                        if fact_check_results.get("error"):
+                            fact_check_status = "執行失敗"
+                        else:
+                            checked_count = sum(len(fact_check_results.get(k, [])) for k in ["verified_claims", "false_claims", "misleading_claims", "unverified_claims"])
+                            fact_check_status = f"已執行（{checked_count} 項聲明）"
+                    else:
+                        fact_check_status = "已勾選但未執行（缺少 Google API Key 或來源）"
+            
+                # 聲量權重分析
+                if sources:
+                    st.write("📊 4. 執行聲量權重校正分析...")
+                    volume_analysis = analyze_volume_weight(sources)
+                    st.write(f"   ↳ 發現 {volume_analysis['duplicate_count']} 組重複論述，{volume_analysis['unique_count']} 篇獨特觀點")
+                    st.session_state.volume_analysis = volume_analysis
+                else:
+                    st.session_state.volume_analysis = None
+            
+                # 共識分析結果顯示（方案 3.3）
+                if consensus_analysis and isinstance(consensus_analysis, dict):
+                    consensus_score = consensus_analysis.get('consensus_score', 0)
+                    consensus_level = "高" if consensus_score > 0.7 else "中" if consensus_score > 0.4 else "低"
+                    st.info(f"📊 共識分析：共識度 {consensus_level} (分數: {consensus_score:.2f})")
+                
+                st.session_state.feature_status = {
+                    "Tavily 搜尋": f"已執行（{len(sources)} 篇來源）" if sources else "未取得來源",
+                    "Google Fact Check": fact_check_status,
+                    "Cofacts 關聯查詢": f"已查詢（{len(st.session_state.cofacts_rumors)} 筆相關）" if st.session_state.get('cofacts_rumors') else "已查詢，無相關結果",
+                    "共識分析": consensus_analysis.get("analysis_status", "未執行") if isinstance(consensus_analysis, dict) else "未執行",
+                    "資訊操作訊號": "已產生" if manipulation_signals_text else "未產生",
+                }
+            
+                # === 檢查來源數量是否足夠進行分析 ===
+                MIN_SOURCES_REQUIRED = 1  # 降低閾值：最少需要 1 篇來源即可嘗試分析
+                sources_count = len(sources) if sources else 0
+                context_length = len(context_text) if context_text else 0
+            
+                if sources_count < MIN_SOURCES_REQUIRED:
+                    # 檢查日誌以獲取更詳細的錯誤資訊
+                    debug_info = ""
+                    if sources_count == 0:
+                        # 檢查查詢關鍵字是否可能太特定
+                        query_words = query.split()
+                        is_specific_query = len(query_words) >= 3
+                    
+                        debug_info = f"""
+                    
+                        **🔍 調試資訊：**
+                        - 所有 Tavily API 搜尋任務都未返回結果
+                        - API 測試：✅ 成功（說明 API 本身正常）
+                        - 查詢關鍵字：`{query}` ({len(query_words)} 個關鍵字)
+                        - 這可能表示：
+                          * 查詢關鍵字過於特定（{len(query_words)} 個關鍵字），在指定時間範圍內找不到相關資料
+                          * 網域過濾條件過於嚴格（已選定：{', '.join(selected_regions) if selected_regions else '無'}），排除了所有結果
+                          * 搜尋時間範圍過短（目前：{search_days} 天），相關內容可能不在這個時間範圍內
+                    
+                        **🧪 診斷步驟：**
+                        1. 📅 **擴大搜尋時間範圍**：將「搜尋天數」改為 90 或 180 天
+                        2. 🌐 **放寬區域限制**：暫時取消「僅限台灣來源」選項
+                        3. 🔍 **簡化查詢關鍵字**：嘗試只使用主要關鍵字（例如：「周冠男」或「巨人傑」）
+                        4. 📋 **檢查終端機日誌**：查看詳細的搜尋任務執行情況
+                        """
+                
+                    st.error(f"""
+                    ❌ **搜尋結果不足，無法進行深度分析**
+                
+                    **目前狀況：**
+                    - 搜尋到 {sources_count} 篇來源（最少需要 {MIN_SOURCES_REQUIRED} 篇）
+                    - Context 長度：{context_length} 字元
+                    {debug_info}
+                
+                    **可能原因：**
+                    1. 查詢關鍵字過於特定或冷門，找不到足夠的相關資料
+                    2. Tavily API 搜尋結果不足或 API 服務異常
+                    3. 搜尋時間範圍設定過短（目前：{search_days} 天）
+                    4. 網域圍籬過於嚴格（已選定區域：{', '.join(selected_regions) if selected_regions else '無'}）
+                    5. Tavily API Key 無效、配額用完或服務暫時不可用
+                
+                    **建議解決方案：**
+                    1. 🔍 **調整查詢關鍵字**：使用更廣泛的關鍵字或同義詞
+                    2. 📅 **擴大搜尋時間範圍**：增加「搜尋天數」設定（例如：改為 90 天或 180 天）
+                    3. 🌐 **放寬區域限制**：取消「僅限台灣來源」選項，或選擇更多區域
+                    4. 🔑 **檢查 API Key**：
+                       - 在側邊欄點擊「驗證 API Key」按鈕
+                       - 確認 Tavily API Key 是否有效且有足夠配額
+                       - 檢查 [Tavily Dashboard](https://app.tavily.com/) 查看配額使用情況
+                    5. 🔄 **重新搜尋**：點擊「開始分析」按鈕重新執行搜尋
+                    6. 🧪 **測試搜尋**：嘗試使用簡單的關鍵字（如「台灣新聞」）測試 API 是否正常
+                
+                    **注意：** 即使來源不足，系統仍可嘗試分析，但結果可能不夠完整。
+                    """)
+                
+                    # 詢問用戶是否仍要繼續分析
+                    continue_anyway = st.checkbox("⚠️ 我了解風險，仍要繼續分析（不建議）", value=False)
+                    if not continue_anyway:
+                        status.update(label="❌ 分析已取消：來源不足", state="error", expanded=False)
+                        st.stop()
+                    else:
+                        st.warning("⚠️ 您選擇繼續分析，但結果可能不夠完整或準確。")
+            
+                elif context_length < 500:
+                    st.warning(f"""
+                    ⚠️ **Context 內容過短**
+                
+                    **目前狀況：**
+                    - Context 長度：{context_length} 字元（建議至少 500 字元）
+                    - 來源數量：{sources_count} 篇
+                
+                    **可能原因：**
+                    - 來源內容過短或無法取得完整內容
+                    - 搜尋結果品質不佳
+                
+                    **建議：** 嘗試調整搜尋參數或使用不同的查詢關鍵字。
+                    """)
+            
+                st.write("🧠 5. AI 進行深度戰略分析 (ACH 競爭假設 + Entman 框架 + 邏輯偵錯 + 共識分析)...")
+            
+                mode_code = "DEEP_SCENARIO" if "未來" in analysis_mode else "FUSION"
+                analysis_context = past_report_input if (mode_code == "DEEP_SCENARIO" and past_report_input) else context_text
+    
+                effective_key = (st.session_state.get("google_api_key") or "").strip() or (google_key or "").strip()
+                effective_model = model_name or st.session_state.get("gemini_model", DEFAULT_GEMINI_MODEL)
+    
+                try:
+                    raw_report = run_strategic_analysis(
+                        query, analysis_context, effective_model, effective_key,
+                        mode=mode_code, fast_mode=False,
+                        manipulation_signals=manipulation_signals_text,
+                        analysis_depth=st.session_state.get("analysis_depth", "標準"),
+                    )
+                except ChatGoogleGenerativeAIError as e:
+                    # Gemini API 特定錯誤（通常是配額相關）
+                    error_msg = str(e)
+                    st.error(f"""
+                    ❌ **API 錯誤**
+                
+                    {error_msg}
+                
+                    **建議：**
+                    1. 確認 Gemini API Key 與配額：https://ai.dev/rate-limit
+                    2. 改選側欄 **Flash** 系列模型以降低用量
+                    3. 稍後再試或升級 AI Studio 方案
+                    """)
+                    status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                    logger.error(f"AI 分析失敗 (ChatGoogleGenerativeAIError): {error_msg}")
+                    st.stop()
+                except Exception as e:
+                    # 其他錯誤（包括 RetryError）
+                    from tenacity import RetryError
+                    error_msg = str(e)
+                    error_type = type(e).__name__
+    
+                    # 檢查是否為重試錯誤
+                    if isinstance(e, RetryError) or "RetryError" in error_type:
+                        # 提取原始錯誤
+                        last_attempt = None
+                        original_error = None
+                        if hasattr(e, 'last_attempt') and e.last_attempt:
+                            try:
+                                if hasattr(e.last_attempt, 'exception'):
+                                    original_error = e.last_attempt.exception()
+                                    last_attempt = str(original_error) if original_error else None
+                                elif hasattr(e.last_attempt, 'result'):
+                                    original_error = e.last_attempt.result()
+                                    last_attempt = str(original_error) if original_error else None
+                            except Exception:
+                                pass
+    
+                        original_error_msg = last_attempt if last_attempt else error_msg
+    
+                        error_display = f"""
+                        ❌ **API 調用失敗（重試後仍失敗）**
+    
+                        **錯誤類型**：{error_type}
+    
+                        **可能的原因：**
+                        1. Gemini 配額已耗盡
+                        2. API Key 無效
+                        3. 網路連接問題
+                        4. API 服務暫時不可用
+    
+                        **解決方案：**
+                        1. 檢查 Gemini Key 是否正確
+                        2. 檢查配額：https://ai.dev/rate-limit
+                        3. 改選 **Flash** 型號或等待後重試
+                        4. 原始錯誤：{original_error_msg[:500]}
+                        """
+                        st.error(error_display)
+                        status.update(label="❌ 分析失敗：API 錯誤", state="error", expanded=False)
+                        logger.error(f"AI 分析失敗 ({error_type}): {original_error_msg}")
+                        st.stop()
+                    elif "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower() or "429" in error_msg:
+                        st.error(f"""
+                        ❌ **API 配額已耗盡**
+    
+                        **錯誤詳情**：{error_msg[:300]}
+    
+                        **解決方案：**
+                        1. 檢查配額：https://ai.dev/rate-limit
+                        2. 等待配額重置（通常每分鐘/每天重置）
+                        3. 切換到 gemini-3.6-flash 或 gemini-3.5-flash-lite
+                        """)
+                    else:
+                        st.error(f"❌ AI 分析失敗：{error_msg[:500]}")
+    
+                    status.update(label="❌ 分析失敗", state="error", expanded=False)
+                    logger.error(f"AI 分析失敗 ({error_type}): {error_msg}")
+                    with st.expander("🔍 錯誤詳情", expanded=False):
+                        st.code(f"錯誤類型: {error_type}\n錯誤訊息: {error_msg}")
+                    st.stop()
+            
+                # 驗證 AI 輸出格式
+                validation = validate_ai_output_format(raw_report, mode_code)
+                if validation['score'] < 70:
+                    st.warning(f"⚠️ AI 輸出格式驗證分數: {validation['score']:.1f}/100")
+                    if validation['missing_sections']:
+                        st.warning(f"缺少章節: {', '.join(validation['missing_sections'])}")
+                    if not validation['has_timeline']:
+                        st.warning("⚠️ 未檢測到時間軸區塊")
+                    if not validation['has_report']:
+                        st.warning("⚠️ 未檢測到報告文本區塊")
+            
+                # 解析報告數據（確保 raw_report 不為 None）
+                if raw_report is None:
+                    logger.error("raw_report 為 None，無法解析")
+                    st.error("❌ AI 分析返回空結果，請重試")
+                    status.update(label="❌ 分析失敗：返回空結果", state="error", expanded=False)
+                    st.stop()
+            
+                parsed_data = parse_gemini_data(raw_report)
+                parsed_data['validation'] = validation  # 保存驗證結果
+            
+                # 驗證解析結果（安全檢查 report_text 類型）
+                report_text = parsed_data.get("report_text", "")
+                # 確保 report_text 是字符串類型
+                if not isinstance(report_text, str):
+                    logger.warning(f"report_text 不是字符串類型: {type(report_text).__name__}，嘗試轉換")
+                    try:
+                        report_text = str(report_text)
+                        parsed_data["report_text"] = report_text
+                    except Exception as e:
+                        logger.error(f"無法將 report_text 轉換為字符串: {str(e)}")
+                        report_text = ""
+            
+                if not report_text or (isinstance(report_text, str) and not report_text.strip()):
+                    st.warning("⚠️ AI 返回的報告格式可能不符合預期，嘗試使用備用解析方法...")
+                    # 備用方法：如果沒有找到 REPORT_TEXT，使用整個文本（排除時間軸）
+                    if raw_report:
+                        # 移除 [DATA_TIMELINE] 區塊
+                        if "### [DATA_TIMELINE]" in raw_report:
+                            parts = raw_report.split("### [DATA_TIMELINE]")
+                            if len(parts) > 1:
+                                remaining = parts[1]
+                                if "### [REPORT_TEXT]" in remaining:
+                                    parsed_data["report_text"] = remaining.split("### [REPORT_TEXT]")[1].strip()
+                                else:
+                                    # 移除時間軸行
+                                    lines = remaining.split('\n')
+                                    report_lines = []
+                                    for line in lines:
+                                        if "|" in line and len(line.split("|")) >= 3:
+                                            parts_line = line.split("|")
+                                            if len(parts_line) >= 3 and (re.match(r'^\d{4}-\d{2}-\d{2}', parts_line[0].strip()) or "近期" in parts_line[0]):
+                                                continue
+                                        report_lines.append(line)
+                                    parsed_data["report_text"] = '\n'.join(report_lines).strip()
+                        else:
+                            # 如果完全沒有標記，使用整個文本
+                            parsed_data["report_text"] = raw_report.strip()
+            
+                st.session_state.result = parsed_data
+    
+                # 顯示解析統計
+                timeline_count = len(parsed_data.get("timeline", []))
+                report_length = len(parsed_data.get("report_text", ""))
+                st.write(f"   ↳ 解析完成：時間軸 {timeline_count} 筆，報告長度 {report_length} 字元")
+                
+                status.update(label="✅ 分析完成", state="complete", expanded=False)
+    
+            st.rerun()
+    
+        # Cofacts 謠言警告區塊
     if st.session_state.get('feature_status'):
         st.markdown("---")
         with st.expander("🧭 本輪功能執行狀態", expanded=False):
@@ -9722,8 +9907,9 @@ else:
         st.markdown("### 📝 平衡報導分析")
     
         report_text = data.get("report_text", "")
+        reading_report_text = strip_generated_reference_section(report_text)
         render_analysis_summary_cards(data, st.session_state.get("sources"), data.get("validation", {}))
-        render_report_navigation(report_text, "fusion")
+        render_report_navigation(reading_report_text, "fusion")
     
         # 檢查報告內容是否為空
         if not report_text or not report_text.strip():
@@ -9749,8 +9935,7 @@ else:
                     "report_text_preview": report_text[:500] if report_text else "（空）"
                 })
         else:
-            display_report_text = append_reference_links_to_report(report_text, st.session_state.get("sources"), blind_mode)
-            render_report_paper(display_report_text)
+            render_report_paper(reading_report_text, "fusion", "analysis")
             st.markdown("### 📥 下載目前分析結果")
             current_pdf = create_pdf_report(
                 "多元觀點分析報告",
@@ -9799,15 +9984,9 @@ else:
         st.markdown("---")
         st.markdown("### 🔮 未來發展推演報告")
         scenario_data = st.session_state.scenario_result
-        scenario_report_text = append_reference_links_to_report(
-            scenario_data.get("report_text", ""),
-            st.session_state.get("sources"),
-            blind_mode,
-        )
-        formatted_scenario = format_citation_style(scenario_report_text)
-        html_scenario = markdown.markdown(formatted_scenario, extensions=['tables'])
-        render_report_navigation(scenario_data.get("report_text", ""), "scenario")
-        st.markdown(f'<div class="report-paper">{html_scenario}</div>', unsafe_allow_html=True)
+        scenario_report_text = strip_generated_reference_section(scenario_data.get("report_text", ""))
+        render_report_navigation(scenario_report_text, "scenario")
+        render_report_paper(scenario_report_text, "scenario", "scenario")
         scenario_pdf = create_pdf_report(
             "未來發展推演報告",
             scenario_data.get("report_text", ""),
@@ -9824,4 +10003,5 @@ else:
 
     if st.session_state.sources:
         st.markdown("---")
-        st.markdown(build_reference_links_markdown(st.session_state.sources, blind_mode))
+        reference_report = build_reference_links_markdown(st.session_state.sources, blind_mode)
+        render_report_paper(reference_report, "references", "references")
