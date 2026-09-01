@@ -113,9 +113,9 @@ def create_gemini_llm(
         "api_key": clean_key,
         "vertexai": False,
     }
-    # Gemini 3.7/3.6 reject the legacy sampling parameters. Let the API use
-    # its model-specific defaults; older fallback models can still use them.
-    if temperature is not None and not resolved_model.startswith(("gemini-3.7-", "gemini-3.6-")):
+    # Gemini 3.x no longer supports the legacy sampling parameters. Let the
+    # API use model-specific defaults; Gemini 2.5 fallbacks can still use it.
+    if temperature is not None and not resolved_model.startswith("gemini-3."):
         kwargs["temperature"] = temperature
     return ChatGoogleGenerativeAI(**kwargs)
 
@@ -895,6 +895,17 @@ class SourceReputationManager:
     
     def __init__(self):
         self.static_scores_cache = {}  # 靜態評分快取
+
+    @staticmethod
+    def _domain_matches(domain: str, configured_domain: str) -> bool:
+        """以網域邊界比對，並讓 `.gov.tw` 同時匹配根網域 `gov.tw`。"""
+        clean_domain = (domain or "").strip().lower().removeprefix("www.")
+        clean_configured = (configured_domain or "").strip().lower().lstrip(".")
+        return bool(
+            clean_domain
+            and clean_configured
+            and (clean_domain == clean_configured or clean_domain.endswith(f".{clean_configured}"))
+        )
     
     def calculate_credibility_score(self, url: str, domain: str) -> Tuple[float, str]:
         """
@@ -903,55 +914,55 @@ class SourceReputationManager:
         Returns:
             Tuple[float, str]: (分數, Tier 名稱)
         """
-        if url in self.static_scores_cache:
-            return self.static_scores_cache[url]
-        
-        domain_lower = domain.lower()
+        domain_lower = (domain or "").strip().lower().removeprefix("www.")
+        cache_key = ((url or "").strip().lower() or domain_lower)
+        if cache_key in self.static_scores_cache:
+            return self.static_scores_cache[cache_key]
         
         # Tier 1: 學術機構
         for domain_suffix in AUTHORITY_TIERS["Tier_1_Academic"]["domains"]:
-            if domain_suffix in domain_lower:
+            if self._domain_matches(domain_lower, domain_suffix):
                 score = AUTHORITY_TIERS["Tier_1_Academic"]["base_score"]
                 tier = "Tier_1_Academic"
-                self.static_scores_cache[url] = (score, tier)
+                self.static_scores_cache[cache_key] = (score, tier)
                 return score, tier
         
         # Tier 1: 政府機構
         for domain_suffix in AUTHORITY_TIERS["Tier_1_Government"]["domains"]:
-            if domain_suffix in domain_lower:
+            if self._domain_matches(domain_lower, domain_suffix):
                 score = AUTHORITY_TIERS["Tier_1_Government"]["base_score"]
                 tier = "Tier_1_Government"
-                self.static_scores_cache[url] = (score, tier)
+                self.static_scores_cache[cache_key] = (score, tier)
                 return score, tier
         
         # Tier 2: 國際權威媒體
         for media in AUTHORITY_TIERS["Tier_2_International"]["media_list"]:
-            if media in domain_lower:
+            if self._domain_matches(domain_lower, media):
                 score = AUTHORITY_TIERS["Tier_2_International"]["base_score"]
                 tier = "Tier_2_International"
-                self.static_scores_cache[url] = (score, tier)
+                self.static_scores_cache[cache_key] = (score, tier)
                 return score, tier
         
         # Tier 2: 獨立媒體
         for media in AUTHORITY_TIERS["Tier_2_Independent"]["media_list"]:
-            if media in domain_lower:
+            if self._domain_matches(domain_lower, media):
                 score = AUTHORITY_TIERS["Tier_2_Independent"]["base_score"]
                 tier = "Tier_2_Independent"
-                self.static_scores_cache[url] = (score, tier)
+                self.static_scores_cache[cache_key] = (score, tier)
                 return score, tier
         
         # Tier 4: 社群媒體
         for media in AUTHORITY_TIERS["Tier_4_Social"]["media_list"]:
-            if media in domain_lower:
+            if self._domain_matches(domain_lower, media):
                 score = AUTHORITY_TIERS["Tier_4_Social"]["base_score"]
                 tier = "Tier_4_Social"
-                self.static_scores_cache[url] = (score, tier)
+                self.static_scores_cache[cache_key] = (score, tier)
                 return score, tier
         
         # Tier 3: 預設商業媒體
         score = AUTHORITY_TIERS["Tier_3_Commercial"]["base_score"]
         tier = "Tier_3_Commercial"
-        self.static_scores_cache[url] = (score, tier)
+        self.static_scores_cache[cache_key] = (score, tier)
         return score, tier
     
     def get_weight_coefficient(self, source_category: str, domain: str) -> float:
@@ -961,7 +972,7 @@ class SourceReputationManager:
         Returns:
             float: 權重係數（0.5-1.5）
         """
-        _, tier = self.calculate_credibility_score("", domain)
+        _, tier = self.calculate_credibility_score(domain, domain)
         return AUTHORITY_TIERS.get(tier, {}).get("weight_coefficient", 1.0)
 
 # 全局實例
@@ -2373,15 +2384,21 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
             other_title = other_source.get('title', '').lower()
             if title_lower and other_title:
                 common_words = set(title_lower.split()) & set(other_title.split())
-                if len(common_words) >= 3:
+                normalized_title = re.sub(r'[^\w]+', '', title_lower)
+                normalized_other = re.sub(r'[^\w]+', '', other_title)
+                title_similarity = 0.0
+                if len(normalized_title) >= 8 and len(normalized_other) >= 8:
+                    title_similarity = SequenceMatcher(
+                        None, normalized_title, normalized_other
+                    ).ratio()
+                if len(common_words) >= 3 or title_similarity >= 0.65:
                     similar_title_count += 1
         
         if similar_title_count > 0:
             consensus_ratio = min(1.0, similar_title_count / max(1, len(all_sources) - 1))
-            if consensus_ratio > CROSS_VALIDATION_HIGH_RATIO:
-                cross_validation_score = 0.2
-            elif consensus_ratio > CROSS_VALIDATION_MEDIUM_RATIO:
-                cross_validation_score = 0.1
+            # 這個欄位會再乘上公式中的 12%，因此必須維持 0..1 正規化，
+            # 否則舊版最高 0.2 只會產生 2.4% 的實際貢獻。
+            cross_validation_score = consensus_ratio
     
     details["cross_validation"] = cross_validation_score
     
@@ -2452,6 +2469,31 @@ def calculate_academic_evidence_level(url: str, source_category: str, content: s
     details["level_cn"] = level_cn
     
     return level_cn, final_score, details
+
+
+def refresh_source_evidence(sources: List[Dict]) -> List[Dict]:
+    """在完整來源清單確定後重新計算證據分數，啟用真正的交叉驗證。"""
+    if not sources:
+        return sources
+
+    for source in sources:
+        url = source.get("url", "#")
+        title = source.get("title", "No Title")
+        content = source.get("content", "")
+        source_category = source.get("source_category") or classify_source(url)
+        level, score, details = calculate_academic_evidence_level(
+            url,
+            source_category,
+            content,
+            title,
+            all_sources=sources,
+        )
+        source["source_category"] = source_category
+        source["evidence_level"] = level
+        source["evidence_score"] = score
+        source["evidence_details"] = details
+
+    return sources
 
 def calculate_enhanced_evidence_level(url: str, source_category: str, content: str, title: str) -> Tuple[str, float]:
     """
@@ -2531,7 +2573,8 @@ def extract_claims_from_sources(sources: List[Dict], api_key: str) -> List[Dict[
             for j, source in enumerate(batch):
                 title = source.get('title', 'No Title')
                 content = source.get('content', '')[:500]  # 只取前 500 字元
-                batch_texts.append(f"Source {i+j+1}: {title}\n{content[:300]}")
+                # Prompt 與解析器都使用批次內 ID；輸出時再轉回全域 Source ID。
+                batch_texts.append(f"Source {j+1}: {title}\n{content[:300]}")
             
             prompt = f"""
             請從以下新聞來源中提取核心聲明（主張），每個來源提取 1-2 個最重要的聲明。
@@ -2619,6 +2662,41 @@ async def verify_single_claim(session: aiohttp.ClientSession, claim_text: str, a
         logger.warning(f"Fact Check API 驗證失敗: {claim_text[:50]}... 錯誤: {str(e)}")
         return None
 
+
+def classify_fact_check_rating(textual_rating: str) -> str:
+    """將查核機構的中英文自由文字評級安全歸類；未知文字不得視為已驗證。"""
+    rating = (textual_rating or "").strip().casefold()
+    if not rating:
+        return "unverified"
+
+    misleading_terms = (
+        "mostly false", "partly false", "partially false", "half true",
+        "misleading", "mixture", "部分錯誤", "部分不實", "部分事實",
+        "誤導", "以偏概全", "缺乏脈絡", "尚有爭議",
+    )
+    false_terms = (
+        "false", "not true", "untrue", "incorrect", "fake", "fabricated", "unfounded",
+        "pants on fire", "不實", "錯誤", "虛假", "假消息", "捏造",
+        "並非事實", "查無此事",
+    )
+    unverified_terms = (
+        "unverified", "unproven", "not enough evidence", "insufficient evidence",
+        "未證實", "尚未證實", "無法查證", "證據不足", "無足夠證據",
+    )
+    verified_terms = (
+        "true", "correct", "accurate", "verified", "正確", "屬實", "真實", "事實",
+    )
+
+    if any(term in rating for term in misleading_terms):
+        return "misleading"
+    if any(term in rating for term in false_terms):
+        return "false"
+    if any(term in rating for term in unverified_terms):
+        return "unverified"
+    if any(term in rating for term in verified_terms):
+        return "verified"
+    return "unverified"
+
 async def verify_claims_async(claims: List[Dict[str, Any]], api_key: str) -> Dict[str, List[Dict]]:
     """
     異步批次驗證聲明（方案 1.2 - API 驗證）
@@ -2671,16 +2749,19 @@ async def verify_claims_async(claims: List[Dict[str, Any]], api_key: str) -> Dic
                 
                 # 取第一個查核結果
                 review = claim_review[0]
-                textual_rating = review.get('textualRating', '').upper()
+                textual_rating = review.get('textualRating', '').strip()
+                rating_class = classify_fact_check_rating(textual_rating)
                 
                 claim_with_rating = {**claim, 'rating': textual_rating, 'review_url': review.get('url', '')}
                 
-                if 'FALSE' in textual_rating:
+                if rating_class == 'false':
                     results["false_claims"].append(claim_with_rating)
-                elif 'MISLEADING' in textual_rating or 'PARTLY_FALSE' in textual_rating:
+                elif rating_class == 'misleading':
                     results["misleading_claims"].append(claim_with_rating)
-                else:
+                elif rating_class == 'verified':
                     results["verified_claims"].append(claim_with_rating)
+                else:
+                    results["unverified_claims"].append(claim_with_rating)
     
     try:
         # 執行異步驗證
@@ -2724,6 +2805,43 @@ def verify_claims(claims: List[Dict[str, Any]], api_key: str) -> Dict[str, List[
             "unverified_claims": claims  # 所有聲明標記為未驗證
         }
 
+def _downgrade_evidence_level(level: str, steps: int) -> str:
+    levels = ["極強", "強", "中強", "中等", "中弱", "弱"]
+    try:
+        current_index = levels.index(level)
+    except ValueError:
+        current_index = levels.index("中等")
+    return levels[min(len(levels) - 1, current_index + max(0, steps))]
+
+
+def _cap_evidence_score_for_level(score: float, level: str) -> float:
+    """將數值分數限制在文字等級的合法區間內，避免顯示互相矛盾。"""
+    upper_bounds = {
+        "極強": 1.0,
+        "強": EVIDENCE_LEVEL_A_PLUS - 1e-6,
+        "中強": EVIDENCE_LEVEL_A - 1e-6,
+        "中等": EVIDENCE_LEVEL_B_PLUS - 1e-6,
+        "中弱": EVIDENCE_LEVEL_B - 1e-6,
+        "弱": EVIDENCE_LEVEL_C - 1e-6,
+    }
+    try:
+        numeric_score = float(score)
+    except (TypeError, ValueError):
+        numeric_score = 0.0
+    return max(0.0, min(numeric_score, upper_bounds.get(level, EVIDENCE_LEVEL_C - 1e-6)))
+
+
+def _evidence_level_code(level: str) -> str:
+    return {
+        "極強": "A+",
+        "強": "A",
+        "中強": "B+",
+        "中等": "B",
+        "中弱": "C",
+        "弱": "D",
+    }.get(level, "D")
+
+
 def apply_fact_check_tags(sources: List[Dict], fact_check_results: Dict[str, List[Dict]]) -> List[Dict]:
     """
     應用事實查核標籤和降權（方案 1.3 - 標註與降權）
@@ -2751,24 +2869,38 @@ def apply_fact_check_tags(sources: List[Dict], fact_check_results: Dict[str, Lis
         if source_id in false_map:
             # 降權：證據強度降 2 級
             current_level = source.get('evidence_level', '中等')
-            if current_level == '強':
-                source['evidence_level'] = '弱'
-            elif current_level == '中等':
-                source['evidence_level'] = '弱'
+            new_level = _downgrade_evidence_level(current_level, 2)
+            source['evidence_level'] = new_level
+            source['evidence_score'] = _cap_evidence_score_for_level(
+                source.get('evidence_score', 0.0), new_level
+            )
             source['fact_check_status'] = '❌ 已證偽'
             source['fact_check_rating'] = false_map[source_id].get('rating', 'VERIFIED_FALSE')
             source['fact_check_url'] = false_map[source_id].get('review_url', '')
+            details = source.get('evidence_details')
+            if isinstance(details, dict):
+                details['final_score'] = source['evidence_score']
+                details['level_cn'] = new_level
+                details['level'] = _evidence_level_code(new_level)
             logger.warning(f"Source {source_id} 已證偽，證據強度降級")
         
         # 檢查是否為誤導性
         elif source_id in misleading_map:
             # 降權：證據強度降 1 級
             current_level = source.get('evidence_level', '中等')
-            if current_level == '強':
-                source['evidence_level'] = '中等'
+            new_level = _downgrade_evidence_level(current_level, 1)
+            source['evidence_level'] = new_level
+            source['evidence_score'] = _cap_evidence_score_for_level(
+                source.get('evidence_score', 0.0), new_level
+            )
             source['fact_check_status'] = '⚠️ 誤導性內容'
             source['fact_check_rating'] = misleading_map[source_id].get('rating', 'MISLEADING')
             source['fact_check_url'] = misleading_map[source_id].get('review_url', '')
+            details = source.get('evidence_details')
+            if isinstance(details, dict):
+                details['final_score'] = source['evidence_score']
+                details['level_cn'] = new_level
+                details['level'] = _evidence_level_code(new_level)
             logger.info(f"Source {source_id} 標記為誤導性")
     
     return sources
@@ -3081,9 +3213,15 @@ def _parse_source_datetime(source: Dict) -> Optional[datetime]:
         if not raw or not isinstance(raw, str):
             continue
         raw = raw.strip()[:19]
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        formats = (
+            ("%Y-%m-%d %H:%M:%S", 19),
+            ("%Y-%m-%dT%H:%M:%S", 19),
+            ("%Y-%m-%d %H:%M", 16),
+            ("%Y-%m-%d", 10),
+        )
+        for fmt, text_length in formats:
             try:
-                return datetime.strptime(raw[:len(fmt)], fmt)
+                return datetime.strptime(raw[:text_length], fmt)
             except ValueError:
                 continue
         if len(raw) >= 10:
@@ -4244,7 +4382,7 @@ def analyze_stance_balance(sources: List[Dict], issue_type: str = "TAIWAN_DOMEST
 
     return stance_analysis
 
-def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
+def process_source_item(res: Dict, index: int, reuse_evidence: bool = False) -> Tuple[str, Dict]:
     """
     並行處理單一來源項目（已整合公信力評分）
     
@@ -4270,15 +4408,17 @@ def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
     if len(res.get('content', '')) > SUMMARY_THRESHOLD:
         content = summarize_content(content, MAX_CONTENT_LENGTH)
     
-    # 學術級證據強度分級（需要所有來源用於交叉驗證，但在這裡只能使用現有來源）
-    source_category = classify_source(url)
+    # 初次處理先做單篇評分；完整來源確定後可重用 refresh_source_evidence 的結果。
+    source_category = res.get('source_category') or classify_source(url)
     domain = get_domain_name(url)
-    
-    # 注意：在 process_source_item 階段，all_sources 可能還未完全構建
-    # 完整的交叉驗證會在後續階段進行
-    evidence_level, evidence_score, evidence_details = calculate_academic_evidence_level(
-        url, source_category, content, title, all_sources=None
-    )
+    if reuse_evidence and isinstance(res.get('evidence_details'), dict):
+        evidence_level = res.get('evidence_level', '中等')
+        evidence_score = float(res.get('evidence_score', 0.0) or 0.0)
+        evidence_details = res['evidence_details']
+    else:
+        evidence_level, evidence_score, evidence_details = calculate_academic_evidence_level(
+            url, source_category, content, title, all_sources=None
+        )
     
     # 來源公信力評分（方案 2）
     credibility_score, tier = _reputation_manager.calculate_credibility_score(url, domain)
@@ -4325,6 +4465,45 @@ def process_source_item(res: Dict, index: int) -> Tuple[str, Dict]:
     context_line = f"Source {index+1}: [Date: {pub_date}] [Evidence: {evidence_level} ({evidence_label}, {evidence_score:.2f})] [Credibility: {credibility_score:.2f}] {prefix}[Title: {title}]{style_warning} {content} (URL: {url})\n"
     
     return context_line, res
+
+
+def rebuild_source_context(sources: List[Dict]) -> Tuple[str, List[Dict]]:
+    """依 Source ID 順序，以來源目前的證據欄位重建 RAG context。"""
+    if not sources:
+        return "", sources
+
+    context_lines = [""] * len(sources)
+    processed_results: List[Optional[Dict]] = [None] * len(sources)
+
+    if len(sources) > 10:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(sources))) as executor:
+            futures = {
+                executor.submit(process_source_item, source, index, True): index
+                for index, source in enumerate(sources)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                index = futures[future]
+                try:
+                    context_line, processed_source = future.result()
+                except Exception as error:
+                    logger.warning(f"重建來源 {index} context 失敗: {str(error)}")
+                    processed_source = sources[index]
+                    context_line = (
+                        f"Source {index+1}: [Date: Missing] "
+                        f"[Title: {sources[index].get('title', 'No Title')}] "
+                        f"(URL: {sources[index].get('url', '#')})\n"
+                    )
+                context_lines[index] = context_line
+                processed_results[index] = processed_source
+    else:
+        for index, source in enumerate(sources):
+            context_line, processed_source = process_source_item(source, index, True)
+            context_lines[index] = context_line
+            processed_results[index] = processed_source
+
+    return "".join(context_lines), [
+        source for source in processed_results if source is not None
+    ]
 
 def get_search_context(
     query: str,
@@ -4630,39 +4809,11 @@ def get_search_context(
                 logger.warning(f"補充搜尋未獲得新結果，停止迭代")
                 break
         
-        # === 關鍵修復：如果經過補充搜尋，重新生成 context_text ===
-        # 修復原因：gap-filling 迭代會新增結果到 results，但 context_text 在迭代前已生成
-        # 導致 context_text 和 results 不同步，造成分析錯誤和重複資料
-        if gap_fill_iteration > 0:
-            logger.info(f"經過 {gap_fill_iteration} 次補充搜尋，重新生成完整 context_text")
-            # 重新處理所有來源（包含補充的新來源）
-            context_lines = []
-            if len(results) > 10:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(results))) as executor:
-                    futures = {executor.submit(process_source_item, res, i): i for i, res in enumerate(results)}
-                    processed_results = [None] * len(results)
-                    
-                    for future in concurrent.futures.as_completed(futures):
-                        idx = futures[future]
-                        try:
-                            context_line, processed_res = future.result()
-                            context_lines.append(context_line)
-                            processed_results[idx] = processed_res
-                        except Exception as e:
-                            logger.warning(f"處理來源 {idx} 失敗: {str(e)}")
-                            processed_results[idx] = results[idx]
-                            context_lines.append(f"Source {idx+1}: [Date: Missing] [Title: {results[idx].get('title', 'No Title')}] (URL: {results[idx].get('url', '#')})\n")
-                    
-                    results = [r for r in processed_results if r is not None]
-            else:
-                for i, res in enumerate(results):
-                    context_line, processed_res = process_source_item(res, i)
-                    context_lines.append(context_line)
-                    results[i] = processed_res
-            
-            # 重新生成 context_text
-            context_text = "".join(context_lines)
-            logger.info(f"已重新生成 context_text，包含 {len(results)} 筆完整來源")
+        # 所有搜尋與 gap-fill 完成後，才有完整來源可供交叉驗證。
+        # 無論是否發生 gap-fill 都要重算，並依 Source ID 順序重建 context。
+        results = refresh_source_evidence(results)
+        context_text, results = rebuild_source_context(results)
+        logger.info(f"已完成交叉驗證並重建 context_text，包含 {len(results)} 筆來源")
 
         if enable_google_fact_check and google_api_key and results:
             try:
@@ -4670,6 +4821,8 @@ def get_search_context(
                 claims = extract_claims_from_sources(results[:20], google_api_key)
                 fact_check_results = verify_claims(claims, google_api_key)
                 results = apply_fact_check_tags(results, fact_check_results)
+                # 查核降級會改變文字等級與數值分數，必須同步更新 RAG context。
+                context_text, results = rebuild_source_context(results)
                 fact_check_warning = generate_fact_check_warning(fact_check_results)
                 if fact_check_warning:
                     context_text += f"\n{fact_check_warning}\n"
@@ -4770,10 +4923,17 @@ def validate_google_api_key(google_key: str) -> Tuple[bool, str]:
         return False, "未提供 Gemini API Key"
     try:
         os.environ["GOOGLE_API_KEY"] = (google_key or "").strip()
-        llm = create_gemini_llm(DEFAULT_GEMINI_MODEL, google_key, temperature=0.0)
-        test_response = llm.invoke("test")
-        if not test_response or not test_response.content:
+        test_response = call_gemini(
+            "請只回答 OK。",
+            "test",
+            DEFAULT_GEMINI_MODEL,
+            google_key,
+        )
+        if not (test_response or "").strip():
             return False, "Gemini API Key 無效：無法取得回應"
+    except ChatGoogleGenerativeAIError as e:
+        logger.error(f"Gemini API 服務暫時不可用: {str(e)}")
+        return False, f"Gemini 服務暫時不可用（Key 不一定有問題）：{str(e)[:100]}"
     except Exception as e:
         logger.error(f"Gemini API 驗證失敗: {str(e)}")
         return False, f"Gemini API Key 無效：{str(e)[:100]}"
@@ -4822,64 +4982,63 @@ def validate_api_keys(google_key: str, tavily_key: str, require_tavily: bool = T
     return True, "✅ Gemini 與 Tavily API Key 驗證通過"
 
 
+def _is_retryable_gemini_error(error: Exception) -> bool:
+    """判斷是否為可透過其他 Gemini 模型繼續嘗試的暫時性錯誤。"""
+    message = str(error).upper()
+    retryable_markers = (
+        "408", "429", "500", "502", "503", "504",
+        "RESOURCE_EXHAUSTED", "UNAVAILABLE", "INTERNAL",
+        "DEADLINE_EXCEEDED", "RATE LIMIT", "HIGH DEMAND",
+        "TEMPORARILY OVERLOADED", "SERVICE UNAVAILABLE",
+    )
+    return any(marker in message for marker in retryable_markers)
+
+
 def call_gemini(system_prompt: str, user_text: str, model_name: str, api_key: str) -> str:
     """
     呼叫 Google Gemini。模型不可用或配額不足時，僅在 **Gemini 型號清單** 內嘗試降級（不使用其他供應商）。
     """
     os.environ["GOOGLE_API_KEY"] = api_key
 
-    try:
-        llm = create_gemini_llm(model_name, api_key, temperature=0.0)
-        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-        chain = prompt | llm
-        response = chain.invoke({"input": user_text})
-        return _extract_text_from_llm_content(response.content)
-    except Exception as e:
-        error_msg = str(e)
-        error_type = type(e).__name__
+    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
+    candidates = get_gemini_model_candidates(model_name)
+    attempt_errors: List[Tuple[str, Exception]] = []
 
-        if "NOT_FOUND" in error_msg or ("404" in error_msg and "not found" in error_msg.lower()):
-            logger.warning(f"模型 {model_name} 不存在或不可用，嘗試降級到可用 Gemini 型號")
-            fallback_models = get_gemini_model_candidates(model_name)[1:]
-            for fallback_model in fallback_models:
-                try:
-                    llm = create_gemini_llm(fallback_model, api_key, temperature=0.0)
-                    prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-                    chain = prompt | llm
-                    response = chain.invoke({"input": user_text})
-                    return _extract_text_from_llm_content(response.content)
-                except Exception:
-                    logger.warning(f"降級到 {fallback_model} 失敗，嘗試下一個")
-                    continue
-            err = (
-                f"❌ 模型 {model_name} 不存在或不可用\n\n"
-                f"**錯誤類型**：{error_type}\n**訊息**：{error_msg[:200]}\n\n"
-                f"請改用側欄中的其他 Gemini 3.x 型號，或至 AI Studio 確認可用列表。"
+    # google-genai 已對單一模型執行指數退避。若錯誤最終仍浮出，代表該模型
+    # 的 SDK 重試已用盡；此處改切換模型，避免再疊加大量相同請求與等待時間。
+    for index, candidate in enumerate(candidates):
+        try:
+            llm = create_gemini_llm(candidate, api_key, temperature=0.0)
+            chain = prompt | llm
+            response = chain.invoke({"input": user_text})
+            return _extract_text_from_llm_content(response.content)
+        except Exception as error:
+            message = str(error)
+            is_not_found = "NOT_FOUND" in message.upper() or (
+                "404" in message and "not found" in message.lower()
             )
-            raise ChatGoogleGenerativeAIError(err) from e
+            if not (_is_retryable_gemini_error(error) or is_not_found):
+                raise
 
-        if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg or "quota" in error_msg.lower():
-            fallback_models = get_gemini_model_candidates(model_name)[1:]
-            if fallback_models and ("pro" in model_name.lower() or "flash" in model_name.lower()):
-                for fallback_model in fallback_models:
-                    try:
-                        llm = create_gemini_llm(fallback_model, api_key, temperature=0.0)
-                        prompt = ChatPromptTemplate.from_messages([("system", system_prompt), ("human", "{input}")])
-                        chain = prompt | llm
-                        response = chain.invoke({"input": user_text})
-                        return _extract_text_from_llm_content(response.content)
-                    except Exception:
-                        logger.warning(f"配額不足，降級到 {fallback_model} 失敗")
-                        continue
-            detail = (
-                f"❌ Gemini API 配額已耗盡或暫時受限\n\n"
-                f"- 嘗試模型：{model_name}\n"
-                f"- 已嘗試其他 Gemini 備援：{', '.join(fallback_models) if fallback_models else '（無）'}\n\n"
-                f"請見 https://ai.dev/rate-limit ；或改用 gemini-3.6-flash / gemini-3.5-flash-lite。\n"
-                f"**原始錯誤**：{error_msg[:200]}"
-            )
-            raise ChatGoogleGenerativeAIError(detail) from e
-        raise
+            attempt_errors.append((candidate, error))
+            if index < len(candidates) - 1:
+                logger.warning(
+                    "Gemini 模型 %s 暫時不可用（%s），切換至下一個備援模型",
+                    candidate,
+                    message[:160],
+                )
+
+    last_model, last_error = attempt_errors[-1]
+    attempted_models = ", ".join(model for model, _ in attempt_errors)
+    detail = (
+        "❌ Gemini 目前暫時無法完成分析\n\n"
+        f"- 已嘗試模型：{attempted_models}\n"
+        f"- 最後失敗模型：{last_model}\n"
+        "- 系統已完成 SDK 退避重試與 Gemini 模型自動切換\n\n"
+        "這通常是服務高需求、暫時過載或配額限制，請稍後再試。\n"
+        f"**最後錯誤**：{str(last_error)[:300]}"
+    )
+    raise ChatGoogleGenerativeAIError(detail) from last_error
 
 
 def _call_llm_for_feed(
