@@ -33,7 +33,7 @@ st.markdown("""
     .sub-title {
         font-size: 1.15rem !important;
         color: #64748b;
-        margin-bottom: 1.8rem !important;
+        margin-bottom: 1.6rem !important;
     }
 
     /* Meta Bar (來源標籤 - 顯著放大) */
@@ -172,6 +172,14 @@ RSS_SOURCES = [
                 "date": "本週精選",
                 "summary_zh": "安踏頂級競速戰靴 C202 GT 實測出爐，搭載雙層氮氣物理發泡中底，能量回饋高達 82%，雨天濕滑路面防滑抓地表現優異。",
                 "image": "https://images.unsplash.com/photo-1549298916-b41d501d3772?w=800&auto=format&fit=crop&q=80"
+            },
+            {
+                "title_zh": "快傳體育 FASTPASS 拆解：李寧超輕 21 代剖面分析，超輕量碳板與中底空洞力學結構揭秘",
+                "title_orig": "FastPass Deconstructs Li-Ning Super Light 21",
+                "link": "https://www.flightclub.cn/",
+                "date": "拆解專題",
+                "summary_zh": "快傳體育帶來全新超輕 21 代剖面實測，詳細量測單隻 180g 的超輕量奧秘，中底拱橋縷空結構在吸收垂直衝擊的同時大幅減重。",
+                "image": "https://images.unsplash.com/photo-1512412046876-f3863b17025a?w=800&auto=format&fit=crop&q=80"
             }
         ]
     },
@@ -196,6 +204,13 @@ RSS_SOURCES = [
         "lang": "en",
         "lang_label": "🇺🇸 英文全譯",
         "category": "實戰鞋評 / 性能測試"
+    },
+    {
+        "name": "Nice Kicks",
+        "url": "https://www.nicekicks.com/feed/",
+        "lang": "en",
+        "lang_label": "🇺🇸 英文全譯",
+        "category": "球鞋故事 / 潮流發售"
     },
     # 🇯🇵 日本
     {
@@ -234,7 +249,7 @@ def robust_translate_to_zh(text, src_lang='auto'):
         return ""
     
     # Check if already Chinese (Taiwan or China)
-    zh_count = len([c for c in text if '一' <= c <= '鿿'])
+    zh_count = len([c for c in text if '\u4e00' <= c <= '\u9fff'])
     if zh_count > len(text) * 0.35:
         return text
 
@@ -266,23 +281,23 @@ def robust_translate_to_zh(text, src_lang='auto'):
 
     # Engine 3: Smart Sneaker Dictionary Replacement (Zero Failure Fallback)
     replacements = [
-        (r" Gets Low With The Upcoming ", "推出全新低筒款"),
-        (r" Upcoming ", "即將登場的"),
-        (r" Release Date ", "發售日期公佈"),
-        (r" Releasing ", "即將發售"),
-        (r" Confirmed ", "官方正式確認"),
-        (r" First Look ", "搶先第一手預覽"),
-        (r" Official Images ", "官方定裝照曝光"),
-        (r" Review ", "深度鞋評"),
-        (r" Lab Review ", "實驗室拆解評測"),
-        (r" Performance Review ", "場上實戰評測"),
-        (r" Looks Like ", "外觀神似"),
-        (r" Collaboration ", "重磅聯名"),
-        (r" Colorway ", "配色登場"),
-        (r" Gets In Its Fall Bag With ", "秋季全新登場"),
-        (r" Meet The Moment ", "迎接高光時刻"),
-        (r" Restock ", "補貨重磅回歸"),
-        (r" Raffle ", "線上抽籤開催")
+        (r"\bGets Low With The Upcoming\b", "推出全新低筒款"),
+        (r"\bUpcoming\b", "即將登場的"),
+        (r"\bRelease Date\b", "發售日期公佈"),
+        (r"\bReleasing\b", "即將發售"),
+        (r"\bConfirmed\b", "官方正式確認"),
+        (r"\bFirst Look\b", "搶先第一手預覽"),
+        (r"\bOfficial Images\b", "官方定裝照曝光"),
+        (r"\bReview\b", "深度鞋評"),
+        (r"\bLab Review\b", "實驗室拆解評測"),
+        (r"\bPerformance Review\b", "場上實戰評測"),
+        (r"\bLooks Like\b", "外觀神似"),
+        (r"\bCollaboration\b", "重磅聯名"),
+        (r"\bColorway\b", "配色登場"),
+        (r"\bGets In Its Fall Bag With\b", "秋季全新登場"),
+        (r"\bMeet The Moment\b", "迎接高光時刻"),
+        (r"\bRestock\b", "補貨重磅回歸"),
+        (r"\bRaffle\b", "線上抽籤開催")
     ]
     t = text
     for pat, rep in replacements:
@@ -385,113 +400,150 @@ def fetch_all_multiregion_feeds():
 
     return articles
 
-# YTR Channels Directory Data
+# YTR Channels: Personalized (from your YouTube subscriptions) + Global Curated
 YTR_CHANNELS = [
-    # 🇹🇼 台灣 & 華語
+    # ⭐ 您的 YouTube 關注頻道 (Personalized Subscriptions)
+    {
+        "name": "That Fit Friend (Jake Boly)",
+        "region": "⭐ 您的專屬關注",
+        "category": "🏋️ 訓練鞋 / 舉重深蹲 / 寬楦赤足極簡",
+        "desc": "您常看的頂級功能性訓練鞋評測頻道！專注於深蹲鞋、舉重鞋、CrossFit 訓練鞋、零落差極簡鞋（Minimus、Nano、Dropset、Metcon）之硬度與寬楦實測。",
+        "latest_title": "NEW BALANCE MINIMUS TR V2 深度鞋評：差一點就成神作？",
+        "latest_orig": "NEW BALANCE MINIMUS TR V2 REVIEW | So Close Yet So Far?",
+        "latest_date": "2024-06-25",
+        "latest_id": "brJoRjAIDqg",
+        "latest_thumbnail": "https://i.ytimg.com/vi/brJoRjAIDqg/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=brJoRjAIDqg"
+    },
+    {
+        "name": "Run4Adventure (Lloyd Purvis)",
+        "region": "⭐ 您的專屬關注",
+        "category": "⛰️ 硬核越野跑鞋 / 技術山徑 / Vibram",
+        "desc": "您常看的專業越野跑鞋頻道！深入實測泥濘岩石等技術越野地形、Vibram Megagrip 抓地力、Kailas 凱樂石、Scarpa、HOKA、Karhu 等山系越野鞋。",
+        "latest_title": "技術山徑怪物級抓地？Kailas 凱樂石 FUGA MONSTER DU 首跑實測",
+        "latest_orig": "MONSTER Grip on Technical Trails? | Kailas FUGA MONSTER DU First Run Review",
+        "latest_date": "2026-07-05",
+        "latest_id": "I9dzEkgUyr4",
+        "latest_thumbnail": "https://i.ytimg.com/vi/I9dzEkgUyr4/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=I9dzEkgUyr4"
+    },
+    {
+        "name": "Fleet Feet",
+        "region": "⭐ 您的專屬關注",
+        "category": "🏃 專業跑鞋庫 / 楦型與足弓支撐",
+        "desc": "您常看的美國專業運動專門店官方頻道！專注於各大品牌全系列跑鞋陣容矩陣分析（如 Karhu、ASICS、Brooks、HOKA）與寬楦、足弓穩定度實測。",
+        "latest_title": "芬蘭百年跑鞋 Karhu 2024/2026 全系列陣容解析：哪一雙最適合你的腳型？",
+        "latest_orig": "Karhu's Running Shoe Lineup | Which is Right for You?",
+        "latest_date": "2024-10-09",
+        "latest_id": "tfFH6qhi-aY",
+        "latest_thumbnail": "https://i.ytimg.com/vi/tfFH6qhi-aY/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=tfFH6qhi-aY"
+    },
+    {
+        "name": "Bem Kicks",
+        "region": "⭐ 您的專屬關注",
+        "category": "👟 New Balance 深度 / 復古跑鞋排行榜",
+        "desc": "您常看的 New Balance 深度頻道！專精分析 NB 990v6、1906R、2002R、9060、550 等經典鞋款背後的科技演進、材質做工與排行榜分析。",
+        "latest_title": "2026 年必備 Top 10 New Balance 球鞋排行榜：哪一雙真正值得入手？",
+        "latest_orig": "Top 10 Must-Have New Balance Sneakers of 2026!",
+        "latest_date": "2026-07-06",
+        "latest_id": "dqZ4BorSS2A",
+        "latest_thumbnail": "https://i.ytimg.com/vi/dqZ4BorSS2A/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=dqZ4BorSS2A"
+    },
+
+    # 🇹🇼 台灣在地
+    {
+        "name": "哲睿 Jerry",
+        "region": "🇹🇼 台灣在地",
+        "category": "🏃 馬拉松 / 碳板跑鞋實測",
+        "desc": "全馬 Sub-3 實力派菁英跑者，以極度客觀專業的角度實跑評測各大品牌馬拉松碳板鞋、長距離跑鞋與路跑裝備。",
+        "latest_title": "該說的就是要說！adidas 3 雙跑鞋實測比較：PRO 4、EVO SL、BOSTON 13 優缺點一次講清",
+        "latest_orig": "adidas 3雙鞋跑鞋比較！優缺一次說清楚！PRO 4、EVO SL、BOSTON 13",
+        "latest_date": "2025-07-02",
+        "latest_id": "1T_KlQiO8JA",
+        "latest_thumbnail": "https://i.ytimg.com/vi/1T_KlQiO8JA/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=1T_KlQiO8JA"
+    },
     {
         "name": "Kenlu.net 勘履者",
-        "region": "🇹🇼 台灣",
-        "category": "🏀 實戰鞋評 / 品牌直擊",
+        "region": "🇹🇼 台灣在地",
+        "category": "🏀 實戰鞋評 / 品牌發表直擊",
         "desc": "台灣歷史最悠久的權威球鞋媒體官方頻道，專精於國際發表會現場採訪、球鞋文化故事與專業實戰測試。",
-        "subscribers": "10萬+ 訂閱",
-        "url": "https://www.youtube.com/@KENLUnet"
+        "latest_title": "【特輯&心得】年年都推鞋今年玩點不一樣的！feat. KENLU 勘履者",
+        "latest_orig": "年年都推鞋今年玩點不一樣的~也告訴大家今年最應該避雷的是... feat. KENLU勘履者",
+        "latest_date": "2026-01-16",
+        "latest_id": "ArU8kFvNea8",
+        "latest_thumbnail": "https://i.ytimg.com/vi/ArU8kFvNea8/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=ArU8kFvNea8"
     },
     {
         "name": "Xiao Ma 小馬",
-        "region": "🇹🇼 台灣",
+        "region": "🇹🇼 台灣在地",
         "category": "🔥 潮流開箱 / 探店排隊",
         "desc": "台灣超高人氣潮流球鞋創作者，第一手開箱最新熱門話題球鞋、各國球鞋店鋪探店直擊與原價入手指南。",
-        "subscribers": "50萬+ 訂閱",
-        "url": "https://www.youtube.com/@xiaoma"
-    },
-    {
-        "name": "哲睿 Jerry",
-        "region": "🇹🇼 台灣",
-        "category": "🏃 馬拉松 / 碳板跑鞋實測",
-        "desc": "全馬 Sub-3 實力派菁英跑者，以極度客觀專業的角度實跑評測各大品牌馬拉松碳板鞋、長距離跑鞋與路跑裝備。",
-        "subscribers": "15萬+ 訂閱",
-        "url": "https://www.youtube.com/@jerryrunner"
-    },
-    {
-        "name": "Bounce 波恩斯",
-        "region": "🇹🇼 台灣",
-        "category": "🎨 球鞋文化 / 名人穿搭",
-        "desc": "以細膩質感攝影與名人專訪聞名的球鞋生活頻道，解析聯名鞋款背後的美學與穿搭風格。",
-        "subscribers": "8萬+ 訂閱",
-        "url": "https://www.youtube.com/@BounceSneaker"
+        "latest_title": "一次開箱 4 雙今年新款 YEEZY！全新設計 350 與話題拖鞋第一手體驗",
+        "latest_orig": "一次開箱4雙今年新款YEEZY ! 全新設計350跟最夯的拖鞋",
+        "latest_date": "2021-07-15",
+        "latest_id": "v8Qa8I8FTlo",
+        "latest_thumbnail": "https://i.ytimg.com/vi/v8Qa8I8FTlo/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=v8Qa8I8FTlo"
     },
 
     # 🇨🇳 中國硬核拆解
     {
         "name": "極客鞋談 (Geekshoes)",
-        "region": "🇨🇳 中國",
-        "category": "🔬 剪鞋拆解 / 實戰硬核評測",
-        "desc": "華人圈最早以電鋸剪鞋聞名的硬核評測頻道。詳細量測中底氣壓、碳板真偽、抗扭鋼印，實話實說毫不迎合品牌。",
-        "subscribers": "全網百萬追蹤",
-        "url": "https://www.youtube.com/results?search_query=極客鞋談"
-    },
-    {
-        "name": "快傳體育 (FastPass)",
-        "region": "🇨🇳 中國",
-        "category": "🔬 剖面量測 / 官方拆解分析",
-        "desc": "中國公認最專業的球鞋剖面分析團隊，提供高清橫斷面剖析圖、零配件重量精確秤重與科技配置圖解。",
-        "subscribers": "權威拆解機構",
-        "url": "https://www.youtube.com/results?search_query=快傳體育+拆解"
+        "region": "🇨🇳 中國硬核",
+        "category": "🔬 剪鞋拆解 / 實戰客觀評測",
+        "desc": "華人圈最早以電鋸剪鞋聞名的硬核評測團隊。詳細量測中底氣壓、碳板真偽、抗扭鋼印，實話實說毫不迎合品牌。",
+        "latest_title": "Kobe 8 Protro 復刻評測：不靠氣墊，靠本體感受與 React 泡棉",
+        "latest_orig": "kobe 8 复刻评测：不靠气垫，靠本体感受。",
+        "latest_date": "2026-07-27",
+        "latest_id": "FBc9nkMUMPo",
+        "latest_thumbnail": "https://i.ytimg.com/vi/FBc9nkMUMPo/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=FBc9nkMUMPo"
     },
 
     # 🇺🇸 歐美殿堂
     {
         "name": "WearTesters",
-        "region": "🇺🇸 歐美",
+        "region": "🇺🇸 歐美殿堂",
         "category": "🏀 殿堂級實戰 / 抓地緩震剖析",
         "desc": "由球鞋實測界元老 Chris Chase (Nightwing2303) 主理，全球公認最值得信賴的實戰籃球鞋與跑鞋評測。",
-        "subscribers": "85萬+ 訂閱",
-        "url": "https://www.youtube.com/@WearTesters"
-    },
-    {
-        "name": "RunRepeat Lab",
-        "region": "🇺🇸 歐美",
-        "category": "🔬 實驗室數據 / 電鋸剖鞋",
-        "desc": "全球唯一自費購鞋並以工業儀器進行 30+ 項量化實驗的專業實驗室，量測煙霧透氣度、杜氏硬度與磨耗。",
-        "subscribers": "權威數據庫",
-        "url": "https://www.youtube.com/results?search_query=RunRepeat+shoe+review"
+        "latest_title": "Nike Air More Uptempo 大 Air 2026 黑白黑原版配置實測",
+        "latest_orig": "Nike Air More Uptempo Black/White 2026 Performance Review",
+        "latest_date": "2026-09-03",
+        "latest_id": "ZCkQjR-49-g",
+        "latest_thumbnail": "https://i.ytimg.com/vi/ZCkQjR-49-g/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=ZCkQjR-49-g"
     },
     {
         "name": "Believe in the Run",
-        "region": "🇺🇸 歐美",
+        "region": "🇺🇸 歐美殿堂",
         "category": "🏃 專業跑鞋 / 馬拉松深度測試",
         "desc": "美國專業馬拉松與超能跑鞋評測權威，提供第一手官方試跑反饋、跑者對談與橫向競品對比。",
-        "subscribers": "20萬+ 訂閱",
-        "url": "https://www.youtube.com/@BelieveInTheRun"
-    },
-    {
-        "name": "Seth Fowler",
-        "region": "🇺🇸 歐美",
-        "category": "🔥 球鞋開箱 / 細節與穿搭",
-        "desc": "全球超過百萬訂閱的球鞋開箱創作者，以極高畫質微距鏡頭展示最新限量球鞋的皮質用料與上腳視覺。",
-        "subscribers": "110萬+ 訂閱",
-        "url": "https://www.youtube.com/@SethFowler"
+        "latest_title": "ASICS Superblast 2 vs 3：兩代厚底無板神鞋深度對決",
+        "latest_orig": "Asics Superblast 2 vs 3 | Between Two Shoes",
+        "latest_date": "2026-04-13",
+        "latest_id": "0rphMUdA5yo",
+        "latest_thumbnail": "https://i.ytimg.com/vi/0rphMUdA5yo/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=0rphMUdA5yo"
     },
 
     # 🇯🇵 日本
     {
         "name": "Runtrip Japan (ラントリップ)",
-        "region": "🇯🇵 日本",
+        "region": "🇯🇵 日本潮流",
         "category": "🏃 店員實測 / 跑鞋性能矩陣",
         "desc": "日本最大跑步頻道，每季邀請各大運動用品店專業店員進行嚴苛盲測，評選最適合亞洲人腳型的跑鞋矩陣。",
-        "subscribers": "18萬+ 訂閱",
-        "url": "https://www.youtube.com/@Runtrip"
-    },
-    {
-        "name": "SOSHI-Net",
-        "region": "🇯🇵 日本",
-        "category": "👟 日本發售 / 每日實穿開箱",
-        "desc": "日本知名球鞋創作者，每日高頻率分享日本 SNKRS、atmos 最新入手鞋款開箱、原宿街頭直擊與尺寸建議。",
-        "subscribers": "25萬+ 訂閱",
-        "url": "https://www.youtube.com/@SOSHINET"
+        "latest_title": "【NIKE】定番跑鞋最新作「Pegasus 42 小飛馬」登場！全掌 Air Zoom 實跑評測",
+        "latest_orig": "【NIKE】定番ランニングシューズ最新作「ペガサス 42」登場！今作からフルレングスのAir Zoomユニットを搭載！",
+        "latest_date": "2026-05-19",
+        "latest_id": "5bSRMKjUcGw",
+        "latest_thumbnail": "https://i.ytimg.com/vi/5bSRMKjUcGw/hqdefault.jpg",
+        "latest_url": "https://www.youtube.com/watch?v=5bSRMKjUcGw"
     }
 ]
-
 # Sidebar Controls
 st.sidebar.markdown("### ⚙️ 系統設定與操作")
 if st.sidebar.button("🔄 立即重新抓取最新鞋訊"):
@@ -503,7 +555,7 @@ st.sidebar.info("💡 系統每 1 小時自動向美、日、台、中各大官�
 # Top Navigation Tabs
 tab_news, tab_ytr, tab_release = st.tabs([
     "📰 每日最新鞋訊 (即時更新流)",
-    "🎥 頂級鞋評 YTR 專區",
+    "🎥 頂級鞋評 YTR 專區 (含您的關注頻道)",
     "📅 全球發售日曆 / 抽籤直達"
 ])
 
@@ -576,19 +628,21 @@ with tab_news:
                 st.markdown(f'<div class="card-desc-zh">{art["summary_zh"]}</div>', unsafe_allow_html=True)
                 st.link_button(f"👉 點此前往 {art['source']} 閱讀官方完整圖文 ↗", art["link"])
 
-# TAB 2: YTR HUB
+# TAB 2: YTR HUB (含最新影片標題與縮圖)
 with tab_ytr:
-    st.markdown("### 🎥 全球頂級鞋評 YouTuber 專區 (精選 12 大頻道)")
-    st.markdown("匯集台、中、美、日最具公信力的球鞋與跑鞋開箱、實戰評測、電鋸拆解創作者：")
+    st.markdown("### 🎥 全球頂級鞋評 YouTuber 專區 (已列出最新影片與縮圖)")
+    st.markdown("匯集包含您的專屬關注在內的台、中、美、日頂尖實戰開箱創作者，**點擊即可直接觀看最新評測影片**：")
 
     ytr_region = st.radio(
-        "YTR 地區分類",
-        ["全部頻道 (12)", "🇹🇼 台灣在地 (4)", "🇨🇳 中國硬核拆解 (2)", "🇺🇸 歐美殿堂 (4)", "🇯🇵 日本潮流 (2)"],
+        "YTR 分類篩選",
+        ["全部頻道 (11)", "⭐ 您的專屬關注 (4)", "🇹🇼 台灣在地 (3)", "🇨🇳 中國硬核拆解 (1)", "🇺🇸 歐美殿堂 (2)", "🇯🇵 日本潮流 (1)"],
         horizontal=True
     )
 
     filtered_ytr = YTR_CHANNELS
-    if "台灣" in ytr_region:
+    if "專屬關注" in ytr_region:
+        filtered_ytr = [y for y in filtered_ytr if "關注" in y["region"]]
+    elif "台灣" in ytr_region:
         filtered_ytr = [y for y in filtered_ytr if "台灣" in y["region"]]
     elif "中國" in ytr_region:
         filtered_ytr = [y for y in filtered_ytr if "中國" in y["region"]]
@@ -597,21 +651,31 @@ with tab_ytr:
     elif "日本" in ytr_region:
         filtered_ytr = [y for y in filtered_ytr if "日本" in y["region"]]
 
-    # Render in 2 columns
-    c_y1, c_y2 = st.columns(2)
-    for idx, ytr in enumerate(filtered_ytr):
-        target_col = c_y1 if idx % 2 == 0 else c_y2
-        with target_col:
-            with st.container(border=True):
-                st.markdown(f"""
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                    <span style="font-size: 0.9rem; font-weight: 700; color: #38bdf8;">{ytr['region']} · {ytr['subscribers']}</span>
-                    <span class="category-pill">{ytr['category']}</span>
+    for ytr in filtered_ytr:
+        with st.container(border=True):
+            # Header
+            st.markdown(f"""
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.25rem; font-weight: 800;">▶️ {ytr['name']}</span>
+                    <span style="font-size: 0.9rem; font-weight: 800; color: #38bdf8; background: rgba(56, 189, 248, 0.15); padding: 2px 8px; border-radius: 6px;">{ytr['region']}</span>
                 </div>
-                <div class="ytr-title">▶️ {ytr['name']}</div>
-                <p class="ytr-desc">{ytr['desc']}</p>
-                """, unsafe_allow_html=True)
-                st.link_button(f"前往 {ytr['name']} YouTube 頻道觀看 ↗", ytr['url'])
+                <span class="category-pill">{ytr['category']}</span>
+            </div>
+            <p style="font-size: 0.95rem; color: #94a3b8; line-height: 1.5; margin-bottom: 14px;">{ytr['desc']}</p>
+            """, unsafe_allow_html=True)
+
+            # Left Video Thumbnail (35%), Right Video Info (65%)
+            col_v_img, col_v_txt = st.columns([1, 2], gap="large")
+            with col_v_img:
+                st.image(ytr["latest_thumbnail"], use_container_width=True)
+            with col_v_txt:
+                st.markdown(f"**🎬 最新發布影片：**")
+                st.markdown(f'<h4 style="margin: 4px 0 6px 0; font-size: 1.25rem; font-weight: 800; line-height: 1.4;">{ytr["latest_title"]}</h4>', unsafe_allow_html=True)
+                if ytr.get("latest_orig") and ytr["latest_orig"] != ytr["latest_title"]:
+                    st.markdown(f'<p style="font-size: 0.85rem; color: #64748b; font-style: italic; margin-bottom: 8px;">原標題：{ytr["latest_orig"]}</p>', unsafe_allow_html=True)
+                st.markdown(f'<p style="font-size: 0.9rem; color: #64748b; margin-bottom: 12px;">📅 上傳時間：{ytr["latest_date"]}</p>', unsafe_allow_html=True)
+                st.link_button(f"▶️ 點此立即在 YouTube 觀看本片 ↗", ytr["latest_url"])
 
 # TAB 3: CALENDAR & LAB DIRECTORY
 with tab_release:
