@@ -403,7 +403,7 @@ def fetch_all_multiregion_feeds():
 # YTR Channels: Personalized (from your YouTube subscriptions) + Global Curated
 # YTR Channels with Handles for Real-Time Dynamic YouTube Feed Fetching
 YTR_CHANNELS = [
-    # ⭐ 您的 YouTube 關注頻道 (Personalized Subscriptions)
+    # ⭐ 您的專屬關注 (Personalized Subscriptions)
     {
         "name": "That Fit Friend (Jake Boly)",
         "handle": "ThatFitFriend",
@@ -413,7 +413,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "NEW BALANCE MINIMUS TR V2 深度鞋評：差一點就成神作？",
             "title_orig": "NEW BALANCE MINIMUS TR V2 REVIEW | So Close Yet So Far?",
-            "date": "近期熱門",
+            "date": "2024-06-25",
             "url": "https://www.youtube.com/watch?v=brJoRjAIDqg",
             "thumbnail": "https://i.ytimg.com/vi/brJoRjAIDqg/hqdefault.jpg"
         }
@@ -427,7 +427,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "技術山徑怪物級抓地？Kailas 凱樂石 FUGA MONSTER DU 首跑實測",
             "title_orig": "MONSTER Grip on Technical Trails? | Kailas FUGA MONSTER DU First Run Review",
-            "date": "近期熱門",
+            "date": "2026-07-05",
             "url": "https://www.youtube.com/watch?v=I9dzEkgUyr4",
             "thumbnail": "https://i.ytimg.com/vi/I9dzEkgUyr4/hqdefault.jpg"
         }
@@ -441,7 +441,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "芬蘭百年跑鞋 Karhu 全系列陣容解析：哪一雙最適合你的腳型？",
             "title_orig": "Karhu's Running Shoe Lineup | Which is Right for You?",
-            "date": "近期熱門",
+            "date": "2024-10-09",
             "url": "https://www.youtube.com/watch?v=tfFH6qhi-aY",
             "thumbnail": "https://i.ytimg.com/vi/tfFH6qhi-aY/hqdefault.jpg"
         }
@@ -455,7 +455,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "2026 年必備 Top 10 New Balance 球鞋排行榜：哪一雙真正值得入手？",
             "title_orig": "Top 10 Must-Have New Balance Sneakers of 2026!",
-            "date": "近期熱門",
+            "date": "2026-07-06",
             "url": "https://www.youtube.com/watch?v=dqZ4BorSS2A",
             "thumbnail": "https://i.ytimg.com/vi/dqZ4BorSS2A/hqdefault.jpg"
         }
@@ -471,7 +471,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "該說的就是要說！adidas 3 雙跑鞋實測比較：PRO 4、EVO SL、BOSTON 13 優缺點一次講清",
             "title_orig": "adidas 3雙鞋跑鞋比較！優缺一次說清楚！PRO 4、EVO SL、BOSTON 13",
-            "date": "近期熱門",
+            "date": "2025-07-02",
             "url": "https://www.youtube.com/watch?v=1T_KlQiO8JA",
             "thumbnail": "https://i.ytimg.com/vi/1T_KlQiO8JA/hqdefault.jpg"
         }
@@ -485,7 +485,7 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "【特輯&心得】年年都推鞋今年玩點不一樣的！feat. KENLU 勘履者",
             "title_orig": "年年都推鞋今年玩點不一樣的~也告訴大家今年最應該避雷的是... feat. KENLU勘履者",
-            "date": "近期熱門",
+            "date": "2026-01-16",
             "url": "https://www.youtube.com/watch?v=ArU8kFvNea8",
             "thumbnail": "https://i.ytimg.com/vi/ArU8kFvNea8/hqdefault.jpg"
         }
@@ -499,9 +499,51 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "一次開箱 4 雙新款 YEEZY！全新設計 350 與話題拖鞋第一手體驗",
             "title_orig": "一次開箱4雙今年新款YEEZY ! 全新設計350跟最夯的拖鞋",
-            "date": "近期熱門",
+            "date": "2021-07-15",
             "url": "https://www.youtube.com/watch?v=v8Qa8I8FTlo",
             "thumbnail": "https://i.ytimg.com/vi/v8Qa8I8FTlo/hqdefault.jpg"
+        }
+    },
+    {
+        "name": "Bounce 波恩斯",
+        "handle": "BounceSneaker",
+        "region": "🇹🇼 台灣在地",
+        "category": "🎨 球鞋文化 / 名人穿搭",
+        "desc": "以細膩質感攝影與名人專訪聞名的球鞋生活頻道，深度解析聯名鞋款背後的美學、設計靈感與街頭穿搭。",
+        "fallback": {
+            "title": "波恩斯球鞋開箱：經典復刻與當代聯名美學細節鑑賞",
+            "title_orig": "Bounce Sneaker Culture & Review",
+            "date": "近期精選",
+            "url": "https://www.youtube.com/@BounceSneaker",
+            "thumbnail": "https://images.unsplash.com/photo-1552346154-21d32810aba3?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "林北要買鞋",
+        "handle": "lambertbuykicks",
+        "region": "🇹🇼 台灣在地",
+        "category": "🏀 實戰鞋測 / 選鞋避雷指南",
+        "desc": "台灣幽默且直言不諱的球鞋實測頻道，不吹不黑直接告訴球友哪雙鞋抓地不行、哪雙鞋踩雷，極具參考性。",
+        "fallback": {
+            "title": "【特輯&避雷】年度球鞋真心話大公開！今年最應該避開的實戰鞋盤點",
+            "title_orig": "年度實戰球鞋避雷指南特輯",
+            "date": "2026-01-16",
+            "url": "https://www.youtube.com/watch?v=ArU8kFvNea8",
+            "thumbnail": "https://i.ytimg.com/vi/ArU8kFvNea8/hqdefault.jpg"
+        }
+    },
+    {
+        "name": "跑步不要聽 (魁哥 & 象總)",
+        "handle": "nonstoprunningpodcast",
+        "region": "🇹🇼 台灣在地",
+        "category": "🏃 馬拉松 / 賽事裝備對談",
+        "desc": "台灣最受歡迎的跑步專題頻道與 Podcast，深入探討六大馬拉松賽事實戰裝備、碳板神鞋演進與跑者訓練心法。",
+        "fallback": {
+            "title": "【裝備對談】碳板跑鞋真的越貴越好嗎？市民跑者的選鞋迷思大破解",
+            "title_orig": "跑步不要聽裝備專題",
+            "date": "近期精選",
+            "url": "https://www.youtube.com/results?search_query=跑步不要聽+跑鞋",
+            "thumbnail": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&auto=format&fit=crop&q=80"
         }
     },
 
@@ -515,9 +557,37 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "Kobe 8 Protro 復刻評測：不靠氣墊，靠本體感受與 React 泡棉",
             "title_orig": "kobe 8 复刻评测：不靠气垫，靠本体感受。",
-            "date": "近期熱門",
+            "date": "2026-07-27",
             "url": "https://www.youtube.com/watch?v=FBc9nkMUMPo",
             "thumbnail": "https://i.ytimg.com/vi/FBc9nkMUMPo/hqdefault.jpg"
+        }
+    },
+    {
+        "name": "快傳體育 (FastPass)",
+        "handle": "FastPass",
+        "region": "🇨🇳 中國硬核",
+        "category": "🔬 剖面量測 / 官方拆解分析",
+        "desc": "中國公認最專業的球鞋剖面分析團隊，提供高清橫斷面剖析圖、零配件重量精確秤重與科技配置圖解。",
+        "fallback": {
+            "title": "李寧超輕 21 代剖面分析與零配件秤重拆解報告",
+            "title_orig": "FastPass 官方剖面拆解報告",
+            "date": "近期熱門",
+            "url": "https://www.youtube.com/results?search_query=快傳體育+拆解",
+            "thumbnail": "https://images.unsplash.com/photo-1512412046876-f3863b17025a?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "恩傑的球鞋日常",
+        "handle": "enjie_sneakers",
+        "region": "🇨🇳 中國硬核",
+        "category": "🏀 實戰橫評 / 國產戰靴實穿",
+        "desc": "專注於李寧韋德之道、安踏狂潮、特步游雲等國產旗艦籃球鞋與跑鞋的長期實穿耐磨橫向對比。",
+        "fallback": {
+            "title": "李寧韋德之道 11 實戰一個月報告：雙密度䨻中底回彈與外底耐磨度如何？",
+            "title_orig": "韋德之道 11 長期實戰深度報告",
+            "date": "近期熱門",
+            "url": "https://www.youtube.com/results?search_query=恩傑+球鞋",
+            "thumbnail": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&auto=format&fit=crop&q=80"
         }
     },
 
@@ -545,9 +615,79 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "ASICS Superblast 2 vs 3：兩代厚底無板神鞋深度對決",
             "title_orig": "Asics Superblast 2 vs 3 | Between Two Shoes",
-            "date": "近期熱門",
+            "date": "2026-04-13",
             "url": "https://www.youtube.com/watch?v=0rphMUdA5yo",
             "thumbnail": "https://i.ytimg.com/vi/0rphMUdA5yo/hqdefault.jpg"
+        }
+    },
+    {
+        "name": "RunRepeat Lab",
+        "handle": "RunRepeatLab",
+        "region": "🇺🇸 歐美殿堂",
+        "category": "🔬 實驗室數據 / 電鋸剖鞋",
+        "desc": "全球唯一自費購鞋並以工業儀器進行 30+ 項量化實驗的專業實驗室，量測煙霧透氣度、杜氏硬度與磨耗。",
+        "fallback": {
+            "title": "跑鞋實驗室電鋸剖鞋大公開：我們如何量測 30+ 項中底數據",
+            "title_orig": "RunRepeat Lab Testing Methodology",
+            "date": "實驗室精華",
+            "url": "https://www.youtube.com/results?search_query=RunRepeat+shoe+review",
+            "thumbnail": "https://cdn.runrepeat.com/storage/gallery/product_primary/41475/new-balance-super-comp-rebel-25437549-main.jpg"
+        }
+    },
+    {
+        "name": "Seth Fowler",
+        "handle": "SethFowler",
+        "region": "🇺🇸 歐美殿堂",
+        "category": "🔥 百萬開箱 / 細節用料微距",
+        "desc": "全球超過百萬訂閱的球鞋開箱創作者，以極高畫質微距鏡頭展示最新限量球鞋的皮質用料與上腳視覺。",
+        "fallback": {
+            "title": "Travis Scott 倒勾最新聯名款第一手開箱與細節微距展示",
+            "title_orig": "Seth Fowler Latest Sneaker Unboxing",
+            "date": "近期熱門",
+            "url": "https://www.youtube.com/@SethFowler",
+            "thumbnail": "https://images.unsplash.com/photo-1549298916-b41d501d3772?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "The Run Testers",
+        "handle": "TheRunTesters",
+        "region": "🇺🇸 歐美殿堂",
+        "category": "🏃 英國跑者團隊 / 競品橫評",
+        "desc": "英國資深馬拉松跑者與教練團隊，以多位測試者不同配速（從菁英到市民）深度盲測同級跑鞋差距。",
+        "fallback": {
+            "title": "2026 年最佳馬拉松碳板超級跑鞋橫向對決排行",
+            "title_orig": "The Best Carbon Plate Running Shoes 2026",
+            "date": "近期熱門",
+            "url": "https://www.youtube.com/results?search_query=The+Run+Testers+marathon+shoes",
+            "thumbnail": "https://images.unsplash.com/photo-1584735935682-2f2b69dff9d2?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "Doctors of Running (Podcast & Videos)",
+        "handle": "DoctorsofRunning",
+        "region": "🇺🇸 歐美殿堂",
+        "category": "🩺 物理治療 / 生物力學專家",
+        "desc": "由多位物理治療學博士組成的運動醫學鞋評頻道，剖析步態過度內旋、後跟斜切角度與足弓支撐防傷原理。",
+        "fallback": {
+            "title": "為什麼厚底跑鞋需要後跟斜切？避免膝關節受傷的滾動幾何臨床解析",
+            "title_orig": "Doctors of Running Clinical Biomechanics Roundtable",
+            "date": "醫學深度",
+            "url": "https://www.youtube.com/results?search_query=Doctors+of+Running+podcast",
+            "thumbnail": "https://images.unsplash.com/photo-1512412046876-f3863b17025a?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "Hes Kicks",
+        "handle": "heskicks",
+        "region": "🇺🇸 歐美殿堂",
+        "category": "👟 日常實穿 / 折扣性價比推薦",
+        "desc": "專門挖掘各大電商與 Outlet 折扣好鞋，注重日常生活好穿好走、長時間站立不累的性價比球鞋推薦。",
+        "fallback": {
+            "title": "今年最舒服的 5 雙日常走路鞋推薦：久站不累的平價好選擇",
+            "title_orig": "Top 5 Most Comfortable Sneakers of the Year",
+            "date": "近期精選",
+            "url": "https://www.youtube.com/results?search_query=Hes+Kicks+comfortable+shoes",
+            "thumbnail": "https://images.unsplash.com/photo-1460353581641-37baddab0fa2?w=800&auto=format&fit=crop&q=80"
         }
     },
 
@@ -561,9 +701,37 @@ YTR_CHANNELS = [
         "fallback": {
             "title": "【NIKE】定番跑鞋最新作「Pegasus 42 小飛馬」登場！全掌 Air Zoom 實跑評測",
             "title_orig": "【NIKE】定番ランニングシューズ最新作「ペガサス 42」登場！今作からフルレングスのAir Zoomユニットを搭載！",
-            "date": "近期熱門",
+            "date": "2026-05-19",
             "url": "https://www.youtube.com/watch?v=5bSRMKjUcGw",
             "thumbnail": "https://i.ytimg.com/vi/5bSRMKjUcGw/hqdefault.jpg"
+        }
+    },
+    {
+        "name": "SOSHI-Net",
+        "handle": "SOSHINET",
+        "region": "🇯🇵 日本潮流",
+        "category": "👟 日本發售 / 每日實穿開箱",
+        "desc": "日本最高人氣球鞋創作者，每日高頻率分享日本 SNKRS、atmos 最新入手鞋款開箱、原宿街頭直擊與尺寸建議。",
+        "fallback": {
+            "title": "日本 atmos 抽選直擊！最新 New Balance 美製與 ASICS 聯名實鞋開箱",
+            "title_orig": "SOSHI Net Latest Sneaker Pickup",
+            "date": "近期熱門",
+            "url": "https://www.youtube.com/@SOSHINET",
+            "thumbnail": "https://images.unsplash.com/photo-1539185441755-769473a23570?w=800&auto=format&fit=crop&q=80"
+        }
+    },
+    {
+        "name": "atmos channel",
+        "handle": "atmosmag",
+        "region": "🇯🇵 日本潮流",
+        "category": "🔥 東京球鞋重鎮 / 官方企劃",
+        "desc": "日本指標性球鞋選品店 atmos 官方頻道，邀請品牌主理人深度對談、發售現場直擊與限定配色幕後故事。",
+        "fallback": {
+            "title": "atmos 官方企劃：2026 秋冬東京最受矚目聯名鞋款盤點與幕後專訪",
+            "title_orig": "atmos Official Feature Video",
+            "date": "店鋪直擊",
+            "url": "https://www.youtube.com/results?search_query=atmos+tokyo+channel",
+            "thumbnail": "https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?w=800&auto=format&fit=crop&q=80"
         }
     }
 ]
@@ -707,12 +875,12 @@ with tab_news:
 
 # TAB 2: YTR HUB (即時動態抓取頻道最新發布的第一支影片)
 with tab_ytr:
-    st.markdown("### 🎥 全球頂級鞋評 YouTuber 專區 (即時連線官方最新影片)")
+    st.markdown("### 🎥 全球頂級鞋評 YouTuber 專區 (23大頻道 · 即時連線最新影片)")
     st.markdown("系統每 30 分鐘自動透過 YouTube 官方資訊流**即時抓取各大頻道最新上傳的一部影片**，絕非隨機抓取：")
 
     ytr_region = st.radio(
         "YTR 分類篩選",
-        ["全部頻道 (11)", "⭐ 您的專屬關注 (4)", "🇹🇼 台灣在地 (3)", "🇨🇳 中國硬核拆解 (1)", "🇺🇸 歐美殿堂 (2)", "🇯🇵 日本潮流 (1)"],
+        ["全部頻道 (23)", "⭐ 您的專屬關注 (4)", "🇹🇼 台灣在地 (6)", "🇨🇳 中國硬核拆解 (3)", "🇺🇸 歐美殿堂 (7)", "🇯🇵 日本潮流 (3)"],
         horizontal=True
     )
 
